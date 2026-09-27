@@ -9,17 +9,7 @@ in a technical interview, and to produce a GitHub repository that
 demonstrates industry-level practices (not hobbyist/academic shortcuts).
 
 Full background and rationale: see `docs/plan.md` (original research/plan
-document) if present, and `docs/architecture.md`.
-
-## Current status (read this first)
-
-We are deliberately starting with **Phase 1 only**. The `linux-gateway/`
-directory does not exist yet and should not be created — do not start
-Yocto/Buildroot, kernel module, Device Tree, or MQTT work (Phase 3-4) until
-explicitly asked to. Don't reference or scaffold that environment split yet;
-right now there is a single Windows Claude Code session working in
-`firmware/`. Treat later sections describing Phase 3-4 and the two-OS split
-as documentation of where the project is headed, not as the current setup.
+document), and `docs/architecture.md`.
 
 ## Hardware
 
@@ -88,27 +78,25 @@ rules even when they slow things down:
    Tree bindings, Yocto recipe logic), first explain the 2-3 realistic
    approaches and their trade-offs. Wait for the user to choose before
    writing code, unless they've explicitly said "just implement it."
-2. **Cite the reference manual for register-level work.** When touching
-   registers directly (e.g. `SPI_CR2`, `DMA_SxCR`, GPIO AF mappings),
-   summarize the relevant paragraph from the STM32F411 reference manual
-   (RM0383) or datasheet before writing the code that sets those bits.
-3. **No code the user can't explain.** Comments should explain *why* a
+2. **No code the user can't explain.** Comments should explain *why* a
    decision was made, not restate *what* the line does. If you write
    something non-obvious (a magic timing value, a register bit trick),
-   comment the reasoning or link the datasheet section.
-4. **Small, reviewable steps.** Don't implement an entire subsystem in one
+   comment the reasoning or link the datasheet section. Let the comments be 
+   as extended and large as they need to be, in order for me to fully understand
+   everything.
+3. **Small, reviewable steps.** Don't implement an entire subsystem in one
    shot. Implement one piece, explain it, stop, and let the user confirm
    before continuing to the next piece.
-5. **Debugging is hypothesis-driven.** When something doesn't work: state
+4. **Debugging is hypothesis-driven.** When something doesn't work: state
    your hypothesis, state what evidence would confirm or refute it
    (specifically: what we'd expect to see in PulseView, in a UART debug
    print, or in a register dump), then test the hypothesis before jumping
    to a fix. Don't silently patch symptoms.
-6. **Quiz after each milestone.** When a feature/phase milestone is
+5. **Quiz after each milestone.** When a feature/phase milestone is
    complete, generate 3-5 interview-style questions about what was just
    built (the kind an interviewer would actually ask), so the user can
    check their own understanding.
-7. **Don't over-scaffold.** Don't add abstractions, config options, or
+6. **Don't over-scaffold.** Don't add abstractions, config options, or
    generality that isn't needed yet "for the future." This is a learning
    project — simple and explicit beats clever and generic.
 
@@ -143,6 +131,7 @@ docs/
   decisions/        ADRs
   captures/         logic analyzer exports/screenshots
   budget.md         hardware cost tracking
+  plan.md           The full-original plan of the whole project
 ```
 
 ## Project phases (for context on where things stand)
