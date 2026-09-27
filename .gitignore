@@ -1,10 +1,8 @@
-
-.gitignore · GITIGNORE
 # ---- OS junk ----
 Thumbs.db
 Desktop.ini
 .DS_Store
- 
+
 # ---- Keil MDK-ARM (firmware/) ----
 # Build output
 firmware/**/Objects/
@@ -20,21 +18,24 @@ firmware/**/*.lnp
 firmware/**/*.dep
 firmware/**/*.crf
 firmware/**/*.iex
- 
+
 # Keil per-user / local state (not part of the shareable project)
-firmware/**/*.uvguiState
+firmware/**/*.uvguix.*
 firmware/**/*.uvoptx
 firmware/**/*.bak
+firmware/**/DebugConfig/
 firmware/**/RTE/_Target_1/
+# Keil Pack Manager baseline copies (auto-regenerated on pack update, never edited by hand)
+firmware/**/*.base@*
 firmware/**/JLinkLog.txt
 firmware/**/EWA*.log
- 
+
 # Keep: *.uvprojx (the actual project file) and source under Core/, Drivers/
- 
+
 # ---- Editor cruft ----
 .vscode/
 *.swp
- 
+
 # ---- linux-gateway/ (placeholder — will be filled in when Phase 3 starts) ----
 # Yocto/Buildroot build directories are tens of GB and must never be committed.
 # When that directory is created, add at minimum:
@@ -42,4 +43,3 @@ firmware/**/EWA*.log
 # linux-gateway/**/sstate-cache/
 # linux-gateway/**/downloads/
 # linux-gateway/**/tmp/
- 
