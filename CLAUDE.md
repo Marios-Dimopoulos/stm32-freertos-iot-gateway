@@ -9,7 +9,7 @@ in a technical interview, and to produce a GitHub repository that
 demonstrates industry-level practices (not hobbyist/academic shortcuts).
 
 Full background and rationale: see `docs/plan.md` (original research/plan
-document), and `docs/architecture.md`.
+document), and `docs/architecture.md` for the current state of the project.
 
 ## Hardware
 
