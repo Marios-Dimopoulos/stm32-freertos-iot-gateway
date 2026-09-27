@@ -16,7 +16,8 @@ and the `event_groups.c`, `list.c`, `queue.c`, `tasks.c`, `timers.c`
 in the `Target_1` the `FreeRTOS Core` directory (which includes the `event_groups.c`,
 `list.c`, `queue.c`, `tasks.c`, `timers.c` files) and the `FreeRTOS Portable` directory
 (which includes only the `port.c` file). Lastly, i configured the `include Paths`
-so the preprocessor is able to find the .h files.
+so the preprocessor is able to find the .h files. Next up is the configuration of 
+the `FreeRTOSConfig.h` file.
 
 This file will be filled in as work progresses. Below is the target shape for Phase 1,
 kept here as a near-term plan, clearly marked as such.
