@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define></Define>
               <Undefine></Undefine>
-              <IncludePath>.\FreeRTOS\include .\FreeRTOS\portable\RVDS\ARM_CM4F</IncludePath>
+              <IncludePath>.\FreeRTOS\include .\FreeRTOS\portable\RVDS\ARM_CM4F .\FreeRTOS\config</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -421,6 +421,16 @@
               <FileName>port.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\FreeRTOS\portable\RVDS\ARM_CM4F\port.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>FreeRTOS Config</GroupName>
+          <Files>
+            <File>
+              <FileName>FreeRTOSConfig.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\FreeRTOS\config\FreeRTOSConfig.h</FilePath>
             </File>
           </Files>
         </Group>
