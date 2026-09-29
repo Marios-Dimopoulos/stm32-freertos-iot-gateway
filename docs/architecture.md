@@ -42,8 +42,8 @@ firmware/stm32-sensor-node/FreeRTOS/
 | Section | Status | Settings |
 |---|---|---|
 | Memory allocation model | ✅ done | `configSUPPORT_STATIC_ALLOCATION 1`, `configKERNEL_PROVIDED_STATIC_MEMORY 0`, `configSUPPORT_DYNAMIC_ALLOCATION 0`, `configTOTAL_HEAP_SIZE 0` (ADR-0001) |
-| Clock / tick | ⏳ next | `configCPU_CLOCK_HZ`, `configTICK_RATE_HZ`, preemption, time slicing, tick width |
-| Task priorities / stack sizes | ❌ not started | |
+| Clock / tick | ✅ done | `configCPU_CLOCK_HZ (SystemCoreClock)`, `configTICK_RATE_HZ 1000`, `configUSE_PREEMPTION 1`, `configUSE_TIME_SLICING 1`, 32-bit tick (ADR-0003) |
+| Task priorities / stack sizes | ⏳ next | |
 | Interrupt priorities (NVIC/BASEPRI) | ❌ not started | |
 | Port handler mapping (SVC/PendSV/SysTick → startup file names) | ❌ not started | |
 
@@ -63,6 +63,7 @@ firmware/stm32-sensor-node/FreeRTOS/
 
 - ADR-0001: static-only memory allocation for FreeRTOS objects.
 - ADR-0002: GCC/ARM_CM4F FreeRTOS port with Arm Compiler 6.
+- ADR-0003: RTOS tick derived from `SystemCoreClock`, at 1 kHz.
 
 Below is the target shape for Phase 1, kept here as a near-term plan,
 clearly marked as such.
@@ -92,8 +93,6 @@ clearly marked as such.
 
 ## Open questions / not yet decided
 
-- `configCPU_CLOCK_HZ`: a fixed `84000000UL` or the CMSIS `SystemCoreClock`
-  variable. `configTICK_RATE_HZ`: 1000 or 100.
 - Clock source for the PLL: HSI (internal 16 MHz RC) or HSE from the
   ST-LINK's 8 MHz MCO output (depends on Nucleo board revision / solder
   bridges).
@@ -115,3 +114,7 @@ clearly marked as such.
   allocation section (ADR-0001).
 - 2026-09-29: FreeRTOS port switched from `RVDS/ARM_CM4F` to
   `GCC/ARM_CM4F` for Arm Compiler 6 compatibility (ADR-0002).
+- 2026-09-29: `FreeRTOSConfig.h` clock/tick section: tick derived from
+  CMSIS `SystemCoreClock` (correct on 16 MHz HSI today and after the future
+  84 MHz PLL setup), 1 kHz tick. `main()` must run clock setup ->
+  `SystemCoreClockUpdate()` -> `vTaskStartScheduler()` in that order.
