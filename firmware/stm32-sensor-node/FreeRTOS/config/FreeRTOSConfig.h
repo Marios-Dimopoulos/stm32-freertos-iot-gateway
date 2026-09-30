@@ -314,18 +314,42 @@ extern uint32_t SystemCoreClock;
  */
 
 /*
- * configMAX_PRIORITIES — DELIBERATELY NOT DEFINED YET.
+ * configMAX_PRIORITIES = 3   ->  task priorities 0, 1 and 2
  *
- * Number of task priority levels (0 = lowest, used by the Idle task). It
- * must equal the number of distinct URGENCY classes in the design, not the
- * number of tasks: tasks of equal urgency share a level and time-slice.
- * The task set has not been decided yet (see "Open questions" in
- * docs/architecture.md), so no value can be justified yet.
+ * Number of TASK priority levels (higher number = more urgent; 0 is the
+ * lowest and is used by the Idle task). It equals the number of distinct
+ * URGENCY classes in the design, not the number of tasks: tasks of equal
+ * urgency share a level and time-slice. The kernel keeps one ready list per
+ * level (pxReadyTasksLists[], about 20 bytes each), so unused levels cost
+ * RAM and scheduler bookkeeping for nothing.
  *
- * It is REQUIRED (FreeRTOS.h raises #error without it): it must be decided,
- * or set provisionally and clearly marked as such, before the first build.
- * Upper limit: 32, because of configUSE_PORT_OPTIMISED_TASK_SELECTION below.
+ * The task set this is derived from (see docs/architecture.md):
+ *
+ *   priority 2   Transmit task (Phase 2) — prepares each SPI/DMA buffer for
+ *                the Raspberry Pi. The Pi is the SPI MASTER: it clocks data
+ *                out whenever IT decides, so this task's deadline is imposed
+ *                from outside and it must never wait behind other work.
+ *   priority 1   Sensor task (Phase 1) — reads the BMP280 over I2C1 at a
+ *                period we choose. Running a few ms late changes nothing
+ *                (temperature/pressure do not move that fast). During
+ *                bring-up it also prints readings over USART2; that blocking
+ *                debug output can always be preempted by priority 2.
+ *   priority 0   Idle task (created by the kernel).
+ *
+ * Why not more levels: no other task is planned. The MPU-6050 IMU was
+ * dropped from the design, and debug logging is done directly from the
+ * sensor task (no dedicated logging task), so neither adds an urgency class.
+ * Level 2 has no task until Phase 2; it is defined now because the transmit
+ * task is a committed part of the plan and its priority relative to the
+ * sensor task is already a justified design decision.
+ *
+ * Changing this later is a one-line edit; nothing else depends on the exact
+ * number. Upper limit: 32, because of
+ * configUSE_PORT_OPTIMISED_TASK_SELECTION below.
+ *
+ * Required: FreeRTOS.h raises #error if this is not defined.
  */
+#define configMAX_PRIORITIES                        ( 3 )
 
 /*
  * configMINIMAL_STACK_SIZE = 128  —  UNIT IS WORDS (StackType_t = uint32_t),
@@ -422,7 +446,7 @@ extern uint32_t SystemCoreClock;
  * 32-bit word) — far more than this design will need.
  *
  * The CM4F port already defaults this to 1 (portmacro.h); defined
- * explicitly because it constrains the still-open configMAX_PRIORITIES.
+ * explicitly because it puts an upper limit on configMAX_PRIORITIES.
  */
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION     1
 

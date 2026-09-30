@@ -31,7 +31,7 @@ work from production embedded engineering:
 ## Project phases
 
 1. **Phase 1 — Hardware & RTOS** *(current)*: bare-metal I2C driver for the
-   BME280 sensor, FreeRTOS task structure, static memory allocation only.
+   BMP280 sensor, FreeRTOS task structure, static memory allocation only.
 2. **Phase 2 — DMA & Logic Analysis**: SPI + DMA transfer to the gateway,
    verified with a logic analyzer.
 3. **Phase 3 — Embedded Linux & Yocto**: custom minimal Linux image for the
@@ -54,7 +54,7 @@ docs/
 ## Hardware
 
 - STM32 Nucleo-F411RE (Cortex-M4 @ 84MHz, 128KB SRAM)
-- Bosch BME280 (temperature / humidity / pressure, I2C)
+- Bosch BMP280 (temperature / pressure, I2C)
 - Raspberry Pi Zero 2 W (Cortex-A53, 512MB RAM, Wi-Fi) — Phase 3+
 - USB logic analyzer, FX2LP-based, 8ch/24MHz, used with `sigrok`/`PulseView`
 

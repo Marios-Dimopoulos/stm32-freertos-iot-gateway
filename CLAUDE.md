@@ -17,10 +17,11 @@ document), and `docs/architecture.md` for the current state of the project.
   (project runs at 84MHz via PLL), 128KB SRAM, FPU, NVIC.
 - Toolchain for firmware: Keil MDK-ARM, Windows. This is Phase 1-2 work
   and lives under `firmware/`.
-- Sensor: BME280 (temperature/humidity/pressure) over I2C1
+- Sensor: BMP280 (temperature/pressure, no humidity) over I2C1
   (SCL: PB8, SDA: PB9). Default I2C address 0x76 or 0x77 depending on SDO pin.
-- Optional secondary sensor: MPU-6050 IMU (gyro + accelerometer) over I2C,
-  used to diversify the data stream.
+- No secondary sensor: the MPU-6050 IMU was dropped from the design.
+- Debug output: USART2 (PA2: TX, PA3: RX) via the Nucleo's ST-LINK virtual
+  COM port, viewed in Tera Term. Debug-only, not part of the data path.
 - Data link MCU → gateway: SPI1 (NSS: PA4, SCK: PA5, MISO: PA6, MOSI: PA7),
   using DMA for transfer (never CPU polling for bulk transfers).
 - Gateway: Raspberry Pi Zero 2 W, ARM Cortex-A53 (arm64), 512MB RAM, Wi-Fi.
@@ -136,7 +137,7 @@ docs/
 
 ## Project phases (for context on where things stand)
 
-1. **Phase 1 (Hardware & RTOS):** bare-metal I2C driver for BME280, FreeRTOS
+1. **Phase 1 (Hardware & RTOS):** bare-metal I2C driver for BMP280, FreeRTOS
    integration, static memory allocation only.
 2. **Phase 2 (DMA & Logic Analysis):** SPI + DMA transfer to the gateway,
    logic analyzer verification of timing/protocol correctness.
