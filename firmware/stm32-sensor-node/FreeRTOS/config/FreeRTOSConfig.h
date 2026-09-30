@@ -477,4 +477,277 @@ extern uint32_t SystemCoreClock;
  *     task's name (16 bytes) for debugging. No reason to change it.
  */
 
+/* ==========================================================================
+ * INTERRUPT PRIORITIES
+ * ==========================================================================
+ *
+ * This section is about INTERRUPT priorities only. Do not confuse the two
+ * separate priority systems:
+ *
+ *                   TASK priority                INTERRUPT priority
+ *   managed by      FreeRTOS scheduler (SW)      NVIC, inside the CPU (HW)
+ *   set with        xTaskCreateStatic() arg      NVIC_SetPriority()
+ *   direction       HIGHER number = more urgent  LOWER number = more urgent
+ *   range           0..configMAX_PRIORITIES-1    levels 0..15 on the STM32F411
+ *
+ * The two are never compared with each other: ANY interrupt, even the least
+ * urgent one (level 15), interrupts ANY task, even the highest-priority one.
+ *
+ * Why the kernel cares about interrupt levels at all:
+ *   While the kernel edits its own data (e.g. moving a TCB between the
+ *   Ready and Delayed lists), an ISR that also calls a FreeRTOS function
+ *   (xQueueSendFromISR(), ...) would edit the same lists halfway through and
+ *   corrupt them. So for those few instructions (a "critical section") the
+ *   kernel writes a threshold into the CPU's BASEPRI register:
+ *
+ *       BASEPRI = 0         block nothing (the normal state, almost always)
+ *       BASEPRI = level N   interrupts at level N..15 are held PENDING (not
+ *                           lost — they run as soon as BASEPRI returns to
+ *                           0); levels 0..N-1 still run immediately
+ *
+ *   BASEPRI is a hardware register in the Cortex-M4 core (accessed with the
+ *   MSR/MRS instructions, see vPortRaiseBASEPRI() in portmacro.h), not a
+ *   variable. It is raised by the kernel for the whole system — never "per
+ *   task". Application code can request the same protection with
+ *   taskENTER_CRITICAL() / taskEXIT_CRITICAL(), and must keep it just as
+ *   short.
+ *
+ * The threshold therefore draws ONE line through the 16 levels:
+ *
+ *     level 0 .. T-1   more urgent than the line. NEVER delayed by the
+ *                      kernel — but their ISRs must NEVER call any FreeRTOS
+ *                      function.
+ *     ---------------- T = configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY ----
+ *     level T .. 15    at or below the line. May be delayed for the length
+ *                      of a critical section (a few instructions) — and
+ *                      their ISRs MAY call the ...FromISR() functions.
+ *                      (PendSV and SysTick are hard-coded by this port to
+ *                      the least urgent level; see port.c, portNVIC_PENDSV_PRI
+ *                      / portNVIC_SYSTICK_PRI.)
+ *
+ * An ISR gets either "never delayed" or "may talk to the kernel", never
+ * both.
+ */
+
+/*
+ * configPRIO_BITS = 4
+ *
+ * NOT read by the kernel — a helper for the shift below. It is the number of
+ * interrupt-priority bits this chip implements: the STM32F411 implements 4
+ * (16 levels; __NVIC_PRIO_BITS in the device header stm32f411xe.h).
+ *
+ * The encoding it exists for: each interrupt's priority is an 8-bit field,
+ * but only the TOP 4 bits are implemented; the low 4 always read as 0:
+ *
+ *     bit   7 6 5 4 | 3 2 1 0
+ *          [ level ] [always 0]      level 5  -> 0101 0000 = 0x50
+ *                                    level 15 -> 1111 0000 = 0xF0
+ *
+ * (ARM puts the implemented bits at the top so the same code works on chips
+ * with a different number of priority bits.)
+ */
+#define configPRIO_BITS                                 4
+
+/*
+ * configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY = 5   (the line, as a plain LEVEL)
+ *
+ * NOT read by the kernel either — this is the human-readable level, in the
+ * same form NVIC_SetPriority() takes. Application code uses it when giving
+ * priorities to ISRs that call FreeRTOS functions, e.g.
+ *     NVIC_SetPriority( SomeIRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY + 1 );
+ *
+ * Why 5:
+ *   - Every ISR currently planned (SPI/DMA transfer complete, possibly I2C
+ *     events) has to wake a task, i.e. call a ...FromISR() function, so all
+ *     of them must sit at level >= T. With T = 5 there are 11 such levels
+ *     (5..15) — far more than the 2-4 we need.
+ *   - Levels 0..4 stay free for possible future ISRs that must never be
+ *     delayed by the kernel (e.g. precise timer capture).
+ *   - It cannot be 0: BASEPRI = 0 means "block nothing".
+ *   - 5 rather than 4 or 6 has no deep technical reason; it is the value
+ *     used by ST's and FreeRTOS's own STM32 examples, so it is what anyone
+ *     familiar with FreeRTOS on STM32 expects to see.
+ */
+#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY    5
+
+/*
+ * configMAX_SYSCALL_INTERRUPT_PRIORITY = 5 << (8 - 4) = 0x50
+ *
+ * THE setting the kernel actually reads: the value it writes into BASEPRI
+ * when it enters a critical section (portmacro.h, vPortRaiseBASEPRI(); also
+ * inside xPortPendSVHandler() in port.c). The name means "the most urgent
+ * interrupt level that may still make system calls (call FreeRTOS
+ * functions)".
+ *
+ * BASEPRI needs the RAW, already-shifted byte (0x50), unlike
+ * NVIC_SetPriority(), which takes the plain level (5) and shifts it itself.
+ *
+ * The classic bug this shift prevents: writing a plain 5 here. 0x05 has only
+ * unimplemented bits set, so the hardware stores 0x00 = "block nothing", and
+ * every kernel critical section silently protects nothing. (The port checks
+ * for this in xPortStartScheduler(), but only when configASSERT is defined.)
+ */
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY            ( configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << ( 8 - configPRIO_BITS ) )
+
+/*
+ * Rules that follow from this section, for when ISRs are written:
+ *
+ *   1. Every ISR that calls a ...FromISR() function MUST be given a level
+ *      >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY with
+ *      NVIC_SetPriority(). After reset every interrupt is at level 0 — the
+ *      MOST urgent, i.e. above the line — so leaving the default is a bug.
+ *      (Checked by vPortValidateInterruptPriority() in port.c when
+ *      configASSERT is defined.)
+ *
+ *   2. Never change the NVIC priority grouping. The 4 priority bits can be
+ *      split into "preemption" and "sub-priority" parts; FreeRTOS requires
+ *      all 4 to be preemption bits. The reset default already is that, and
+ *      nothing in this project changes it (no ST HAL). Do not call
+ *      NVIC_SetPriorityGrouping() with any other value.
+ *
+ * Deliberately NOT defined:
+ *
+ *   configKERNEL_INTERRUPT_PRIORITY — a setting from older ports. This port
+ *     (V11.3.1, GCC/ARM_CM4F) does not read it: PendSV and SysTick are
+ *     hard-coded to the least urgent level. Defining it would be dead code.
+ */
+
+/* ==========================================================================
+ * ASSERTIONS
+ * ==========================================================================
+ *
+ * An assert states "this condition must be true here; if it is not,
+ * something is badly wrong — stop". The kernel source contains about 230 of
+ * them (121 in tasks.c, 56 in queue.c, 14 in port.c, ...), e.g.
+ *
+ *     configASSERT( puxStackBuffer != NULL );      (tasks.c, xTaskCreateStatic)
+ *
+ * FreeRTOS decides WHERE the checks are; this macro decides WHAT HAPPENS
+ * when one fails.
+ *
+ * If configASSERT is left undefined, FreeRTOS.h defines it as nothing and
+ * the preprocessor removes every one of those checks — including the ones
+ * that guard the INTERRUPT PRIORITIES section above:
+ *   - configMAX_SYSCALL_INTERRUPT_PRIORITY has bits in unimplemented
+ *     positions, i.e. the "plain 5 instead of 0x50" bug
+ *     (port.c, xPortStartScheduler);
+ *   - an ISR more urgent than the line calls a ...FromISR() function, e.g.
+ *     because NVIC_SetPriority() was forgotten and it is still at the reset
+ *     level 0 (port.c, vPortValidateInterruptPriority). Without the assert
+ *     this only fails when the interrupt lands inside a critical section —
+ *     once in a million, at random. With it, it fails on the FIRST call;
+ *   - the NVIC priority grouping was changed (same function).
+ * Also enabled by it: configCHECK_HANDLER_INSTALLATION (defaults to 1),
+ * which verifies at scheduler start that the vector table really contains
+ * the port's SVC and PendSV handlers (see the handler-mapping section).
+ *
+ * What this definition does when a check fails:
+ *   1. portDISABLE_INTERRUPTS() raises BASEPRI to the line, so SysTick and
+ *      PendSV can no longer run: no more ticks, no more task switches. The
+ *      system is frozen in the state it had at the moment of the failure.
+ *      (portDISABLE_INTERRUPTS comes from portmacro.h, which every kernel
+ *      file gets through FreeRTOS.h; taskDISABLE_INTERRUPTS() in task.h is
+ *      the same thing, but task.h is not included everywhere.)
+ *   2. for( ;; ); spins forever.
+ *
+ * How to use it: if the board appears to hang, press Stop in the Keil
+ * debugger. If execution is inside this loop, the Call Stack window shows
+ * the function and the exact configASSERT() line that failed.
+ *
+ * Alternatives considered:
+ *   - Calling a function with __FILE__ / __LINE__ so the location can be
+ *     printed: useful without a debugger, but there is no UART output yet.
+ *     Upgrading later means changing only this macro.
+ *   - A BKPT instruction: halts an attached debugger automatically, but
+ *     with no debugger attached it escalates to a HardFault, disguising the
+ *     assert as a different kind of crash.
+ *
+ * Production note: a shipped product must not hang forever. There, the
+ * handler would record the failure and reset the device (typically via a
+ * watchdog). For a development board with a debugger attached, freezing is
+ * exactly what we want.
+ */
+#define configASSERT( x )    if( ( x ) == 0 ) { portDISABLE_INTERRUPTS(); for( ;; ); }
+
+/* ==========================================================================
+ * HANDLER MAPPING (port handlers -> vector table names)
+ * ==========================================================================
+ *
+ * Background — how the CPU finds exception code:
+ *
+ *   Normal function calls do not need any table: the compiler emits a BL
+ *   instruction that contains the target's address (filled in by the
+ *   linker). Exceptions and interrupts are different: nobody calls them,
+ *   hardware triggers them at any moment. So the CPU uses the VECTOR TABLE,
+ *   a list of addresses at the very start of flash (0x08000000), one entry
+ *   (4 bytes) per exception source of the chip — 102 entries on the
+ *   STM32F411: 16 system exceptions defined by ARM (entries 0..15) and 86
+ *   peripheral interrupts defined by ST.
+ *
+ *   Each source has a fixed number N, wired in hardware. When source N
+ *   fires, the CPU reads the address stored at (table start + 4 * N) and
+ *   jumps to it. No names exist at run time — only addresses.
+ *
+ *   The three entries FreeRTOS depends on:
+ *     entry 11  SVC      triggered on purpose by the "svc 0" instruction in
+ *                        prvPortStartFirstTask() (port.c) to start the very
+ *                        first task — a task can only be started by
+ *                        RETURNING from an exception into its prepared
+ *                        stack frame, so the port has to enter one first;
+ *     entry 14  PendSV   the context switch;
+ *     entry 15  SysTick  the tick.
+ *
+ * The problem these defines solve:
+ *
+ *   The table is written in startup_stm32f411xe.s using NAMES, e.g.
+ *       DCD  SVC_Handler
+ *   which tells the linker "write the address of the function called
+ *   SVC_Handler here". The port's functions have different names
+ *   (vPortSVCHandler, xPortPendSVHandler, xPortSysTickHandler), and to the
+ *   linker those are unrelated.
+ *
+ *   The startup file also provides a placeholder for every name in the
+ *   table — a function that only loops forever ("B ."), marked [WEAK]. Weak
+ *   means "fallback": if the project contains a normal function with the
+ *   same name, the linker keeps that one and discards the placeholder
+ *   (decided once, at link time — not at run time).
+ *
+ *   Without this section the build would still SUCCEED — the linker would
+ *   silently use the placeholders — and then "svc 0" would jump into an
+ *   endless loop and no task would ever run. (With configASSERT defined, the
+ *   port's handler check in xPortStartScheduler() stops first, on a line
+ *   that names the cause — configCHECK_HANDLER_INSTALLATION, default 1.)
+ *
+ * How the defines work ("direct routing", the method recommended in port.c):
+ *
+ *   #define A B replaces the text A with B before compiling. port.c includes
+ *   this header, so its function
+ *       void xPortSysTickHandler( void ) { ... }
+ *   is compiled as
+ *       void SysTick_Handler( void ) { ... }
+ *   The project then contains a normal function with exactly the name the
+ *   table asks for; the linker discards the weak placeholder and writes the
+ *   address of the port's code into the table. No extra code, no run-time
+ *   cost, and no vendor file is modified.
+ *
+ * Alternatives considered:
+ *   - Writing our own SVC_Handler / PendSV_Handler / SysTick_Handler that
+ *     jump to the port's functions ("indirect routing"): extra instructions
+ *     on every tick and context switch; the SVC and PendSV wrappers would
+ *     have to be hand-written assembly (the port's code expects the stack
+ *     exactly as the hardware left it, which a normal C function would
+ *     disturb); and the handler check would have to be turned off. Only
+ *     worth it if our own code had to run inside SysTick_Handler.
+ *   - Editing the vector table in the startup file: modifies a file managed
+ *     by the Keil device pack (under RTE/), which a pack update can replace.
+ *
+ * Consequence: the port now OWNS these three names. Never define a function
+ * called SVC_Handler, PendSV_Handler or SysTick_Handler anywhere in the
+ * project — the linker would report a duplicate definition. (For code that
+ * must run on every tick, configUSE_TICK_HOOK exists.)
+ */
+#define vPortSVCHandler         SVC_Handler
+#define xPortPendSVHandler      PendSV_Handler
+#define xPortSysTickHandler     SysTick_Handler
+
 #endif /* FREERTOS_CONFIG_H */
