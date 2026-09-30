@@ -750,4 +750,67 @@ extern uint32_t SystemCoreClock;
 #define xPortPendSVHandler      PendSV_Handler
 #define xPortSysTickHandler     SysTick_Handler
 
+/* ==========================================================================
+ * OPTIONAL API FUNCTIONS (INCLUDE_ settings)
+ * ==========================================================================
+ *
+ * Some kernel API functions are compiled only if the matching INCLUDE_xxx
+ * macro is 1: in tasks.c each of them is wrapped in
+ *     #if ( INCLUDE_xxx == 1 ) ... #endif
+ * FreeRTOS.h defaults most of these to 0, so by default the function's code
+ * is not compiled at all (this keeps unused functions out of flash on
+ * toolchains that cannot remove them automatically).
+ *
+ * What happens if a function is used while its INCLUDE_ is 0: task.h still
+ * DECLARES the function (the prototype is unconditional), so the call
+ * compiles — but the function body does not exist, and the build fails at
+ * the LINK step with an "undefined symbol" error. It is a build-time
+ * failure, never a run-time one.
+ *
+ * Only the functions the design needs are enabled. Everything else
+ * (vTaskDelete, vTaskSuspend, vTaskPrioritySet, ...) stays at its default
+ * of 0 until something actually uses it.
+ *
+ * (INCLUDE_uxTaskGetStackHighWaterMark is set in the TASKS AND STACKS
+ * section above, next to the stack-sizing settings it serves.)
+ */
+
+/*
+ * INCLUDE_vTaskDelay = 1
+ *
+ * Compiles vTaskDelay( ticks ): "block me for this many ticks, counted FROM
+ * NOW". The task is moved to the Delayed list and the CPU is given away
+ * immediately; the tick handler moves it back to the Ready list when
+ * xTickCount reaches (now + ticks).
+ *
+ * Used for simple relative delays and for the first scheduler test (a task
+ * toggling a GPIO every pdMS_TO_TICKS( 500 )).
+ */
+#define INCLUDE_vTaskDelay                          1
+
+/*
+ * INCLUDE_xTaskDelayUntil = 1
+ *
+ * Compiles xTaskDelayUntil( &xLastWakeTime, period ) — and with it
+ * vTaskDelayUntil(), which task.h defines as a macro around it that ignores
+ * the return value.
+ *
+ * Difference from vTaskDelay(), and why periodic tasks need this one:
+ *   - vTaskDelay( 1000 ) waits 1000 ticks from the moment it is CALLED. The
+ *     time the task spent working (e.g. reading the sensor over I2C) is
+ *     added on top, so each cycle is "work time + 1000 ticks" and the
+ *     schedule drifts.
+ *   - xTaskDelayUntil( &xLastWakeTime, 1000 ) wakes the task at
+ *     xLastWakeTime + 1000, i.e. at fixed points in time, regardless of how
+ *     long the work took. The period is exact and does not drift.
+ *
+ * It returns pdFALSE if the wake-up time had already passed when it was
+ * called (the task overran its period and was not delayed at all) — a
+ * direct way to detect a missed deadline.
+ *
+ * This is the function the periodic sensor task will use, and the reason
+ * software timers could be left off (configUSE_TIMERS = 0).
+ */
+#define INCLUDE_xTaskDelayUntil                     1
+
 #endif /* FREERTOS_CONFIG_H */
