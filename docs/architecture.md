@@ -69,6 +69,7 @@ firmware/stm32-sensor-node/FreeRTOS/
 - ADR-0001: static-only memory allocation for FreeRTOS objects.
 - ADR-0002: GCC/ARM_CM4F FreeRTOS port with Arm Compiler 6.
 - ADR-0003: RTOS tick derived from `SystemCoreClock`, at 1 kHz.
+- ADR-0004: interrupt priority threshold for FreeRTOS API calls at level 5.
 
 Below is the target shape for Phase 1, kept here as a near-term plan,
 clearly marked as such.
