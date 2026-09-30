@@ -43,7 +43,7 @@ firmware/stm32-sensor-node/FreeRTOS/
 |---|---|---|
 | Memory allocation model | ✅ done | `configSUPPORT_STATIC_ALLOCATION 1`, `configKERNEL_PROVIDED_STATIC_MEMORY 0`, `configSUPPORT_DYNAMIC_ALLOCATION 0`, `configTOTAL_HEAP_SIZE 0` (ADR-0001) |
 | Clock / tick | ✅ done | `configCPU_CLOCK_HZ (SystemCoreClock)`, `configTICK_RATE_HZ 1000`, `configUSE_PREEMPTION 1`, `configUSE_TIME_SLICING 1`, 32-bit tick (ADR-0003) |
-| Task priorities / stack sizes | ⏳ next | |
+| Tasks / stacks | ✅ done except `configMAX_PRIORITIES` (open) | `configMINIMAL_STACK_SIZE 128` words, idle/tick hooks off, `configUSE_TIMERS 0`, CLZ task selection, stack overflow check method 2, high-water mark enabled |
 | Interrupt priorities (NVIC/BASEPRI) | ❌ not started | |
 | Port handler mapping (SVC/PendSV/SysTick → startup file names) | ❌ not started | |
 
@@ -53,9 +53,10 @@ firmware/stm32-sensor-node/FreeRTOS/
   exists yet. `system_stm32f4xx.c` leaves the chip on HSI after reset
   (`SystemCoreClock = 16000000`). The 84 MHz target in CLAUDE.md is not
   implemented.
-- `vApplicationGetIdleTaskMemory()` / `vApplicationGetTimerTaskMemory()`
-  are not implemented yet. They are required by static-only allocation, so
-  the link will fail until they exist.
+- `vApplicationGetIdleTaskMemory()` (static-only allocation) and
+  `vApplicationStackOverflowHook()` (overflow check method 2) are not
+  implemented yet; the link will fail until they exist.
+  `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
 - No check yet that the C library's `malloc` isn't pulled in (needs a
   successful build and a look at the `.map` file).
 
@@ -93,6 +94,13 @@ clearly marked as such.
 
 ## Open questions / not yet decided
 
+- **The task set, and therefore `configMAX_PRIORITIES`.** Candidates:
+  SPI transmit task (Phase 2, deadline set by the Pi as SPI master),
+  optional MPU-6050 IMU task (fast periodic), BME280 sensor task (slow
+  periodic), a possible logging task, and Idle (priority 0). The number of
+  priority levels = number of distinct urgency classes, not number of
+  tasks. `configMAX_PRIORITIES` is required to compile, so it must be
+  decided (or set provisionally, clearly marked) before the first build.
 - Clock source for the PLL: HSI (internal 16 MHz RC) or HSE from the
   ST-LINK's 8 MHz MCO output (depends on Nucleo board revision / solder
   bridges).
