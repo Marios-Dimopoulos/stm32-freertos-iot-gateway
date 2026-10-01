@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define></Define>
               <Undefine></Undefine>
-              <IncludePath>.\FreeRTOS\include .\FreeRTOS\portable\GCC\ARM_CM4F .\FreeRTOS\config</IncludePath>
+              <IncludePath>.\FreeRTOS\include;.\FreeRTOS\portable\GCC\ARM_CM4F;.\FreeRTOS\config</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -382,7 +382,14 @@
       </TargetOption>
       <Groups>
         <Group>
-          <GroupName>Source Group 1</GroupName>
+          <GroupName>Application</GroupName>
+          <Files>
+            <File>
+              <FileName>freertos_callbacks.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\freertos_callbacks.c</FilePath>
+            </File>
+          </Files>
         </Group>
         <Group>
           <GroupName>FreeRTOS Core</GroupName>
