@@ -32,6 +32,12 @@ firmware/**/EWA*.log
 
 # Keep: *.uvprojx (the actual project file) and source under Core/, Drivers/
 
+# ---- Reference code kept locally only (never published) ----
+# Course/teacher drivers (ARM University Program, ST Standard Peripheral Library,
+# teacher-written I2C) used only as reading material while writing our own
+# drivers. Not part of the Keil project; not ours to redistribute.
+firmware/**/reference/
+
 # ---- Editor cruft ----
 .vscode/
 *.swp
