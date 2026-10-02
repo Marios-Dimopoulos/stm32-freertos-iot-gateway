@@ -389,6 +389,11 @@
               <FileType>1</FileType>
               <FilePath>.\Src\freertos_callbacks.c</FilePath>
             </File>
+            <File>
+              <FileName>main.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\main.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

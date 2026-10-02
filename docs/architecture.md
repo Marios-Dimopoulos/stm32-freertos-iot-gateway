@@ -4,11 +4,13 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phase 1, FreeRTOS configured, no application code yet
+## Current status: Phase 1, RTOS running on the board (temporary blink test)
 
-No application firmware exists yet: no `main.c`, no tasks, no drivers.
-The project has **not been built yet**. `FreeRTOSConfig.h` is complete; the
-first build now needs the application-side pieces listed under "Known gaps".
+FreeRTOS builds, links and runs on the Nucleo: one temporary task blinks the
+user LED (LD2 on PA5) from the scheduler. **Observed: it blinks. The period
+has not been measured yet** (expected 1.000 s; to be checked in PulseView on
+D13 and via SysTick `LOAD = 15999`). There are no sensor, UART or I2C drivers
+yet.
 
 ### Toolchain / project setup (done)
 
@@ -49,20 +51,46 @@ firmware/stm32-sensor-node/FreeRTOS/
 | Port handler mapping (SVC/PendSV/SysTick → startup file names) | ✅ done | direct routing: `#define vPortSVCHandler SVC_Handler` etc. |
 | Optional API functions | ✅ done | `INCLUDE_vTaskDelay 1`, `INCLUDE_xTaskDelayUntil 1` (others stay at default 0) |
 
+### Application code (`firmware/stm32-sensor-node/Src/`)
+
+- `main.c`: **temporary bring-up code.** `SystemCoreClockUpdate()`, PA5 set up
+  at register level (GPIOA clock enable, read-modify-write on `MODER`), one
+  blink task created with `xTaskCreateStatic()` (priority 1, static 128-word
+  stack + TCB), toggling PA5 through `GPIOA->BSRR` every 500 ms with
+  `vTaskDelayUntil()`. To be removed when the real sensor task exists.
+  PA5 is also SPI1_SCK in the Phase 2 design.
+- `freertos_callbacks.c`: `vApplicationGetIdleTaskMemory()` (static Idle TCB +
+  stack sized with `configMINIMAL_STACK_SIZE`) and
+  `vApplicationStackOverflowHook()` (raise BASEPRI and loop forever).
+- Footprint from a test link (scratch folder, `-O1`; Keil's own figures may
+  differ slightly): Code 6160 B, RO data 468 B, RAM 3000 B of 128 KB (includes
+  the 1 KB main stack and the 512 B C-library heap reserved by the startup
+  file). No `malloc` in that link's map; to be confirmed on the Keil `.map`.
+
+### Drivers
+
+The course/teacher drivers (ARM University Program, ST Standard Peripheral
+Library, teacher-written I2C) are kept **locally only** in
+`firmware/**/reference/` (git-ignored, outside the Keil project) as reading
+material. GPIO, USART2 and I2C1 drivers will be written from scratch at
+register level; the BMP280 maths will come from the author's own
+`functions.c` after verification against the datasheet. (ADR-0005 to record
+this; not written yet.)
+
 ### Known gaps (real current state, not bugs)
 
 - **CPU clock is 16 MHz (HSI), not 84 MHz.** No PLL/clock-tree setup code
   exists yet. `system_stm32f4xx.c` leaves the chip on HSI after reset
   (`SystemCoreClock = 16000000`). The 84 MHz target in CLAUDE.md is not
   implemented.
-- `vApplicationGetIdleTaskMemory()` (static-only allocation) and
-  `vApplicationStackOverflowHook()` (overflow check method 2) are not
-  implemented yet; the link will fail until they exist.
-  `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
-- No `main.c` yet (must call `SystemCoreClockUpdate()` before
-  `vTaskStartScheduler()`, see ADR-0003).
-- No check yet that the C library's `malloc` isn't pulled in (needs a
-  successful build and a look at the `.map` file).
+- `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
+- Blink period not measured yet; Idle/blink stack high-water marks not read
+  yet (stack sizes of 128 words are starting values).
+- The startup file reserves a 512-byte C-library heap that nothing uses;
+  setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
+  fail loudly.
+- No HardFault handler that exposes the stacked PC and fault registers.
+- No USART2 debug output, no I2C1 driver, no BMP280 module, no PLL setup.
 
 ### Architecture decisions so far
 
@@ -151,3 +179,7 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 - 2026-09-30: Design decisions: sensor is the BMP280 (not BME280); the
   MPU-6050 IMU is dropped; debug logging over USART2 directly from the
   sensor task; task set and priorities fixed (table above).
+- 2026-10-02: First application code: `Src/main.c` (temporary PA5 blink task)
+  and `Src/freertos_callbacks.c`. The kernel builds and links; the blink runs
+  on the board (period not yet measured). Teacher/course drivers moved to a
+  git-ignored `reference/` folder; own register-level drivers planned.
