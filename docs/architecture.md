@@ -4,13 +4,14 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phase 1, RTOS running on the board (temporary blink test)
+## Current status: Phase 1, RTOS running at 84 MHz (temporary blink test)
 
-FreeRTOS builds, links and runs on the Nucleo: one temporary task blinks the
-user LED (LD2 on PA5) from the scheduler. **Observed: it blinks. The period
-has not been measured yet** (expected 1.000 s; to be checked in PulseView on
-D13 and via SysTick `LOAD = 15999`). There are no sensor, UART or I2C drivers
-yet.
+FreeRTOS builds, links and runs on the Nucleo at **84 MHz** (HSI + PLL): one
+temporary task blinks the user LED (LD2 on PA5) from the scheduler. **Observed:
+it blinks at about 1 s by eye; the period has not been measured with an
+instrument yet** (no logic analyzer; to be checked on D13 later). Register
+values and SysTick `LOAD = 83999` were checked in the debugger. There are no
+sensor, UART or I2C drivers yet.
 
 ### Toolchain / project setup (done)
 
@@ -62,8 +63,15 @@ firmware/stm32-sensor-node/FreeRTOS/
 - `freertos_callbacks.c`: `vApplicationGetIdleTaskMemory()` (static Idle TCB +
   stack sized with `configMINIMAL_STACK_SIZE`) and
   `vApplicationStackOverflowHook()` (raise BASEPRI and loop forever).
+- `clock.c` / `clock.h`: `clock_init_84mhz()` takes the CPU from the 16 MHz HSI
+  to 84 MHz through the PLL (ADR-0006). Five steps in order: flash wait
+  states (2) + prefetch + caches, bus prescalers (AHB /1, **APB1 /2 = 42 MHz**,
+  APB2 /1), PLL numbers (M 8, N 168, P /4, source HSI), PLL on + bounded wait
+  for `PLLRDY`, switch + bounded wait for `SWS`. Returns a status code and
+  never hangs; on failure the CPU stays on the HSI. PLL limits are checked
+  with `_Static_assert`. `main()` calls it before `SystemCoreClockUpdate()`.
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
-  6200 B, RO data 472 B, RAM 3000 B of 128 KB (includes the 1 KB main stack
+  6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
   is linked** (confirmed in that map). Keil's static stack report gives 324 B
   for the start-up call chain on the main stack (interrupts not included).
@@ -80,10 +88,10 @@ be written once the drivers exist.)
 
 ### Known gaps (real current state, not bugs)
 
-- **CPU clock is 16 MHz (HSI), not 84 MHz.** No PLL/clock-tree setup code
-  exists yet. `system_stm32f4xx.c` leaves the chip on HSI after reset
-  (`SystemCoreClock = 16000000`). The 84 MHz target in CLAUDE.md is not
-  implemented.
+- **Clock accuracy is that of the HSI (about 1%)**, and the true frequency has
+  not been measured outside the chip. The timeout/error paths of
+  `clock_init_84mhz()` have never been triggered. `SystemCoreClock` reports
+  HCLK only: USART2 and I2C1 must use the 42 MHz APB1 clock.
 - `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
 - Blink period not measured yet (no logic analyzer): the blink looks like 1 s
   by eye only.
@@ -95,7 +103,7 @@ be written once the drivers exist.)
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
-- No USART2 debug output, no I2C1 driver, no BMP280 module, no PLL setup.
+- No USART2 debug output, no I2C1 driver, no BMP280 module.
 
 ### Architecture decisions so far
 
@@ -105,6 +113,7 @@ be written once the drivers exist.)
 - ADR-0004: interrupt priority threshold for FreeRTOS API calls at level 5.
 - ADR-0005: task stacks sized by measurement with a margin; Idle stays at 128
   words.
+- ADR-0006: CPU at 84 MHz from the HSI through the PLL, in its own module.
 
 Below is the target shape for Phase 1, kept here as a near-term plan,
 clearly marked as such.
@@ -155,9 +164,6 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 
 ## Open questions / not yet decided
 
-- Clock source for the PLL: HSI (internal 16 MHz RC) or HSE from the
-  ST-LINK's 8 MHz MCO output (depends on Nucleo board revision / solder
-  bridges).
 - Exact sensor read interval.
 - Whether raw or calibration-compensated BMP280 values are computed
   on-device vs. passed through raw (compensation requires the factory
@@ -194,3 +200,7 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   (blink 27 words; Idle at least 21 words once cross-checked against the
   17-word context size). Recorded as ADR-0005. Real Keil `.map` checked: no
   `malloc`, Code 6200 B, RAM 3000 B.
+- 2026-10-03: `Src/clock.c` added: the CPU now runs at 84 MHz from the HSI
+  through the PLL, written and checked one step at a time on the board
+  (flash wait states, bus prescalers, PLL numbers, PLL start, switch).
+  Recorded as ADR-0006.

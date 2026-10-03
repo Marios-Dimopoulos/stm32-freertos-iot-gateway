@@ -24,6 +24,8 @@
  * masks, and the declaration of SystemCoreClockUpdate(). */
 #include "stm32f4xx.h"
 
+#include "clock.h"
+
 /* ==========================================================================
  * COMPILE-TIME CONSISTENCY CHECK
  * ==========================================================================
@@ -61,6 +63,10 @@ _Static_assert( __NVIC_PRIO_BITS == configPRIO_BITS,
 
 static StackType_t  xBlinkTaskStack[ BLINK_TASK_STACK_WORDS ];
 static StaticTask_t xBlinkTaskTCB;
+
+/* Result of the clock setup, kept where the debugger can see it. volatile so
+ * the compiler does not remove a variable that is only written. */
+static volatile clock_status_t xClockStatus;
 
 /* ==========================================================================
  * LED PIN SETUP (PA5), AT REGISTER LEVEL
@@ -172,11 +178,19 @@ int main( void )
      * ADR-0003 rule: clock setup -> SystemCoreClockUpdate() ->
      * vTaskStartScheduler(), in that order. SystemCoreClockUpdate() READS the
      * RCC registers and stores the real CPU frequency in SystemCoreClock; the
-     * port then derives the SysTick reload value from it. There is no clock
-     * setup code yet, so the chip is still on the 16 MHz HSI oscillator and
-     * this stores 16,000,000 (SysTick LOAD = 15,999). When the PLL setup is
-     * added later, it goes BEFORE this line and nothing else has to change.
+     * port then derives the SysTick reload value from it.
+     *
+     * clock_init_84mhz() moves the CPU from the 16 MHz HSI to 84 MHz through the
+     * PLL (see clock.c). If any step fails it stops and returns an error code,
+     * and the CPU stays on the HSI, so the system still works, only slower.
+     * Either way SystemCoreClockUpdate() below reads what the hardware actually
+     * ended up with: 84,000,000 on success (SysTick LOAD = 83,999), 16,000,000
+     * on failure (LOAD = 15,999). The result is kept in a volatile variable so
+     * the debugger can show it (0 = CLOCK_OK); once USART2 exists it will be
+     * printed.
      */
+    xClockStatus = clock_init_84mhz();
+
     SystemCoreClockUpdate();
 
     prvLedInit();

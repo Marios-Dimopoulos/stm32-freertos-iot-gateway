@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define></Define>
               <Undefine></Undefine>
-              <IncludePath>.\FreeRTOS\include;.\FreeRTOS\portable\GCC\ARM_CM4F;.\FreeRTOS\config</IncludePath>
+              <IncludePath>.\FreeRTOS\include;.\FreeRTOS\portable\GCC\ARM_CM4F;.\FreeRTOS\config;.\Src</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -393,6 +393,11 @@
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Src\main.c</FilePath>
+            </File>
+            <File>
+              <FileName>clock.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\clock.c</FilePath>
             </File>
           </Files>
         </Group>
