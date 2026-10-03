@@ -62,10 +62,11 @@ firmware/stm32-sensor-node/FreeRTOS/
 - `freertos_callbacks.c`: `vApplicationGetIdleTaskMemory()` (static Idle TCB +
   stack sized with `configMINIMAL_STACK_SIZE`) and
   `vApplicationStackOverflowHook()` (raise BASEPRI and loop forever).
-- Footprint from a test link (scratch folder, `-O1`; Keil's own figures may
-  differ slightly): Code 6160 B, RO data 468 B, RAM 3000 B of 128 KB (includes
-  the 1 KB main stack and the 512 B C-library heap reserved by the startup
-  file). No `malloc` in that link's map; to be confirmed on the Keil `.map`.
+- Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
+  6200 B, RO data 472 B, RAM 3000 B of 128 KB (includes the 1 KB main stack
+  and the 512 B C-library heap reserved by the startup file). **No `malloc`
+  is linked** (confirmed in that map). Keil's static stack report gives 324 B
+  for the start-up call chain on the main stack (interrupts not included).
 
 ### Drivers
 
@@ -74,8 +75,8 @@ Library, teacher-written I2C) are kept **locally only** in
 `firmware/**/reference/` (git-ignored, outside the Keil project) as reading
 material. GPIO, USART2 and I2C1 drivers will be written from scratch at
 register level; the BMP280 maths will come from the author's own
-`functions.c` after verification against the datasheet. (ADR-0005 to record
-this; not written yet.)
+`functions.c` after verification against the datasheet. (An ADR for this will
+be written once the drivers exist.)
 
 ### Known gaps (real current state, not bugs)
 
@@ -84,8 +85,12 @@ this; not written yet.)
   (`SystemCoreClock = 16000000`). The 84 MHz target in CLAUDE.md is not
   implemented.
 - `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
-- Blink period not measured yet; Idle/blink stack high-water marks not read
-  yet (stack sizes of 128 words are starting values).
+- Blink period not measured yet (no logic analyzer): the blink looks like 1 s
+  by eye only.
+- Measured stack peaks (ADR-0005): blink 27 words by the `0xA5` pattern; Idle
+  at least 21 words actually written (the pattern said 14, but R4-R11 were
+  saved with the fill value, so the pattern was forged by data). Both arrays
+  are 128 words; `configMINIMAL_STACK_SIZE` stays 128.
 - The startup file reserves a 512-byte C-library heap that nothing uses;
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
@@ -98,6 +103,8 @@ this; not written yet.)
 - ADR-0002: GCC/ARM_CM4F FreeRTOS port with Arm Compiler 6.
 - ADR-0003: RTOS tick derived from `SystemCoreClock`, at 1 kHz.
 - ADR-0004: interrupt priority threshold for FreeRTOS API calls at level 5.
+- ADR-0005: task stacks sized by measurement with a margin; Idle stays at 128
+  words.
 
 Below is the target shape for Phase 1, kept here as a near-term plan,
 clearly marked as such.
@@ -183,3 +190,7 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   and `Src/freertos_callbacks.c`. The kernel builds and links; the blink runs
   on the board (period not yet measured). Teacher/course drivers moved to a
   git-ignored `reference/` folder; own register-level drivers planned.
+- 2026-10-03: Stack usage measured with the `0xA5` pattern in the debugger
+  (blink 27 words; Idle at least 21 words once cross-checked against the
+  17-word context size). Recorded as ADR-0005. Real Keil `.map` checked: no
+  `malloc`, Code 6200 B, RAM 3000 B.

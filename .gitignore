@@ -29,6 +29,7 @@ firmware/**/RTE/_Target_1/
 firmware/**/*.base@*
 firmware/**/JLinkLog.txt
 firmware/**/EWA*.log
+firmware/**/EventRecorderStub.scvd
 
 # Keep: *.uvprojx (the actual project file) and source under Core/, Drivers/
 
