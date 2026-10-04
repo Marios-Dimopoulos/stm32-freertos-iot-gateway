@@ -12,10 +12,14 @@
  *   1) USART2 clock + PA2 as alternate function 7                   <- DONE
  *   2) baud rate (USART2->BRR) and enable (CR1: UE, TE)             <- DONE
  *   3) send one byte (wait for TXE, write DR)                       <- DONE
- *   4) interrupt-driven send with a ring buffer
+ *   4) interrupt-driven send with a ring buffer                      <- 4a DONE
+ *        4a) the buffer, the TX interrupt, uart_write_byte()
+ *        4b) whole-message write with a drop policy and a drop counter
  *   5) a small decimal formatter, no printf and no malloc
  */
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "uart.h"
 #include "stm32f4xx.h"
 
@@ -63,8 +67,13 @@
  *
  * What is left at reset values (as far as I know, to be confirmed in the
  * manual): output type push-pull, speed low, no pull-up/down. That is fine for
- * 115200 baud: the edges are slow. The TX line idles high, the receiver on the
- * ST-LINK side has its own pull-up.
+ * 115200 baud: the edges are slow. No pull-up is needed on PA2: it is a
+ * push-pull OUTPUT, so once the USART is enabled the pin itself drives the idle
+ * level (high) as well as the low level. Pull resistors matter for inputs and
+ * for open-drain outputs (such as I2C), not here. (Between this step and the
+ * USART being enabled in step 2 the level of the pin is not guaranteed by
+ * anything I have checked, so a stray character may reach the terminal at
+ * start-up; it would be harmless.)
  *
  * Expected values afterwards (with the LED setup from main.c already done,
  * which is the case when the scheduler is running):
@@ -169,7 +178,7 @@ static void prvUartConfigure( void )
 }
 
 /* ==========================================================================
- * STEP 3) SEND ONE BYTE (TEMPORARY, BLOCKING)
+ * STEP 4a) INTERRUPT-DRIVEN SEND THROUGH A RING BUFFER
  * ==========================================================================
  *
  * How a byte leaves the chip:
@@ -181,49 +190,121 @@ static void prvUartConfigure( void )
  * As soon as the byte has moved into the shift register, DR is free again and
  * the status flag TXE ("transmit data register empty", USART2->SR bit 7) goes
  * high: the NEXT byte may be written while the previous one is still being
- * sent. Writing DR clears TXE. The other flag, TC (transmission complete, bit
- * 6), rises only after the very last bit has left the wire; it matters when
- * something must wait until everything has really been sent, which a single
- * byte does not need.
+ * sent. Writing DR clears TXE. (The other flag, TC, "transmission complete",
+ * bit 6, rises only after the very last bit has left the wire; it matters when
+ * something must wait until everything has really been sent.) A byte takes 86.8
+ * microseconds on the wire at 115200 baud.
  *
- * So the rule is: wait until TXE = 1, then write DR. One byte takes 86.8
- * microseconds on the wire at 115200 baud, so if the previous byte is still in
- * the shift register the wait can last up to about that long.
+ * Polling TXE in a loop would keep the CPU busy for those 86.8 microseconds per
+ * byte. Instead, tasks drop their bytes into a BUFFER and return at once, and
+ * the USART tells the CPU, with an interrupt, each time it can take the next
+ * byte:
  *
- * The wait is bounded, like every wait in this project: a counter of loop
- * passes, not a real time. If the USART were ever not enabled, TXE would never
- * rise and a bare `while( !TXE )` would freeze the calling task forever (and,
- * since it never blocks, starve every task below it, including Idle). A pass is
- * about 10 CPU cycles by the rough estimate used elsewhere: about 0.12
- * microseconds at 84 MHz (0.6 at 16 MHz), so 10000 passes are roughly 1.2 ms at
- * 84 MHz, some 14 times a whole frame, and still short enough not to matter.
- * On a timeout the byte is dropped and an error is returned.
+ *   task:   uart_write_byte() -> copy into the buffer, enable the TXE interrupt
+ *   ISR:    TXE interrupt -> take the next byte from the buffer, write it to DR;
+ *           when the buffer is empty, disable the TXE interrupt
  *
- * This is a busy-wait loop (the CPU spins while the hardware sends), written
- * "to get something working first" and therefore TEMPORARY: it is replaced by
- * the interrupt-driven sender in step 4. Until then it is only safe from one
- * task (see uart.h).
+ * The RING BUFFER is an array with two counters:
+ *   ulTxHead  how many bytes have been PUT in, in total (changed by tasks only)
+ *   ulTxTail  how many bytes have been TAKEN out, in total (changed by the ISR only)
+ * The counters are not wrapped: they simply keep counting (an unsigned 32-bit
+ * counter wraps by itself, and 2^32 is a multiple of the buffer size, so the
+ * arithmetic stays correct). The position inside the array is the counter AND
+ * (size - 1), which is why the size must be a power of two (checked below). Then:
+ *   bytes waiting  = head - tail          (right even across the wrap)
+ *   empty          = head == tail
+ *   full           = head - tail == size  (every slot is usable)
  *
- * The transmit path itself is not protected against a second caller: two tasks
- * could both see TXE high, and the second write to DR would overwrite the
- * first byte.
+ * 256 bytes: the planned messages are about 100 bytes once per second, which
+ * the interrupt drains in about 9 ms (100 x 86.8 microseconds), under 1 % of the
+ * line's capacity. The buffer is a static array, so its RAM is declared in our
+ * code (ADR-0001).
+ *
+ * SHARED STATE AND HOW IT IS PROTECTED (ADR-0004). Tasks and the ISR share the
+ * buffer, the two counters and the USART2->CR1 register (the task sets TXEIE, the
+ * ISR clears it; each is a read-modify-write, the kind of operation an interrupt
+ * can split and lose an update of). The task side therefore runs inside a
+ * critical section (taskENTER_CRITICAL: BASEPRI is raised to the FreeRTOS line,
+ * level 5). Interrupts at level 5 or numerically higher are then held back for
+ * the few instructions of the section, so the ISR cannot run in the middle of the
+ * task's update. For that to work the USART2 interrupt MUST sit at level >= 5:
+ * it is set to level 10 (checked at build time), deliberately less urgent than
+ * the future SPI/DMA interrupt. The reverse case cannot happen: a task never
+ * runs while an ISR is in progress. The ISR itself calls no FreeRTOS function.
+ * The section also contains a compiler memory barrier, so the byte is really in
+ * the array before the head counter moves.
+ *
+ * Two rules that come from using the FreeRTOS critical section:
+ *   - taskENTER_CRITICAL() asserts if called from an interrupt (port.c), so
+ *     uart_write_byte() is for tasks only;
+ *   - before the scheduler starts, the port's nesting counter holds a dummy
+ *     value (0xAAAAAAAA), so a section entered then would never lower BASEPRI
+ *     again until the scheduler starts. Call it from tasks, after the start.
+ *
+ * Why the ISR must turn TXEIE off when the buffer is empty: TXE stays 1 as long
+ * as nothing is being sent, so with TXEIE still set the interrupt would fire
+ * again immediately, forever, and the CPU would never leave the handler.
+ *
+ * The handler's name is fixed by the vector table in the startup file
+ * (USART2_IRQHandler, a [WEAK] placeholder there): defining a function with that
+ * exact name makes the linker use ours. Its priority is set with
+ * NVIC_SetPriority(), which takes the plain level (the CMSIS function does the
+ * shift into the top bits that BASEPRI's encoding needs).
  */
-#define UART_TX_TIMEOUT_PASSES    ( 10000U )
+#define UART_TX_BUFFER_SIZE    ( 256U )
+#define UART_IRQ_PRIORITY      ( 10U )
 
-uart_status_t uart_write_byte_blocking( uint8_t ucByte )
+_Static_assert( ( UART_TX_BUFFER_SIZE & ( UART_TX_BUFFER_SIZE - 1U ) ) == 0U,
+                "the TX buffer size must be a power of two" );
+_Static_assert( UART_IRQ_PRIORITY >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY,
+                "the USART2 interrupt must be at or below the FreeRTOS line (ADR-0004), "
+                "or the critical section will not protect the shared state" );
+_Static_assert( UART_IRQ_PRIORITY < ( 1U << __NVIC_PRIO_BITS ),
+                "interrupt level out of range for this chip" );
+
+static uint8_t ucTxBuffer[ UART_TX_BUFFER_SIZE ];
+static volatile uint32_t ulTxHead;    /* total bytes put in:   changed by tasks, inside the critical section */
+static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the ISR only */
+
+uart_status_t uart_write_byte( uint8_t ucByte )
 {
-    uint32_t ulTries;
+    uart_status_t xStatus = UART_OK;
 
-    for( ulTries = UART_TX_TIMEOUT_PASSES; ulTries > 0U; ulTries-- )
+    taskENTER_CRITICAL();
     {
-        if( ( USART2->SR & USART_SR_TXE ) != 0U )
+        if( ( ulTxHead - ulTxTail ) >= UART_TX_BUFFER_SIZE )
         {
-            USART2->DR = ucByte;
-            return UART_OK;
+            xStatus = UART_ERR_FULL;
+        }
+        else
+        {
+            ucTxBuffer[ ulTxHead & ( UART_TX_BUFFER_SIZE - 1U ) ] = ucByte;
+            ulTxHead++;
+            USART2->CR1 |= USART_CR1_TXEIE;
         }
     }
+    taskEXIT_CRITICAL();
 
-    return UART_ERR_TIMEOUT;
+    return xStatus;
+}
+
+void USART2_IRQHandler( void )
+{
+    /* Only the TX interrupt is enabled, so TXE is expected to be set. It is
+     * checked anyway: writing DR when the register is not empty would overwrite
+     * a byte that is still waiting to be moved to the shift register. */
+    if( ( USART2->SR & USART_SR_TXE ) != 0U )
+    {
+        if( ulTxTail != ulTxHead )
+        {
+            USART2->DR = ucTxBuffer[ ulTxTail & ( UART_TX_BUFFER_SIZE - 1U ) ];
+            ulTxTail++;
+        }
+        else
+        {
+            USART2->CR1 &= ~USART_CR1_TXEIE;
+        }
+    }
 }
 
 /* ==========================================================================
@@ -231,8 +312,13 @@ uart_status_t uart_write_byte_blocking( uint8_t ucByte )
  * ========================================================================== */
 void uart_init( void )
 {
-    /* Steps 1) and 2). Step 3) is uart_write_byte_blocking() above; step 4)
-     * onward are added one at a time. */
+    /* Steps 1) and 2): clocks, pin, baud rate, transmitter on. The TX interrupt
+     * itself stays off (TXEIE = 0) until the first byte is queued. */
     prvUartPinsAndClocks();
     prvUartConfigure();
+
+    /* Step 4a): the interrupt. Priority first, then enable, so it can never run
+     * at the reset priority 0 (above the FreeRTOS line) even for an instant. */
+    NVIC_SetPriority( USART2_IRQn, UART_IRQ_PRIORITY );
+    NVIC_EnableIRQ( USART2_IRQn );
 }

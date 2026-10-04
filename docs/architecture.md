@@ -11,8 +11,8 @@ temporary task blinks the user LED (LD2 on PA5) from the scheduler. **Observed:
 it blinks at about 1 s by eye; the period has not been measured with an
 instrument yet** (no logic analyzer; to be checked on D13 later). Register
 values and SysTick `LOAD = 83999` were checked in the debugger. USART2 sends
-one `.` per LED change at 115200 baud over the ST-LINK virtual COM port
-(verified in Tera Term: two dots per second). There are no sensor or I2C
+one `.` per LED change at 115200 baud over the ST-LINK virtual COM port, by
+interrupt through a ring buffer (verified in Tera Term: two dots per second). There are no sensor or I2C
 drivers yet.
 
 ### Toolchain / project setup (done)
@@ -77,10 +77,13 @@ firmware/stm32-sensor-node/FreeRTOS/
   alternate function (AFR written before MODER), 8N1 at 115200 with the
   divisor `BRR = round(PCLK1 / baud)` computed from the real clock registers
   (365 = 0x16D at 42 MHz; it would still be readable on the HSI), and
-  `uart_write_byte_blocking()`: a **temporary** busy-wait on `TXE` with a
-  bounded wait, safe from one task only. The blink task calls it as a sign of
-  life. Planned: an interrupt-driven sender with a ring buffer, then a decimal
-  formatter (no `printf`/`malloc`). The output is meant to stay in the finished
+  `uart_write_byte()`: copies the byte into a 256-byte static ring buffer
+  inside a FreeRTOS critical section and sets `TXEIE`; `USART2_IRQHandler`
+  (level 10, i.e. at or below the FreeRTOS line, checked with
+  `_Static_assert`) drains it and clears `TXEIE` when empty. Tasks only, after
+  the scheduler has started. The blink task calls it as a sign of life.
+  Planned next: a whole-message write with a drop policy and drop counter, then
+  a decimal formatter (no `printf`/`malloc`). The output is meant to stay in the finished
   program (BMP280 readings printed in Tera Term, for debugging).
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
@@ -115,9 +118,9 @@ be written once the drivers exist.)
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
-- USART2 only sends single bytes through the temporary blocking call: no
-  ring buffer or interrupt-driven send, no string or number printing yet.
-  No I2C1 driver, no BMP280 module.
+- USART2 sends single bytes only (interrupt-driven, per-byte drop when the
+  buffer is full): no whole-message write, drop counter, or number printing
+  yet. No I2C1 driver, no BMP280 module.
 
 ### Architecture decisions so far
 
@@ -222,3 +225,6 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   115200 baud from the real APB1 clock, and a temporary blocking
   `uart_write_byte_blocking()`. Verified on the board: two dots per second in
   Tera Term.
+- 2026-10-04: USART2 send is now interrupt-driven: ring buffer + TX
+  interrupt (level 10) replace the temporary blocking call. Verified on the
+  board: the dots still arrive at two per second.
