@@ -25,6 +25,7 @@
 #include "stm32f4xx.h"
 
 #include "clock.h"
+#include "uart.h"
 
 /* ==========================================================================
  * COMPILE-TIME CONSISTENCY CHECK
@@ -156,9 +157,11 @@ static void prvBlinkTask( void * pvParameters )
     for( ;; )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
+        ( void ) uart_write_byte_blocking( '.' );     /* TEMPORARY sign of life for the UART */
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */
+        ( void ) uart_write_byte_blocking( '.' );     /* TEMPORARY sign of life for the UART */
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
     }
 }
@@ -194,6 +197,12 @@ int main( void )
     SystemCoreClockUpdate();
 
     prvLedInit();
+
+    /* USART2 debug output, built step by step (see uart.c). It goes after the
+     * clock set-up because its baud rate, added in a later step, depends on the
+     * final clock. So far it enables the clocks, sets up the TX pin and
+     * configures 115200 baud with the transmitter on, but sends nothing yet. */
+    uart_init();
 
     /*
      * Create the blink task. Arguments, in order: the task function, a name

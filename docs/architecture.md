@@ -10,8 +10,10 @@ FreeRTOS builds, links and runs on the Nucleo at **84 MHz** (HSI + PLL): one
 temporary task blinks the user LED (LD2 on PA5) from the scheduler. **Observed:
 it blinks at about 1 s by eye; the period has not been measured with an
 instrument yet** (no logic analyzer; to be checked on D13 later). Register
-values and SysTick `LOAD = 83999` were checked in the debugger. There are no
-sensor, UART or I2C drivers yet.
+values and SysTick `LOAD = 83999` were checked in the debugger. USART2 sends
+one `.` per LED change at 115200 baud over the ST-LINK virtual COM port
+(verified in Tera Term: two dots per second). There are no sensor or I2C
+drivers yet.
 
 ### Toolchain / project setup (done)
 
@@ -33,7 +35,7 @@ firmware/stm32-sensor-node/FreeRTOS/
 ```
 
 - Include paths: `.\FreeRTOS\include`, `.\FreeRTOS\portable\GCC\ARM_CM4F`,
-  `.\FreeRTOS\config`.
+  `.\FreeRTOS\config`, `.\Src`.
 - **Port:** `GCC/ARM_CM4F`, not `RVDS/ARM_CM4F`. The RVDS port uses armcc
   embedded assembler, which Arm Compiler 6 doesn't support. See ADR-0002.
 - **No `heap_x.c`** is compiled on purpose, so `pvPortMalloc()` does not exist.
@@ -70,6 +72,16 @@ firmware/stm32-sensor-node/FreeRTOS/
   for `PLLRDY`, switch + bounded wait for `SWS`. Returns a status code and
   never hangs; on failure the CPU stays on the HSI. PLL limits are checked
   with `_Static_assert`. `main()` calls it before `SystemCoreClockUpdate()`.
+- `uart.c` / `uart.h`: our own register-level USART2 driver (TX only, PA2 =
+  AF7), built one step at a time. Done: USART2 and GPIOA clocks, PA2 as
+  alternate function (AFR written before MODER), 8N1 at 115200 with the
+  divisor `BRR = round(PCLK1 / baud)` computed from the real clock registers
+  (365 = 0x16D at 42 MHz; it would still be readable on the HSI), and
+  `uart_write_byte_blocking()`: a **temporary** busy-wait on `TXE` with a
+  bounded wait, safe from one task only. The blink task calls it as a sign of
+  life. Planned: an interrupt-driven sender with a ring buffer, then a decimal
+  formatter (no `printf`/`malloc`). The output is meant to stay in the finished
+  program (BMP280 readings printed in Tera Term, for debugging).
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
@@ -103,7 +115,9 @@ be written once the drivers exist.)
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
-- No USART2 debug output, no I2C1 driver, no BMP280 module.
+- USART2 only sends single bytes through the temporary blocking call: no
+  ring buffer or interrupt-driven send, no string or number printing yet.
+  No I2C1 driver, no BMP280 module.
 
 ### Architecture decisions so far
 
@@ -204,3 +218,7 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   through the PLL, written and checked one step at a time on the board
   (flash wait states, bus prescalers, PLL numbers, PLL start, switch).
   Recorded as ADR-0006.
+- 2026-10-04: `Src/uart.c` added (own USART2 driver, TX): clocks and PA2,
+  115200 baud from the real APB1 clock, and a temporary blocking
+  `uart_write_byte_blocking()`. Verified on the board: two dots per second in
+  Tera Term.
