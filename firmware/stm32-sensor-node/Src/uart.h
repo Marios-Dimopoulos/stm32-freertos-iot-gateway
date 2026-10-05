@@ -4,8 +4,8 @@
  *
  * WORK IN PROGRESS, built one step at a time (see uart.c). So far uart_init()
  * sets up the clocks and the TX pin, configures 115200 8N1 and enables the
- * transmitter, and bytes are sent in the background by the TX interrupt
- * through a ring buffer.
+ * transmitter, and messages are sent in the background by the TX interrupt
+ * through a ring buffer, whole or not at all (with a drop counter).
  */
 
 #ifndef UART_H
@@ -16,7 +16,7 @@
 typedef enum
 {
     UART_OK = 0,
-    UART_ERR_FULL       /* the transmit buffer had no room; the byte was NOT stored */
+    UART_ERR_FULL       /* not enough room in the transmit buffer: NOTHING was stored (counted as a drop) */
 } uart_status_t;
 
 /* Call once from main(), before the scheduler starts and AFTER
@@ -25,17 +25,28 @@ typedef enum
 void uart_init( void );
 
 /*
- * Queues one byte for transmission and returns immediately: the byte is copied
- * into a ring buffer and the USART2 interrupt sends it in the background.
+ * Queues a message for transmission and returns immediately: the bytes are
+ * copied into a ring buffer and the USART2 interrupt sends them in the
+ * background.
+ *
+ * ALL OR NOTHING. If the whole message fits it is stored completely; if it does
+ * not, NOTHING is stored, the drop counter is incremented and UART_ERR_FULL is
+ * returned. A message is never cut in the middle, and messages from different
+ * tasks never interleave inside the buffer. A message longer than the whole
+ * buffer (256 bytes) can never fit and is always dropped. A length of 0 does
+ * nothing.
  *
  * Call it from TASKS only, and only after the scheduler has started: it uses a
  * FreeRTOS critical section, which must not be used from an interrupt handler
- * and is not valid before vTaskStartScheduler(). Several tasks may call it;
- * each BYTE is stored atomically, but bytes of different callers can still
- * interleave in the text (whole-message writes come in a later step).
- *
- * If the buffer is full the byte is dropped and UART_ERR_FULL is returned.
+ * and is not valid before vTaskStartScheduler(). It never waits.
  */
-uart_status_t uart_write_byte( uint8_t ucByte );
+uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength );
+
+/* Same, for a zero-terminated string (the terminator is not sent). The pointer
+ * must not be NULL. A newline for Tera Term is "\r\n". */
+uart_status_t uart_write_string( const char * pcText );
+
+/* Number of messages dropped so far because the buffer had no room. */
+uint32_t uart_dropped_messages( void );
 
 #endif /* UART_H */

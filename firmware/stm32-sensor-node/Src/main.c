@@ -157,11 +157,12 @@ static void prvBlinkTask( void * pvParameters )
     for( ;; )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
-        ( void ) uart_write_byte( '.' );     /* TEMPORARY sign of life for the UART */
+        ( void ) uart_write_string( "LED on\r\n" );     /* TEMPORARY test of the UART */
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */
-        ( void ) uart_write_byte( '.' );     /* TEMPORARY sign of life for the UART */
+        ( void ) uart_write_string( "LED off\r\n" );    /* TEMPORARY test of the UART */
+
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
     }
 }
@@ -202,7 +203,7 @@ int main( void )
      * clock set-up because its baud rate, added in a later step, depends on the
      * final clock. So far it enables the clocks, sets up the TX pin and
      * configures 115200 baud with the transmitter on and sets up the TX interrupt
-     * (bytes are queued with uart_write_byte() from tasks). */
+     * (messages are queued with uart_write() from tasks). */
     uart_init();
 
     /*

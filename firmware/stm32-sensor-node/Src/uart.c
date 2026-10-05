@@ -12,8 +12,8 @@
  *   1) USART2 clock + PA2 as alternate function 7                   <- DONE
  *   2) baud rate (USART2->BRR) and enable (CR1: UE, TE)             <- DONE
  *   3) send one byte (wait for TXE, write DR)                       <- DONE
- *   4) interrupt-driven send with a ring buffer                      <- 4a DONE
- *        4a) the buffer, the TX interrupt, uart_write_byte()
+ *   4) interrupt-driven send with a ring buffer                      <- DONE
+ *        4a) the buffer, the TX interrupt
  *        4b) whole-message write with a drop policy and a drop counter
  *   5) a small decimal formatter, no printf and no malloc
  */
@@ -200,7 +200,7 @@ static void prvUartConfigure( void )
  * the USART tells the CPU, with an interrupt, each time it can take the next
  * byte:
  *
- *   task:   uart_write_byte() -> copy into the buffer, enable the TXE interrupt
+ *   task:   uart_write() -> copy the message into the buffer, enable the TXE interrupt
  *   ISR:    TXE interrupt -> take the next byte from the buffer, write it to DR;
  *           when the buffer is empty, disable the TXE interrupt
  *
@@ -236,7 +236,7 @@ static void prvUartConfigure( void )
  *
  * Two rules that come from using the FreeRTOS critical section:
  *   - taskENTER_CRITICAL() asserts if called from an interrupt (port.c), so
- *     uart_write_byte() is for tasks only;
+ *     uart_write() is for tasks only;
  *   - before the scheduler starts, the port's nesting counter holds a dummy
  *     value (0xAAAAAAAA), so a section entered then would never lower BASEPRI
  *     again until the scheduler starts. Call it from tasks, after the start.
@@ -266,26 +266,94 @@ static uint8_t ucTxBuffer[ UART_TX_BUFFER_SIZE ];
 static volatile uint32_t ulTxHead;    /* total bytes put in:   changed by tasks, inside the critical section */
 static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the ISR only */
 
-uart_status_t uart_write_byte( uint8_t ucByte )
+/*
+ * STEP 4b) WHOLE MESSAGES AND THE DROP POLICY
+ * -------------------------------------------
+ *
+ * What if the buffer is full? Under the planned load (about 100 bytes once a
+ * second, drained in about 9 ms) it practically never is, but a burst of
+ * messages written back to back (a start-up banner, an error printed in a loop)
+ * can write much faster than the line sends (11.5 KB/s). The options were: wait
+ * for room (a busy-wait again, in the task that should be doing the real work),
+ * block on a semaphore (more RTOS machinery), or DROP. Dropping never delays the
+ * caller, which is the whole point of the buffer.
+ *
+ * It drops the WHOLE message, never part of it: a line cut in the middle would
+ * be unreadable and look like a bug. So the free space is checked first, for the
+ * full length, and only then is anything copied. The check and the copy sit in
+ * ONE critical section, so no other task can take the space in between, and the
+ * ISR (which only frees space) cannot make the check wrong in a dangerous
+ * direction. Every drop is counted (ulTxDroppedMessages), so the loss is visible
+ * instead of silent, and uart_dropped_messages() makes the number available to be
+ * printed later.
+ *
+ * The section lasts as long as the copy loop. The compiled loop is about 6 to 7
+ * instructions per byte, so roughly 10 cycles per byte once loads and stores are
+ * counted: 100 bytes take around 1000 cycles, i.e. about 12 microseconds at
+ * 84 MHz (an estimate from the disassembly, not measured). During it the
+ * interrupts at level 5 and above numerically, SysTick included, are held back;
+ * a tick would be delayed by that much. That is acceptable for debug messages of
+ * this size. The longest possible message is the buffer size (256 bytes, about
+ * 30 microseconds).
+ *
+ * Free space = size - (head - tail). The unwrapped counters make this exact even
+ * after they overflow: unsigned subtraction wraps correctly. Inside the critical
+ * section the ISR cannot run, so tail cannot move during the calculation.
+ */
+static volatile uint32_t ulTxDroppedMessages;
+
+uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength )
 {
     uart_status_t xStatus = UART_OK;
+    uint32_t ulIndex;
+    uint32_t ulHead;
 
     taskENTER_CRITICAL();
     {
-        if( ( ulTxHead - ulTxTail ) >= UART_TX_BUFFER_SIZE )
+        ulHead = ulTxHead;    /* read once: ulTxHead is volatile, and inside the loop it would be re-read for every byte */
+
+        if( ulLength > ( UART_TX_BUFFER_SIZE - ( ulHead - ulTxTail ) ) )
         {
+            ulTxDroppedMessages++;
             xStatus = UART_ERR_FULL;
+        }
+        else if( ulLength > 0U )
+        {
+            for( ulIndex = 0U; ulIndex < ulLength; ulIndex++ )
+            {
+                ucTxBuffer[ ( ulHead + ulIndex ) & ( UART_TX_BUFFER_SIZE - 1U ) ] = pucData[ ulIndex ];
+            }
+
+            ulTxHead = ulHead + ulLength;
+            USART2->CR1 |= USART_CR1_TXEIE;
         }
         else
         {
-            ucTxBuffer[ ulTxHead & ( UART_TX_BUFFER_SIZE - 1U ) ] = ucByte;
-            ulTxHead++;
-            USART2->CR1 |= USART_CR1_TXEIE;
+            /* Zero length: nothing to do. */
         }
     }
     taskEXIT_CRITICAL();
 
     return xStatus;
+}
+
+uart_status_t uart_write_string( const char * pcText )
+{
+    uint32_t ulLength = 0U;
+
+    configASSERT( pcText != NULL );
+
+    while( pcText[ ulLength ] != '\0' )
+    {
+        ulLength++;
+    }
+
+    return uart_write( ( const uint8_t * ) pcText, ulLength );
+}
+
+uint32_t uart_dropped_messages( void )
+{
+    return ulTxDroppedMessages;
 }
 
 void USART2_IRQHandler( void )

@@ -11,9 +11,10 @@ temporary task blinks the user LED (LD2 on PA5) from the scheduler. **Observed:
 it blinks at about 1 s by eye; the period has not been measured with an
 instrument yet** (no logic analyzer; to be checked on D13 later). Register
 values and SysTick `LOAD = 83999` were checked in the debugger. USART2 sends
-one `.` per LED change at 115200 baud over the ST-LINK virtual COM port, by
-interrupt through a ring buffer (verified in Tera Term: two dots per second). There are no sensor or I2C
-drivers yet.
+`LED on` / `LED off` lines at 115200 baud over the ST-LINK virtual COM port, by
+interrupt through a ring buffer, whole messages or nothing (verified in Tera
+Term, including the drop behaviour when the buffer is full). There are no
+sensor or I2C drivers yet.
 
 ### Toolchain / project setup (done)
 
@@ -77,14 +78,17 @@ firmware/stm32-sensor-node/FreeRTOS/
   alternate function (AFR written before MODER), 8N1 at 115200 with the
   divisor `BRR = round(PCLK1 / baud)` computed from the real clock registers
   (365 = 0x16D at 42 MHz; it would still be readable on the HSI), and
-  `uart_write_byte()`: copies the byte into a 256-byte static ring buffer
-  inside a FreeRTOS critical section and sets `TXEIE`; `USART2_IRQHandler`
-  (level 10, i.e. at or below the FreeRTOS line, checked with
-  `_Static_assert`) drains it and clears `TXEIE` when empty. Tasks only, after
-  the scheduler has started. The blink task calls it as a sign of life.
-  Planned next: a whole-message write with a drop policy and drop counter, then
-  a decimal formatter (no `printf`/`malloc`). The output is meant to stay in the finished
-  program (BMP280 readings printed in Tera Term, for debugging).
+  `uart_write()` / `uart_write_string()`: copy a whole message into a 256-byte
+  static ring buffer inside one FreeRTOS critical section and set `TXEIE`;
+  `USART2_IRQHandler` (level 10, i.e. at or below the FreeRTOS line, checked
+  with `_Static_assert`) drains it and clears `TXEIE` when empty. **All or
+  nothing:** if the message does not fit, nothing is stored, the drop counter
+  (`uart_dropped_messages()`) is incremented and `UART_ERR_FULL` is returned, so
+  a line is never cut and tasks' messages never interleave. Never waits. Tasks
+  only, after the scheduler has started. The blink task prints `LED on/off` as a
+  temporary sign of life. Planned next: a decimal formatter (no
+  `printf`/`malloc`). The output is meant to stay in the finished program (BMP280
+  readings printed in Tera Term, for debugging).
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
@@ -118,9 +122,9 @@ be written once the drivers exist.)
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
-- USART2 sends single bytes only (interrupt-driven, per-byte drop when the
-  buffer is full): no whole-message write, drop counter, or number printing
-  yet. No I2C1 driver, no BMP280 module.
+- USART2 has no number printing yet, and nothing prints the drop counter. The
+  drop policy was verified with a temporary burst test (removed). No I2C1
+  driver, no BMP280 module.
 
 ### Architecture decisions so far
 
@@ -228,3 +232,7 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 - 2026-10-04: USART2 send is now interrupt-driven: ring buffer + TX
   interrupt (level 10) replace the temporary blocking call. Verified on the
   board: the dots still arrive at two per second.
+- 2026-10-05: USART2 writes are now whole messages (`uart_write`,
+  `uart_write_string`) with a drop counter. Verified on the board with a
+  burst of three 102-byte lines: two arrived complete, the third was dropped
+  whole each second.
