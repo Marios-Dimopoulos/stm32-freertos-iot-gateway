@@ -404,6 +404,11 @@
               <FileType>1</FileType>
               <FilePath>.\Src\uart.c</FilePath>
             </File>
+            <File>
+              <FileName>i2c.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\i2c.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

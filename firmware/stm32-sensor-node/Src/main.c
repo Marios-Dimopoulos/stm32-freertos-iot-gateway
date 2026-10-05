@@ -26,6 +26,7 @@
 
 #include "clock.h"
 #include "uart.h"
+#include "i2c.h"
 
 /* ==========================================================================
  * COMPILE-TIME CONSISTENCY CHECK
@@ -205,6 +206,11 @@ int main( void )
      * configures 115200 baud with the transmitter on and sets up the TX interrupt
      * (messages are queued with uart_write() from tasks). */
     uart_init();
+
+    /* I2C1 for the BMP280, built step by step (see i2c.c). So far it only
+     * enables the clocks, resets the peripheral and sets up PB8/PB9; nothing is
+     * transferred yet. */
+    i2c_init();
 
     /*
      * Create the blink task. Arguments, in order: the task function, a name

@@ -89,6 +89,15 @@ firmware/stm32-sensor-node/FreeRTOS/
   temporary sign of life. Planned next: a decimal formatter (no
   `printf`/`malloc`). The output is meant to stay in the finished program (BMP280
   readings printed in Tera Term, for debugging).
+- `i2c.c` / `i2c.h`: our own register-level I2C1 master driver for the BMP280
+  (PB8 = SCL, PB9 = SDA, AF4), built one step at a time. Done so far (step 1):
+  GPIOB and I2C1 clocks, a software reset of I2C1, and the pins as open-drain
+  alternate function with the internal pull-up as a backup (MODER written
+  last). Not yet: timing, enable, transfers. Design decisions (register API,
+  7-bit address, distinct error codes, tick-based bounded polling, critical
+  section for the time-critical receive bit, single owner without mutex,
+  self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; an ADR
+  will follow once the driver works.
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
@@ -236,3 +245,5 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   `uart_write_string`) with a drop counter. Verified on the board with a
   burst of three 102-byte lines: two arrived complete, the third was dropped
   whole each second.
+- 2026-10-05: `Src/i2c.c` added (step 1: clocks, reset, pins). Register values
+  checked in the debugger.
