@@ -20,13 +20,15 @@
  * Steps, in the order they are built and checked on the board:
  *
  *   1) clocks, peripheral reset, pins (PB8/PB9 = AF4, open-drain)      <- DONE
- *   2) timing (CR2.FREQ, CCR, TRISE) and enable (CR1.PE)
- *   3) probe: START + address, tell ACK from NACK (testable without the sensor)
+ *   2) timing (CR2.FREQ, CCR, TRISE) and enable (CR1.PE)               <- DONE
+ *   3) probe: START + address, tell ACK from NACK (testable without the sensor)   <- DONE
  *   4) write to a register
  *   5) read from a register (1 byte, then N bytes) -> chip ID 0x58
  *   6) error handling and recovery, tick-based timeouts
  */
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "i2c.h"
 #include "stm32f4xx.h"
 
@@ -123,10 +125,233 @@ static void prvI2cClocksResetAndPins( void )
 }
 
 /* ==========================================================================
+ * STEP 2) TIMING AND ENABLE
+ * ==========================================================================
+ *
+ * The peripheral generates the SCL ticks from its input clock (PCLK1, the APB1
+ * clock), so it has to be told that clock's frequency and the speed we want. Three
+ * registers, with the formulas from the reference manual:
+ *
+ *   CR2.FREQ   bits 5:0  PCLK1 in MHz, as a whole number (valid 2..50 MHz).
+ *                        42 MHz -> 42.  The peripheral uses it to derive its
+ *                        internal timing (and to validate TRISE).
+ *   CCR        bits 11:0 the clock divisor. In standard mode (bit F/S = 0) SCL
+ *                        is high for CCR clocks of PCLK1 and low for CCR clocks:
+ *                        a period of 2 * CCR * Tpclk1, so
+ *                            CCR = PCLK1 / (2 * 100 kHz) = 42 MHz / 200 kHz = 210.
+ *                        100 kHz -> a bit lasts 10 microseconds.
+ *   TRISE      bits 5:0  the maximum rise time of SCL/SDA, in PCLK1 clocks, plus
+ *                        one. Standard mode allows 1000 ns, i.e. 1000 ns / 23.8 ns
+ *                        = 42 clocks, so TRISE = 42 + 1 = 43 (= FREQ + 1). It does
+ *                        not slow anything down: it only tells the peripheral how
+ *                        long to wait for SCL to actually rise before it starts
+ *                        counting the high time, because SCL is lifted by the
+ *                        pull-up resistor and rises slowly, and a slave may hold it
+ *                        low (clock stretching).
+ *
+ * PCLK1 is computed from the real clock registers, exactly as in uart.c (the
+ * CMSIS SystemCoreClock is HCLK, and APB1 sits behind its own prescaler), so the
+ * result is right whatever clock the system ended up with. This is why i2c_init()
+ * must run AFTER SystemCoreClockUpdate().
+ *
+ * CCR and TRISE can only be written while the peripheral is DISABLED (PE = 0);
+ * after the reset in step 1 it is. PE is set LAST, once everything is in place.
+ *
+ * Other registers:
+ *   CR2   is ASSIGNED, so its other fields (interrupt enables, DMA, LAST) are 0:
+ *         this driver polls, with no interrupts and no DMA.
+ *   OAR1  our own slave address. A master does not use one, but the reference manual
+ *         asks software to keep bit 14 of this register at 1, and the ST library
+ *         does that too (it writes 0x4000 | own address). We write exactly that,
+ *         with a zero address.
+ *   CR1.ACK, START, STOP are not touched here: ACK is cleared by the hardware
+ *         while PE = 0 and is managed per transaction when receiving (step 5).
+ *
+ * A bad clock must not be accepted silently: if PCLK1 were outside 2..50 MHz or CCR
+ * under its minimum of 4, the bus would be mis-timed. This cannot be checked at build
+ * time (the value comes from the registers at run time), so it is an assertion: a
+ * wrong clock set-up is a programming error, not something to recover from.
+ *
+ * Expected values afterwards (I2C1 base 0x40005400):
+ *   CR1    (0x40005400) = 0x00000001   PE
+ *   CR2    (0x40005404) = 0x0000002A   FREQ = 42
+ *   OAR1   (0x40005408) = 0x00004000
+ *   CCR    (0x4000541C) = 0x000000D2   210, standard mode (F/S = 0)
+ *   TRISE  (0x40005420) = 0x0000002B   43
+ *   SR1    (0x40005414) = 0x00000000
+ *   SR2    (0x40005418) = 0x00000000   not busy, not master (BUSY would mean one of
+ *                                      the lines is being held low)
+ */
+#define I2C_BUS_SPEED_HZ        ( 100000U )
+#define I2C_OAR1_KEEP_AT_ONE    ( 1UL << 14 )    /* reference manual: "should always be kept at 1 by software" */
+
+static void prvI2cTimingAndEnable( void )
+{
+    uint32_t ulPclk1Hz;
+    uint32_t ulFreqMhz;
+    uint32_t ulCcr;
+
+    ulPclk1Hz = SystemCoreClock >> APBPrescTable[ ( RCC->CFGR & RCC_CFGR_PPRE1 ) >> RCC_CFGR_PPRE1_Pos ];
+    ulFreqMhz = ulPclk1Hz / 1000000U;
+    ulCcr = ulPclk1Hz / ( 2U * I2C_BUS_SPEED_HZ );
+
+    configASSERT( ( ulFreqMhz >= 2U ) && ( ulFreqMhz <= 50U ) );
+    configASSERT( ulCcr >= 4U );
+
+    I2C1->CR1 &= ~I2C_CR1_PE;
+
+    I2C1->CR2 = ulFreqMhz;
+    I2C1->CCR = ulCcr;
+    I2C1->TRISE = ulFreqMhz + 1U;
+    I2C1->OAR1 = I2C_OAR1_KEEP_AT_ONE;
+
+    I2C1->CR1 |= I2C_CR1_PE;
+}
+
+/* ==========================================================================
+ * STEP 3) THE PROBE: START + ADDRESS, ACK OR NACK
+ * ==========================================================================
+ *
+ * On the wire (see the protocol notes): START, then the address byte (7-bit
+ * address plus the R/W bit, here 0 = write), then the 9th clock on which the
+ * addressed device pulls SDA low (ACK) or nobody does (NACK). A probe stops
+ * right there with a STOP. The peripheral generates the signals; the software
+ * orders each phase and waits for the flag that says it happened:
+ *
+ *   1. wait until the bus is free (SR2.BUSY = 0), then set CR1.START;
+ *   2. wait for SR1.SB ("start bit sent"), then write the address byte to DR.
+ *      (SB is cleared by reading SR1 and then writing DR; the wait loop's read
+ *      of SR1 is the first half, the write to DR the second.)
+ *   3. wait for ONE of: SR1.ADDR (the address was acknowledged), SR1.AF
+ *      (acknowledge failure: NACK), SR1.BERR / SR1.ARLO (bus error, arbitration
+ *      lost);
+ *   4. ADDR is cleared by READING SR1 and then READING SR2 (not by writing
+ *      anything; both reads are volatile register accesses, so the compiler
+ *      keeps them). AF, BERR and ARLO are cleared by writing 0 to them.
+ *   5. in every case set CR1.STOP (after a NACK the manual requires software to
+ *      generate it; it also releases the bus after an ACK or an error), and wait
+ *      until SR2.BUSY drops, so the next transaction starts on a free bus.
+ *
+ * TIMEOUTS ARE IN REAL TIME, not in loop passes. This driver runs in a task, after
+ * the scheduler has started, so every wait uses the RTOS tick: at most
+ * I2C_WAIT_TIMEOUT_TICKS ticks, i.e. between 9 and 10 ms with the 1 ms tick. A
+ * phase takes well under a millisecond (a byte with its ACK lasts 90 microseconds
+ * at 100 kHz), so this is a limit about a hundred times larger than needed: it
+ * only fires when something is really stuck. The elapsed time is computed with an
+ * unsigned subtraction, which stays correct when the tick counter wraps. Two
+ * consequences: the waits must not be placed inside a critical section (the tick
+ * does not advance while interrupts are masked), and the functions work only after
+ * the scheduler has started.
+ *
+ * A wait that expires checks the flag one last time before giving up, so a flag
+ * that arrived at the very last moment still counts.
+ *
+ * On a TIMEOUT the driver only releases what it can (STOP, flags). Resetting the
+ * peripheral and recovering a stuck bus is step 6.
+ *
+ * The caller passes the 7-bit address (0x76); the driver shifts it left by one to
+ * make room for the R/W bit. An address above 0x7F is a programming error.
+ */
+#define I2C_WAIT_TIMEOUT_TICKS    ( 10U )
+
+/* Waits until at least one bit of ulMask is set in the register. */
+static BaseType_t prvWaitSet( volatile uint32_t * pulRegister, uint32_t ulMask )
+{
+    const TickType_t xStart = xTaskGetTickCount();
+
+    while( ( *pulRegister & ulMask ) == 0U )
+    {
+        if( ( xTaskGetTickCount() - xStart ) >= I2C_WAIT_TIMEOUT_TICKS )
+        {
+            return ( ( *pulRegister & ulMask ) != 0U ) ? pdTRUE : pdFALSE;
+        }
+    }
+
+    return pdTRUE;
+}
+
+/* Waits until every bit of ulMask is clear in the register. */
+static BaseType_t prvWaitClear( volatile uint32_t * pulRegister, uint32_t ulMask )
+{
+    const TickType_t xStart = xTaskGetTickCount();
+
+    while( ( *pulRegister & ulMask ) != 0U )
+    {
+        if( ( xTaskGetTickCount() - xStart ) >= I2C_WAIT_TIMEOUT_TICKS )
+        {
+            return ( ( *pulRegister & ulMask ) == 0U ) ? pdTRUE : pdFALSE;
+        }
+    }
+
+    return pdTRUE;
+}
+
+i2c_status_t i2c_probe( uint8_t ucDevice )
+{
+    i2c_status_t xStatus = I2C_OK;
+    uint32_t ulSr1;
+
+    configASSERT( ucDevice <= 0x7FU );
+
+    /* A bus that stays busy cannot be used: nothing was started yet, so there is
+     * nothing to clean up. */
+    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    {
+        return I2C_ERR_TIMEOUT;
+    }
+
+    I2C1->CR1 |= I2C_CR1_START;
+
+    if( prvWaitSet( &I2C1->SR1, I2C_SR1_SB ) == pdFALSE )
+    {
+        xStatus = I2C_ERR_TIMEOUT;
+    }
+    else
+    {
+        I2C1->DR = ( uint32_t ) ucDevice << 1;    /* address + R/W bit = 0 (write) */
+
+        if( prvWaitSet( &I2C1->SR1, I2C_SR1_ADDR | I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO ) == pdFALSE )
+        {
+            xStatus = I2C_ERR_TIMEOUT;
+        }
+        else
+        {
+            ulSr1 = I2C1->SR1;
+
+            if( ( ulSr1 & I2C_SR1_AF ) != 0U )
+            {
+                xStatus = I2C_ERR_NACK;
+            }
+            else if( ( ulSr1 & ( I2C_SR1_BERR | I2C_SR1_ARLO ) ) != 0U )
+            {
+                xStatus = I2C_ERR_BUS;
+            }
+            else
+            {
+                /* ADDR is set: SR1 was just read, reading SR2 now clears it. */
+                ( void ) I2C1->SR2;
+            }
+        }
+    }
+
+    I2C1->SR1 &= ~( I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO );
+    I2C1->CR1 |= I2C_CR1_STOP;
+
+    if( ( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE ) && ( xStatus == I2C_OK ) )
+    {
+        xStatus = I2C_ERR_TIMEOUT;
+    }
+
+    return xStatus;
+}
+
+/* ==========================================================================
  * PUBLIC FUNCTION
  * ========================================================================== */
 void i2c_init( void )
 {
-    /* Step 1). Steps 2) onward are added one at a time. */
+    /* Steps 1) and 2). Step 3) is i2c_probe(); steps 4) onward are added one at
+     * a time. */
     prvI2cClocksResetAndPins();
+    prvI2cTimingAndEnable();
 }

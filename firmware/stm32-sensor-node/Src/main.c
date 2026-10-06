@@ -113,6 +113,43 @@ static void prvLedInit( void )
 }
 
 /* ==========================================================================
+ * TEMPORARY: BMP280 PROBE TEST
+ * ==========================================================================
+ *
+ * Checks once per second whether the BMP280 answers at 0x76 and prints the result
+ * (the text goes out through the UART). With the sensor unplugged the result must
+ * be NACK, and the task must NOT hang; plug it in while running and it must change
+ * to ACK. To be removed when the real sensor task exists (the address constant
+ * then lives in bmp280.c).
+ */
+#define BMP280_I2C_ADDRESS    ( 0x76U )
+
+static void prvReportProbe( void )
+{
+    switch( i2c_probe( BMP280_I2C_ADDRESS ) )
+    {
+        case I2C_OK:
+            ( void ) uart_write_string( "BMP280 probe: ACK\r\n" );
+            break;
+
+        case I2C_ERR_NACK:
+            ( void ) uart_write_string( "BMP280 probe: NACK\r\n" );
+            break;
+
+        case I2C_ERR_TIMEOUT:
+            ( void ) uart_write_string( "BMP280 probe: TIMEOUT\r\n" );
+            break;
+
+        case I2C_ERR_BUS:
+            ( void ) uart_write_string( "BMP280 probe: BUS ERROR\r\n" );
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* ==========================================================================
  * BLINK TASK
  * ==========================================================================
  *
@@ -159,6 +196,7 @@ static void prvBlinkTask( void * pvParameters )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
         ( void ) uart_write_string( "LED on\r\n" );     /* TEMPORARY test of the UART */
+        prvReportProbe();                                 /* TEMPORARY test of the I2C probe */
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */
@@ -208,8 +246,9 @@ int main( void )
     uart_init();
 
     /* I2C1 for the BMP280, built step by step (see i2c.c). So far it only
-     * enables the clocks, resets the peripheral and sets up PB8/PB9; nothing is
-     * transferred yet. */
+     * enables the clocks, resets the peripheral, sets up PB8/PB9, programs the
+     * 100 kHz timing and enables I2C1; i2c_probe() is used by the temporary test in
+     * the blink task. */
     i2c_init();
 
     /*

@@ -90,10 +90,16 @@ firmware/stm32-sensor-node/FreeRTOS/
   `printf`/`malloc`). The output is meant to stay in the finished program (BMP280
   readings printed in Tera Term, for debugging).
 - `i2c.c` / `i2c.h`: our own register-level I2C1 master driver for the BMP280
-  (PB8 = SCL, PB9 = SDA, AF4), built one step at a time. Done so far (step 1):
-  GPIOB and I2C1 clocks, a software reset of I2C1, and the pins as open-drain
-  alternate function with the internal pull-up as a backup (MODER written
-  last). Not yet: timing, enable, transfers. Design decisions (register API,
+  (PB8 = SCL, PB9 = SDA, AF4), built one step at a time. Done so far:
+  (1) GPIOB and I2C1 clocks, a software reset of I2C1, and the pins as
+  open-drain alternate function with the internal pull-up as a backup (MODER
+  written last); (2) the 100 kHz timing (`CR2.FREQ` = 42, `CCR` = 210, `TRISE`
+  = 43, computed from the real APB1 clock and checked against ST's library
+  formulas) and the enable bit; (3) `i2c_probe()`: START + address, ACK/NACK
+  with distinct status codes and waits bounded in real time by the RTOS tick
+  (task-only, after the scheduler has started). **Verified on the board: the
+  BMP280 answers ACK at 0x76.** A temporary test in the blink task prints the
+  probe result once a second. Not yet: register write/read. Design decisions (register API,
   7-bit address, distinct error codes, tick-based bounded polling, critical
   section for the time-critical receive bit, single owner without mutex,
   self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; an ADR
@@ -247,3 +253,5 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   whole each second.
 - 2026-10-05: `Src/i2c.c` added (step 1: clocks, reset, pins). Register values
   checked in the debugger.
+- 2026-10-06: I2C1 timing + enable and `i2c_probe()` done; the BMP280
+  (CSB high, SDO low) answers ACK at 0x76.
