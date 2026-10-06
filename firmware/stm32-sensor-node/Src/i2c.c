@@ -25,7 +25,7 @@
  *      (first exercised through a probe function, removed once write/read
  *      existed: every real transaction already reports a NACK itself)
  *   4) write to a register                                              <- DONE
- *   5) read from a register (1 byte, then N bytes) -> chip ID 0x58
+ *   5) read from a register (1 byte, then N >= 3 bytes) -> chip ID 0x58   <- DONE
  *   6) error handling and recovery, tick-based timeouts
  */
 
@@ -331,11 +331,16 @@ static i2c_status_t prvWaitFlag( uint32_t ulFlag )
     return I2C_OK;
 }
 
-/* START, then the address byte with the write bit (0). On I2C_OK the device has
- * acknowledged and ADDR has been cleared, so the peripheral is ready for data.
+#define I2C_DIRECTION_WRITE    ( 0U )
+#define I2C_DIRECTION_READ     ( 1U )
+
+/* START (or repeated START), then the address byte with the direction bit; waits
+ * for the device's ACK (the ADDR flag). It does NOT clear ADDR: after a write
+ * address that is done at once (prvClearAddr), but after a read address the
+ * moment of clearing is the time-critical one and is decided by the caller.
  * Error flags from an earlier transaction are cleared first, so a stale flag can
  * not be mistaken for a new error. */
-static i2c_status_t prvStartAndAddress( uint8_t ucDevice )
+static i2c_status_t prvStartAndSendAddress( uint8_t ucDevice, uint32_t ulDirection )
 {
     i2c_status_t xStatus;
 
@@ -347,19 +352,21 @@ static i2c_status_t prvStartAndAddress( uint8_t ucDevice )
 
     if( xStatus == I2C_OK )
     {
-        I2C1->DR = ( uint32_t ) ucDevice << 1;    /* address + R/W bit = 0 (write) */
+        I2C1->DR = ( ( uint32_t ) ucDevice << 1 ) | ulDirection;
 
         xStatus = prvWaitFlag( I2C_SR1_ADDR );
     }
 
-    if( xStatus == I2C_OK )
-    {
-        /* ADDR is cleared by reading SR1 and then SR2. */
-        ( void ) I2C1->SR1;
-        ( void ) I2C1->SR2;
-    }
-
     return xStatus;
+}
+
+/* ADDR is cleared by reading SR1 and then SR2. In master receive mode the clock
+ * (SCL) is held low until this is done, and the first byte starts to be clocked
+ * in right after it. */
+static void prvClearAddr( void )
+{
+    ( void ) I2C1->SR1;
+    ( void ) I2C1->SR2;
 }
 
 /* The end of every transaction that was started, whatever happened: clear the
@@ -367,11 +374,20 @@ static i2c_status_t prvStartAndAddress( uint8_t ucDevice )
  * NACK the manual requires software to do it; it also releases the bus after an
  * error), and wait until the bus is free again so the next transaction starts
  * cleanly. Returns xStatus, or I2C_ERR_TIMEOUT if everything else went well but
- * the bus did not become free. */
-static i2c_status_t prvStop( i2c_status_t xStatus )
+ * the bus did not become free.
+ *
+ * The receive sequences (step 5) request the STOP themselves, at a precise moment;
+ * then xStopAlreadyRequested is pdTRUE and no second request is made: a STOP
+ * requested after the STOP condition has already been generated could stay set and
+ * disturb the next transaction. */
+static i2c_status_t prvStop( i2c_status_t xStatus, BaseType_t xStopAlreadyRequested )
 {
     I2C1->SR1 &= ~( I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO );
-    I2C1->CR1 |= I2C_CR1_STOP;
+
+    if( xStopAlreadyRequested == pdFALSE )
+    {
+        I2C1->CR1 |= I2C_CR1_STOP;
+    }
 
     if( ( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE ) && ( xStatus == I2C_OK ) )
     {
@@ -428,10 +444,11 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
         return I2C_ERR_TIMEOUT;
     }
 
-    xStatus = prvStartAndAddress( ucDevice );
+    xStatus = prvStartAndSendAddress( ucDevice, I2C_DIRECTION_WRITE );
 
     if( xStatus == I2C_OK )
     {
+        prvClearAddr();
         xStatus = prvWaitFlag( I2C_SR1_TXE );
     }
 
@@ -455,7 +472,196 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
         xStatus = prvWaitFlag( I2C_SR1_BTF );
     }
 
-    return prvStop( xStatus );
+    return prvStop( xStatus, pdFALSE );
+}
+
+/* ==========================================================================
+ * STEP 5) READ FROM A REGISTER
+ * ==========================================================================
+ *
+ * On the wire:
+ *   START | device + W | ACK | register | ACK | repeated START | device + R | ACK |
+ *   byte 1 | ACK | ... | byte N | NACK | STOP
+ *
+ * Phase 1 is a write that only carries the register address: the device sets its
+ * register pointer. We wait for BTF so the register byte is completely sent, and
+ * then, instead of a STOP, generate a repeated START (the bus stays ours) and send
+ * the address again with the READ bit. From then on the DEVICE drives SDA and the
+ * master only provides the clock.
+ *
+ * WHY RECEIVING IS DELICATE. The master must acknowledge every byte except the last,
+ * which it must NACK ("that is enough"), and then generate STOP. The peripheral
+ * decides ACK or NACK at the 9th clock of each byte from the state of CR1.ACK at
+ * that moment, so software has to clear ACK (and request STOP) BEFORE the 9th clock
+ * of the last byte. The window is about one byte time, roughly 90 microseconds at
+ * 100 kHz. The sequence depends on how many bytes are read. The
+ * one-byte case also matches the teacher's i2c_fixed.c, which wraps the same
+ * operations in __disable_irq(). They are to be checked against the manual.
+ *
+ * N = 1 (the chip ID):
+ *   after ADDR is set (the read address was acknowledged), and with the clock still
+ *   held low:   clear ACK;  clear ADDR (read SR1, then SR2);  set STOP.
+ *   Then wait for RXNE and read the byte. Clearing ADDR releases the clock and the
+ *   byte starts to arrive, so ACK must already be clear and STOP requested: these
+ *   operations are done in a CRITICAL SECTION so that nothing (another task, an
+ *   interrupt) can come between them.
+ *
+ * N >= 3 (the 6-byte data burst, the 24 trimming bytes):
+ *   clear ADDR (ACK stays set; not time-critical). Read bytes 1 ... N-3 as they
+ *   arrive (wait RXNE, read DR). When byte N-2 is in DR and byte N-1 is in the shift
+ *   register, BTF is set and the clock is held low. Then:
+ *       clear ACK;  read DR (byte N-2);  set STOP     <- the CRITICAL SECTION
+ *   so that the NEXT byte that finishes, byte N, is NACKed and followed by STOP.
+ *   Finally read bytes N-1 and N (wait RXNE, read DR).
+ *
+ * N = 2 would need a third sequence (with the POS bit). Nothing in this project reads
+ * exactly two bytes (the BMP280 module reads 1, 6 or 24), so it is not written and
+ * not tested: it stops at an assertion. To read two bytes, read three.
+ *
+ * Only those few register operations are in the critical section (a few
+ * microseconds). All the waits are outside: the RTOS tick does not advance while
+ * interrupts are masked, so a wait there could never time out. The rest of the
+ * transfer is not at risk from a preemption: if software is late reading a byte
+ * (RXNE with BTF), the peripheral holds SCL low until DR is read.
+ *
+ * Expected results with the BMP280 (values from my memory of its datasheet):
+ *   1 byte from 0xD0         0x58   (the chip ID)
+ *   6 bytes from 0xF7        80 00 00 80 00 00 right after a reset (no measurement
+ *                            yet: pressure and temperature "skipped" values)
+ *   24 bytes from 0x88       the trimming parameters, device specific
+ */
+
+/* Receives ONE byte. Called with the read address acknowledged and ADDR pending. */
+static i2c_status_t prvReceiveOne( uint8_t * pucBuffer, BaseType_t * pxStopRequested )
+{
+    i2c_status_t xStatus;
+
+    taskENTER_CRITICAL();
+    {
+        I2C1->CR1 &= ~I2C_CR1_ACK;
+        prvClearAddr();
+        I2C1->CR1 |= I2C_CR1_STOP;
+    }
+    taskEXIT_CRITICAL();
+
+    *pxStopRequested = pdTRUE;
+
+    xStatus = prvWaitFlag( I2C_SR1_RXNE );
+
+    if( xStatus == I2C_OK )
+    {
+        *pucBuffer = ( uint8_t ) I2C1->DR;
+    }
+
+    return xStatus;
+}
+
+/* Receives ulLength >= 3 bytes. Called with the read address acknowledged and ADDR pending. */
+static i2c_status_t prvReceiveMany( uint8_t * pucBuffer, uint32_t ulLength, BaseType_t * pxStopRequested )
+{
+    i2c_status_t xStatus = I2C_OK;
+    uint32_t ulIndex;
+
+    prvClearAddr();
+
+    /* Bytes 1 ... N-3: ACK is still set, the peripheral acknowledges each one. */
+    for( ulIndex = 0U; ( ulIndex < ( ulLength - 3U ) ) && ( xStatus == I2C_OK ); ulIndex++ )
+    {
+        xStatus = prvWaitFlag( I2C_SR1_RXNE );
+
+        if( xStatus == I2C_OK )
+        {
+            pucBuffer[ ulIndex ] = ( uint8_t ) I2C1->DR;
+        }
+    }
+
+    /* Byte N-2 is in DR and byte N-1 in the shift register: BTF, clock held low. */
+    if( xStatus == I2C_OK )
+    {
+        xStatus = prvWaitFlag( I2C_SR1_BTF );
+    }
+
+    if( xStatus == I2C_OK )
+    {
+        taskENTER_CRITICAL();
+        {
+            I2C1->CR1 &= ~I2C_CR1_ACK;
+            pucBuffer[ ulLength - 3U ] = ( uint8_t ) I2C1->DR;
+            I2C1->CR1 |= I2C_CR1_STOP;
+        }
+        taskEXIT_CRITICAL();
+
+        *pxStopRequested = pdTRUE;
+
+        /* Bytes N-1 and N. */
+        xStatus = prvWaitFlag( I2C_SR1_RXNE );
+
+        if( xStatus == I2C_OK )
+        {
+            pucBuffer[ ulLength - 2U ] = ( uint8_t ) I2C1->DR;
+            xStatus = prvWaitFlag( I2C_SR1_RXNE );
+        }
+
+        if( xStatus == I2C_OK )
+        {
+            pucBuffer[ ulLength - 1U ] = ( uint8_t ) I2C1->DR;
+        }
+    }
+
+    return xStatus;
+}
+
+i2c_status_t i2c_read_reg( uint8_t ucDevice, uint8_t ucRegister,
+                           uint8_t * pucBuffer, uint32_t ulLength )
+{
+    i2c_status_t xStatus;
+    BaseType_t xStopRequested = pdFALSE;
+
+    configASSERT( ucDevice <= 0x7FU );
+    configASSERT( pucBuffer != NULL );
+    configASSERT( ( ulLength == 1U ) || ( ulLength >= 3U ) );
+
+    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    {
+        return I2C_ERR_TIMEOUT;
+    }
+
+    /* Phase 1: write the register address, and wait until it has fully left. */
+    xStatus = prvStartAndSendAddress( ucDevice, I2C_DIRECTION_WRITE );
+
+    if( xStatus == I2C_OK )
+    {
+        prvClearAddr();
+        xStatus = prvWaitFlag( I2C_SR1_TXE );
+    }
+
+    if( xStatus == I2C_OK )
+    {
+        I2C1->DR = ucRegister;
+        xStatus = prvWaitFlag( I2C_SR1_BTF );
+    }
+
+    /* Phase 2: repeated START and the read address. ACK is set so the bytes are
+     * acknowledged; the receive sequences clear it for the last byte. */
+    if( xStatus == I2C_OK )
+    {
+        I2C1->CR1 |= I2C_CR1_ACK;
+        xStatus = prvStartAndSendAddress( ucDevice, I2C_DIRECTION_READ );
+    }
+
+    if( xStatus == I2C_OK )
+    {
+        if( ulLength == 1U )
+        {
+            xStatus = prvReceiveOne( pucBuffer, &xStopRequested );
+        }
+        else
+        {
+            xStatus = prvReceiveMany( pucBuffer, ulLength, &xStopRequested );
+        }
+    }
+
+    return prvStop( xStatus, xStopRequested );
 }
 
 /* ==========================================================================
@@ -464,7 +670,7 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
 void i2c_init( void )
 {
     /* Steps 1) and 2). Step 3) is the shared start/address/stop code, step 4) is
-     * i2c_write_reg(); steps 5) onward are added one at a time. */
+     * i2c_write_reg(), step 5) is i2c_read_reg(); step 6) (recovery) comes next. */
     prvI2cClocksResetAndPins();
     prvI2cTimingAndEnable();
 }

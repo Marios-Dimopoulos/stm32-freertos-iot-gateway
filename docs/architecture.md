@@ -97,12 +97,16 @@ firmware/stm32-sensor-node/FreeRTOS/
   = 43, computed from the real APB1 clock and checked against ST's library
   formulas) and the enable bit; (3) START + address with ACK/NACK reported as
   distinct status codes and waits bounded in real time by the RTOS tick
-  (task-only, after the scheduler has started); (4) `i2c_write_reg()`.
-  **Verified on the board: the BMP280 acknowledges at 0x76 and a register
-  write (soft reset, 0xB6 into 0xE0) returns OK.** A temporary test in the
-  blink task prints the write result once at start-up. A probe function
-  (address check only) was used for bring-up and then removed: write/read
-  report a NACK themselves. Not yet: register read. Design decisions (register API,
+  (task-only, after the scheduler has started); (4) `i2c_write_reg()`;
+  (5) `i2c_read_reg()` for 1 byte or 3 or more (2 is refused: nothing needs
+  it), with the receive deadline operations (clear ACK, ADDR, STOP) in a short
+  critical section. **Verified on the board with the BMP280 at 0x76: soft-reset
+  write OK, chip ID 0x58, the 6-byte data burst after a reset, and the 24
+  trimming bytes.** Temporary tests in the blink task print the results as
+  OK/MISMATCH. A probe function (address check only) was used for bring-up and
+  then removed: write/read report a NACK themselves. The N>=3 receive sequence
+  is from memory of RM0383 and works on the board, but still has to be checked
+  against the manual's figure. Not yet: error recovery (step 6). Design decisions (register API,
   7-bit address, distinct error codes, tick-based bounded polling, critical
   section for the time-critical receive bit, single owner without mutex,
   self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; an ADR
@@ -260,3 +264,6 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   (CSB high, SDO low) answers ACK at 0x76.
 - 2026-10-06: `i2c_write_reg()` added and verified (soft-reset write returns
   OK). `i2c_probe()` removed: the real transactions report ACK/NACK themselves.
+- 2026-10-06: `i2c_read_reg()` added and verified on the BMP280 (chip ID,
+  6-byte burst, 24 trimming bytes). Blink task stack raised to 256 words for
+  the temporary I2C tests (to be measured).

@@ -60,7 +60,10 @@ _Static_assert( __NVIC_PRIO_BITS == configPRIO_BITS,
  * Priority 1 is the level planned for the sensor task (priority 0 is Idle,
  * priority 2 is reserved for the Phase 2 transmit task).
  */
-#define BLINK_TASK_STACK_WORDS    ( 128 )
+/* Raised from 128 to 256 words (1 KB) while the temporary I2C tests run: they call
+ * deeper than the plain blink (a 24-byte buffer, the driver, the critical-section
+ * and tick functions, the UART writes). To be measured (ADR-0005), not guessed. */
+#define BLINK_TASK_STACK_WORDS    ( 256 )
 #define BLINK_TASK_PRIORITY       ( 1 )
 
 static StackType_t  xBlinkTaskStack[ BLINK_TASK_STACK_WORDS ];
@@ -116,15 +119,25 @@ static void prvLedInit( void )
  * TEMPORARY: BMP280 I2C TESTS
  * ==========================================================================
  *
- *   - once, when the blink task starts: write the soft-reset value 0xB6 into
- *     register 0xE0 of the BMP280 (what a driver does first) and report the result;
- * The text goes out through the UART. With the sensor unplugged it must report
- * NACK, and the task must NOT hang. To be removed when the real sensor task exists
- * (the address and register constants then live in bmp280.c).
+ * Once, when the blink task starts: write the soft-reset value 0xB6 into register
+ * 0xE0 of the BMP280, wait for it to restart, then read back:
+ *   - 1 byte from 0xD0: the chip ID, expected 0x58;
+ *   - 6 bytes from 0xF7: the data registers, expected 80 00 00 80 00 00 (no
+ *     measurement yet after a reset);
+ *   - 24 bytes from 0x88: the trimming parameters (only the status is checked).
+ * And once per second: the chip ID again.
+ * Each result is printed as text through the UART: OK, MISMATCH (the transfer
+ * worked but the bytes are not the expected ones), or the driver's error. With the
+ * sensor unplugged every line must report NACK, and the task must NOT hang. To be
+ * removed when the real sensor task exists (the constants then live in bmp280.c).
  */
 #define BMP280_I2C_ADDRESS      ( 0x76U )
 #define BMP280_REG_RESET        ( 0xE0U )
 #define BMP280_RESET_VALUE      ( 0xB6U )
+#define BMP280_REG_CHIP_ID      ( 0xD0U )
+#define BMP280_CHIP_ID          ( 0x58U )
+#define BMP280_REG_DATA         ( 0xF7U )
+#define BMP280_REG_TRIMMING     ( 0x88U )
 
 static const char * prvStatusText( i2c_status_t xStatus )
 {
@@ -155,6 +168,51 @@ static void prvSoftResetTest( void )
     ( void ) uart_write_string( "BMP280 soft reset write: " );
     ( void ) uart_write_string( pcText );
     ( void ) uart_write_string( "\r\n" );
+}
+
+static void prvReport( const char * pcWhat, const char * pcResult )
+{
+    ( void ) uart_write_string( pcWhat );
+    ( void ) uart_write_string( ": " );
+    ( void ) uart_write_string( pcResult );
+    ( void ) uart_write_string( "\r\n" );
+}
+
+static void prvChipIdTest( void )
+{
+    uint8_t ucId = 0U;
+    const i2c_status_t xStatus = i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_CHIP_ID, &ucId, 1U );
+
+    prvReport( "BMP280 chip ID",
+               ( xStatus != I2C_OK ) ? prvStatusText( xStatus ) : ( ( ucId == BMP280_CHIP_ID ) ? "OK" : "MISMATCH" ) );
+}
+
+static void prvDataRegistersTest( void )
+{
+    static const uint8_t ucExpected[ 6 ] = { 0x80U, 0x00U, 0x00U, 0x80U, 0x00U, 0x00U };
+    uint8_t ucData[ 6 ] = { 0U };
+    uint32_t ulIndex;
+    BaseType_t xSame = pdTRUE;
+    const i2c_status_t xStatus = i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_DATA, ucData, 6U );
+
+    for( ulIndex = 0U; ulIndex < 6U; ulIndex++ )
+    {
+        if( ucData[ ulIndex ] != ucExpected[ ulIndex ] )
+        {
+            xSame = pdFALSE;
+        }
+    }
+
+    prvReport( "BMP280 data registers after reset (6 bytes)",
+               ( xStatus != I2C_OK ) ? prvStatusText( xStatus ) : ( ( xSame == pdTRUE ) ? "OK" : "MISMATCH" ) );
+}
+
+static void prvTrimmingTest( void )
+{
+    uint8_t ucData[ 24 ] = { 0U };
+    const i2c_status_t xStatus = i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_TRIMMING, ucData, 24U );
+
+    prvReport( "BMP280 trimming read (24 bytes)", prvStatusText( xStatus ) );
 }
 
 /* ==========================================================================
@@ -203,6 +261,9 @@ static void prvBlinkTask( void * pvParameters )
      * remember it), so wait before any further access. */
     prvSoftResetTest();
     vTaskDelay( pdMS_TO_TICKS( 10 ) );
+    prvChipIdTest();
+    prvDataRegistersTest();
+    prvTrimmingTest();
 
     xLastWakeTime = xTaskGetTickCount();
 
@@ -210,6 +271,7 @@ static void prvBlinkTask( void * pvParameters )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
         ( void ) uart_write_string( "LED on\r\n" );     /* TEMPORARY test of the UART */
+        prvChipIdTest();                                  /* TEMPORARY test of the I2C read */
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */
