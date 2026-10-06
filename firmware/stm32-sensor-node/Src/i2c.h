@@ -4,7 +4,7 @@
  * WORK IN PROGRESS, built one step at a time (see i2c.c). So far i2c_init()
  * enables the clocks, resets the peripheral, sets up the two pins, programs the
  * 100 kHz timing and enables I2C1, i2c_write_reg() writes registers and
- * i2c_read_reg() reads them.
+ * i2c_read_reg() reads them, and the driver recovers from bus errors by itself.
  */
 
 #ifndef I2C_H
@@ -60,5 +60,14 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
  */
 i2c_status_t i2c_read_reg( uint8_t ucDevice, uint8_t ucRegister,
                            uint8_t * pucBuffer, uint32_t ulLength );
+
+/*
+ * How many times the driver has reset and re-initialised I2C1 by itself after a
+ * timeout, a bus error or a bus that stayed busy. It is only for diagnostics (read
+ * it in the debugger, or print it): the callers never have to recover the bus
+ * themselves, because the NEXT call after an error starts from a clean peripheral.
+ * 0 means the bus has never needed it.
+ */
+uint32_t i2c_recovery_count( void );
 
 #endif /* I2C_H */

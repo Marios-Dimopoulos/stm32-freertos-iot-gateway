@@ -106,11 +106,17 @@ firmware/stm32-sensor-node/FreeRTOS/
   OK/MISMATCH. A probe function (address check only) was used for bring-up and
   then removed: write/read report a NACK themselves. The N>=3 receive sequence
   is from memory of RM0383 and works on the board, but still has to be checked
-  against the manual's figure. Not yet: error recovery (step 6). Design decisions (register API,
+  against the manual's figure. (6) Error recovery: after a timeout, a bus error
+  or a bus that stays busy the driver pulses `SWRST` and re-initialises I2C1
+  itself (counted by `i2c_recovery_count()`), and the public functions assert
+  that the scheduler has started. **Verified: shorting SDA to ground gives
+  TIMEOUT and the driver returns to OK after the release, without a reset.**
+  Limits: no bus clear (a sensor holding SDA low is not freed), and after that
+  test the sensor answered NACK until the board was power-cycled. Design decisions (register API,
   7-bit address, distinct error codes, tick-based bounded polling, critical
   section for the time-critical receive bit, single owner without mutex,
-  self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; an ADR
-  will follow once the driver works.
+  self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; see
+  ADR-0007.
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
@@ -157,6 +163,8 @@ be written once the drivers exist.)
 - ADR-0005: task stacks sized by measurement with a margin; Idle stays at 128
   words.
 - ADR-0006: CPU at 84 MHz from the HSI through the PLL, in its own module.
+- ADR-0007: I2C1 driver: register-oriented polling API with tick-based timeouts and
+  self-recovery.
 
 Below is the target shape for Phase 1, kept here as a near-term plan,
 clearly marked as such.
@@ -267,3 +275,6 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 - 2026-10-06: `i2c_read_reg()` added and verified on the BMP280 (chip ID,
   6-byte burst, 24 trimming bytes). Blink task stack raised to 256 words for
   the temporary I2C tests (to be measured).
+- 2026-10-06: I2C error recovery (step 6) added and verified with an SDA-to-ground
+  test; `INCLUDE_xTaskGetSchedulerState` enabled for the driver's assertion.
+  Recorded as ADR-0007.

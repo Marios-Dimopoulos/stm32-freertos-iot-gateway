@@ -26,7 +26,7 @@
  *      existed: every real transaction already reports a NACK itself)
  *   4) write to a register                                              <- DONE
  *   5) read from a register (1 byte, then N >= 3 bytes) -> chip ID 0x58   <- DONE
- *   6) error handling and recovery, tick-based timeouts
+ *   6) error handling and recovery (the tick-based timeouts were done in step 3)   <- DONE
  */
 
 #include "FreeRTOS.h"
@@ -289,6 +289,83 @@ static BaseType_t prvWaitClear( volatile uint32_t * pulRegister, uint32_t ulMask
     return pdTRUE;
 }
 
+/* ==========================================================================
+ * STEP 6) ERROR RECOVERY AND THE SCHEDULER CHECK
+ * ==========================================================================
+ *
+ * Some errors need only cleanup, and prvStop() already does it: after a NACK the
+ * flags are cleared and a STOP releases the bus. Others suggest that the PERIPHERAL
+ * itself may be left in a bad state:
+ *   - a TIMEOUT (a flag never came: a line held low, or a stuck state machine);
+ *   - a BUS error or lost arbitration;
+ *   - BUSY that never clears (a known quirk of this peripheral, and the typical
+ *     result of a restart in the middle of a transfer).
+ * For these the driver RECOVERS: it pulses CR1.SWRST (the software reset of the
+ * peripheral) and sets it up again with the same code as at start-up
+ * (prvI2cTimingAndEnable). The pins are not touched: they stay connected to the
+ * peripheral. It happens in two places:
+ *   - prvStop(): when the final status of a transaction is TIMEOUT or BUS;
+ *   - at the start of a transaction (prvWaitBusFree): if the bus is still busy,
+ *     reset once and look again; only if it is STILL busy is TIMEOUT returned.
+ * The call that hit the error still returns its error (the caller learns about it);
+ * the NEXT call starts from a clean peripheral, and the caller never has to know how
+ * to recover the bus. Every recovery is counted (i2c_recovery_count) so it can be
+ * seen in the debugger instead of going unnoticed.
+ *
+ * What it cannot fix. SWRST resets OUR side only. If a SLAVE is holding SDA low (for
+ * example the board was reset in the middle of a byte and the sensor, which stays
+ * powered, is still waiting for clock pulses), the lines are not released, the bus
+ * shows BUSY again right after the reset, and the calls keep returning TIMEOUT.
+ * Freeing it takes a "bus clear": clocking SCL up to nine times by hand with the
+ * pins temporarily as GPIO. That is NOT written, because it has not been needed; if
+ * it ever is, it belongs in prvRecover().
+ *
+ * The scheduler check. The public functions assert that the scheduler has started
+ * (xTaskGetSchedulerState, enabled by INCLUDE_xTaskGetSchedulerState in
+ * FreeRTOSConfig.h). The tick never advances before vTaskStartScheduler(), so a
+ * wait bounded by the tick could not time out there; the assertion turns that
+ * mistake into an immediate stop at the offending call instead of a possible hang.
+ *
+ * How to test it on the board: with the sensor reading once per second, touch the SDA
+ * wire (PB9) to GND for a couple of seconds and release it (an open-drain line shorted
+ * to ground is safe). The test lines must report TIMEOUT or BUS ERROR while it is held,
+ * and OK again after the release without resetting the board; ulI2cRecoveries must have
+ * gone up.
+ */
+static volatile uint32_t ulI2cRecoveries;
+
+static void prvRecover( void )
+{
+    I2C1->CR1 |= I2C_CR1_SWRST;
+    I2C1->CR1 &= ~I2C_CR1_SWRST;
+
+    prvI2cTimingAndEnable();
+
+    ulI2cRecoveries++;
+}
+
+uint32_t i2c_recovery_count( void )
+{
+    return ulI2cRecoveries;
+}
+
+/* Waits for a free bus at the start of a transaction. A bus that stays busy is reset
+ * once and checked again. Nothing was started, so there is no STOP to send. */
+static i2c_status_t prvWaitBusFree( void )
+{
+    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    {
+        prvRecover();
+
+        if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+        {
+            return I2C_ERR_TIMEOUT;
+        }
+    }
+
+    return I2C_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Pieces shared by every transaction
  * --------------------------------------------------------------------------
@@ -394,6 +471,13 @@ static i2c_status_t prvStop( i2c_status_t xStatus, BaseType_t xStopAlreadyReques
         xStatus = I2C_ERR_TIMEOUT;
     }
 
+    /* A timeout or a bus error may have left the peripheral in a bad state: reset it,
+     * so that the next transaction starts clean (see step 6). */
+    if( ( xStatus == I2C_ERR_TIMEOUT ) || ( xStatus == I2C_ERR_BUS ) )
+    {
+        prvRecover();
+    }
+
     return xStatus;
 }
 
@@ -438,8 +522,9 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
 
     configASSERT( ucDevice <= 0x7FU );
     configASSERT( ( pucData != NULL ) || ( ulLength == 0U ) );
+    configASSERT( xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED );
 
-    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    if( prvWaitBusFree() != I2C_OK )
     {
         return I2C_ERR_TIMEOUT;
     }
@@ -620,8 +705,9 @@ i2c_status_t i2c_read_reg( uint8_t ucDevice, uint8_t ucRegister,
     configASSERT( ucDevice <= 0x7FU );
     configASSERT( pucBuffer != NULL );
     configASSERT( ( ulLength == 1U ) || ( ulLength >= 3U ) );
+    configASSERT( xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED );
 
-    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    if( prvWaitBusFree() != I2C_OK )
     {
         return I2C_ERR_TIMEOUT;
     }
@@ -670,7 +756,7 @@ i2c_status_t i2c_read_reg( uint8_t ucDevice, uint8_t ucRegister,
 void i2c_init( void )
 {
     /* Steps 1) and 2). Step 3) is the shared start/address/stop code, step 4) is
-     * i2c_write_reg(), step 5) is i2c_read_reg(); step 6) (recovery) comes next. */
+     * i2c_write_reg(), step 5) is i2c_read_reg(), step 6) is the recovery. */
     prvI2cClocksResetAndPins();
     prvI2cTimingAndEnable();
 }

@@ -130,6 +130,11 @@ static void prvLedInit( void )
  * worked but the bytes are not the expected ones), or the driver's error. With the
  * sensor unplugged every line must report NACK, and the task must NOT hang. To be
  * removed when the real sensor task exists (the constants then live in bmp280.c).
+ *
+ * Recovery test (I2C step 6): while it runs, touch the SDA wire (PB9) to GND for a
+ * couple of seconds and release it. The once-per-second chip-ID line must report
+ * TIMEOUT or BUS ERROR meanwhile, and OK again after the release, without a reset
+ * of the board; i2c_recovery_count() must have gone up (read it in the debugger).
  */
 #define BMP280_I2C_ADDRESS      ( 0x76U )
 #define BMP280_REG_RESET        ( 0xE0U )

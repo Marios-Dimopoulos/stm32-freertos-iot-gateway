@@ -837,4 +837,15 @@ extern uint32_t SystemCoreClock;
  */
 #define INCLUDE_xTaskDelayUntil                     1
 
+/*
+ * INCLUDE_xTaskGetSchedulerState = 1
+ *
+ * Compiles xTaskGetSchedulerState(), which tells whether the scheduler has not
+ * been started yet, is running, or is suspended. The I2C driver uses it in an
+ * assertion: its waits are bounded by the RTOS tick, which does not advance before
+ * vTaskStartScheduler(), so calling the driver from main() would not time out but
+ * could hang. The assertion turns that mistake into an immediate, visible stop.
+ */
+#define INCLUDE_xTaskGetSchedulerState              1
+
 #endif /* FREERTOS_CONFIG_H */
