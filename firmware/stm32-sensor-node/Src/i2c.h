@@ -3,8 +3,7 @@
  *
  * WORK IN PROGRESS, built one step at a time (see i2c.c). So far i2c_init()
  * enables the clocks, resets the peripheral, sets up the two pins, programs the
- * 100 kHz timing and enables I2C1, and i2c_probe() can check whether a device
- * answers an address.
+ * 100 kHz timing and enables I2C1, and i2c_write_reg() writes registers.
  */
 
 #ifndef I2C_H
@@ -25,17 +24,19 @@ typedef enum
 void i2c_init( void );
 
 /*
- * Checks whether a device answers at the given 7-bit address (for the BMP280:
- * 0x76, or 0x77 with SDO high): START, the address with the write bit, and then
- * STOP. Nothing is transferred. Returns I2C_OK if the device acknowledged,
- * I2C_ERR_NACK if nobody did (also the result with the sensor unplugged),
- * I2C_ERR_TIMEOUT or I2C_ERR_BUS on a hardware problem.
+ * Writes ulLength bytes into the registers of a device, starting at register
+ * ucRegister (the device increments its register pointer after each byte):
+ * START, address + write, the register address, the data bytes, STOP. Each byte
+ * must be acknowledged. ulLength may be 0 (only the register address is sent).
  *
- * BLOCKING (temporary, as the project rules ask for any polling loop): the calling
- * task busy-waits on hardware flags, each wait limited to about 10 ms by the RTOS
- * tick. Call it from ONE task only (the bus owner), after the scheduler has
- * started. It never hangs.
+ * Returns I2C_OK if every byte was acknowledged, I2C_ERR_NACK if the device
+ * refused the address or any byte, I2C_ERR_TIMEOUT / I2C_ERR_BUS on a hardware
+ * problem. On every outcome the bus is left released (STOP sent, error flags
+ * cleared). Blocking (the calling task busy-waits on hardware flags, each wait
+ * limited to about 10 ms by the RTOS tick, so it never hangs), for ONE task only (the
+ * bus owner), after the scheduler has started.
  */
-i2c_status_t i2c_probe( uint8_t ucDevice );
+i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
+                            const uint8_t * pucData, uint32_t ulLength );
 
 #endif /* I2C_H */

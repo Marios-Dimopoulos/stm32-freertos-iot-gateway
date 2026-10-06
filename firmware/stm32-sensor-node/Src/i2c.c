@@ -3,7 +3,7 @@
  *
  * Design decisions (to be recorded in an ADR once the driver exists):
  *   - register-oriented API (read/write N bytes starting at a register of a
- *     device) plus a probe, so the repeated START and the time-critical receive
+ *     device), so the repeated START and the time-critical receive
  *     sequence live in ONE place;
  *   - the caller passes the 7-bit device address (0x76); the driver adds the R/W bit;
  *   - distinct error codes (no answer, timeout, bus error);
@@ -21,8 +21,10 @@
  *
  *   1) clocks, peripheral reset, pins (PB8/PB9 = AF4, open-drain)      <- DONE
  *   2) timing (CR2.FREQ, CCR, TRISE) and enable (CR1.PE)               <- DONE
- *   3) probe: START + address, tell ACK from NACK (testable without the sensor)   <- DONE
- *   4) write to a register
+ *   3) START + address, tell ACK from NACK, waits bounded by the RTOS tick       <- DONE
+ *      (first exercised through a probe function, removed once write/read
+ *      existed: every real transaction already reports a NACK itself)
+ *   4) write to a register                                              <- DONE
  *   5) read from a register (1 byte, then N bytes) -> chip ID 0x58
  *   6) error handling and recovery, tick-based timeouts
  */
@@ -209,14 +211,15 @@ static void prvI2cTimingAndEnable( void )
 }
 
 /* ==========================================================================
- * STEP 3) THE PROBE: START + ADDRESS, ACK OR NACK
+ * STEP 3) START + ADDRESS, ACK OR NACK, AND THE TIMEOUTS
  * ==========================================================================
  *
  * On the wire (see the protocol notes): START, then the address byte (7-bit
  * address plus the R/W bit, here 0 = write), then the 9th clock on which the
- * addressed device pulls SDA low (ACK) or nobody does (NACK). A probe stops
- * right there with a STOP. The peripheral generates the signals; the software
- * orders each phase and waits for the flag that says it happened:
+ * addressed device pulls SDA low (ACK) or nobody does (NACK). This is the start
+ * of every transaction (see prvStartAndAddress below). The peripheral generates
+ * the signals; the software orders each phase and waits for the flag that says
+ * it happened:
  *
  *   1. wait until the bus is free (SR2.BUSY = 0), then set CR1.START;
  *   2. wait for SR1.SB ("start bit sent"), then write the address byte to DR.
@@ -286,54 +289,87 @@ static BaseType_t prvWaitClear( volatile uint32_t * pulRegister, uint32_t ulMask
     return pdTRUE;
 }
 
-i2c_status_t i2c_probe( uint8_t ucDevice )
+/* --------------------------------------------------------------------------
+ * Pieces shared by every transaction
+ * --------------------------------------------------------------------------
+ *
+ * A transaction is always: [wait for a free bus] -> START + address -> the
+ * data phase -> STOP. The first and the last parts are the same for every
+ * function, so they live here once.
+ */
+
+/* Waits for the flag ulFlag in SR1, but also watches the error flags, and tells
+ * which one came:
+ *   I2C_OK       ulFlag is set (and no error)
+ *   I2C_ERR_NACK AF: a NACK where an ACK was expected (checked first: an error
+ *                can arrive together with TXE or BTF, and must not be hidden)
+ *   I2C_ERR_BUS  BERR / ARLO
+ *   I2C_ERR_TIMEOUT nothing arrived in time
+ * The read of SR1 here is also the first half of the sequences that clear SB
+ * and ADDR. */
+static i2c_status_t prvWaitFlag( uint32_t ulFlag )
 {
-    i2c_status_t xStatus = I2C_OK;
     uint32_t ulSr1;
 
-    configASSERT( ucDevice <= 0x7FU );
-
-    /* A bus that stays busy cannot be used: nothing was started yet, so there is
-     * nothing to clean up. */
-    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    if( prvWaitSet( &I2C1->SR1, ulFlag | I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO ) == pdFALSE )
     {
         return I2C_ERR_TIMEOUT;
     }
 
+    ulSr1 = I2C1->SR1;
+
+    if( ( ulSr1 & I2C_SR1_AF ) != 0U )
+    {
+        return I2C_ERR_NACK;
+    }
+
+    if( ( ulSr1 & ( I2C_SR1_BERR | I2C_SR1_ARLO ) ) != 0U )
+    {
+        return I2C_ERR_BUS;
+    }
+
+    return I2C_OK;
+}
+
+/* START, then the address byte with the write bit (0). On I2C_OK the device has
+ * acknowledged and ADDR has been cleared, so the peripheral is ready for data.
+ * Error flags from an earlier transaction are cleared first, so a stale flag can
+ * not be mistaken for a new error. */
+static i2c_status_t prvStartAndAddress( uint8_t ucDevice )
+{
+    i2c_status_t xStatus;
+
+    I2C1->SR1 &= ~( I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO );
+
     I2C1->CR1 |= I2C_CR1_START;
 
-    if( prvWaitSet( &I2C1->SR1, I2C_SR1_SB ) == pdFALSE )
-    {
-        xStatus = I2C_ERR_TIMEOUT;
-    }
-    else
+    xStatus = prvWaitFlag( I2C_SR1_SB );
+
+    if( xStatus == I2C_OK )
     {
         I2C1->DR = ( uint32_t ) ucDevice << 1;    /* address + R/W bit = 0 (write) */
 
-        if( prvWaitSet( &I2C1->SR1, I2C_SR1_ADDR | I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO ) == pdFALSE )
-        {
-            xStatus = I2C_ERR_TIMEOUT;
-        }
-        else
-        {
-            ulSr1 = I2C1->SR1;
-
-            if( ( ulSr1 & I2C_SR1_AF ) != 0U )
-            {
-                xStatus = I2C_ERR_NACK;
-            }
-            else if( ( ulSr1 & ( I2C_SR1_BERR | I2C_SR1_ARLO ) ) != 0U )
-            {
-                xStatus = I2C_ERR_BUS;
-            }
-            else
-            {
-                /* ADDR is set: SR1 was just read, reading SR2 now clears it. */
-                ( void ) I2C1->SR2;
-            }
-        }
+        xStatus = prvWaitFlag( I2C_SR1_ADDR );
     }
 
+    if( xStatus == I2C_OK )
+    {
+        /* ADDR is cleared by reading SR1 and then SR2. */
+        ( void ) I2C1->SR1;
+        ( void ) I2C1->SR2;
+    }
+
+    return xStatus;
+}
+
+/* The end of every transaction that was started, whatever happened: clear the
+ * error flags (AF, BERR, ARLO are cleared by writing 0), generate STOP (after a
+ * NACK the manual requires software to do it; it also releases the bus after an
+ * error), and wait until the bus is free again so the next transaction starts
+ * cleanly. Returns xStatus, or I2C_ERR_TIMEOUT if everything else went well but
+ * the bus did not become free. */
+static i2c_status_t prvStop( i2c_status_t xStatus )
+{
     I2C1->SR1 &= ~( I2C_SR1_AF | I2C_SR1_BERR | I2C_SR1_ARLO );
     I2C1->CR1 |= I2C_CR1_STOP;
 
@@ -346,12 +382,89 @@ i2c_status_t i2c_probe( uint8_t ucDevice )
 }
 
 /* ==========================================================================
+ * STEP 4) WRITE TO A REGISTER
+ * ==========================================================================
+ *
+ * On the wire:
+ *   START | device + W | ACK | register | ACK | data 1 | ACK | ... | data N | ACK | STOP
+ * The device uses the "register" byte to set its internal register pointer, and
+ * stores the following data bytes there, incrementing the pointer after each one.
+ *
+ * What comes after the address phase is the DATA PHASE:
+ *
+ *   - Before each byte, wait for TXE ("transmit data register empty"), then write
+ *     the byte into DR. TXE rises as soon as the previous byte has moved into the
+ *     shift register, so the next byte can be queued while the previous one is
+ *     still going out on the wire.
+ *   - After the LAST byte, wait for BTF ("byte transfer finished") BEFORE the STOP.
+ *     TXE only says the byte left DR; BTF says it has been completely clocked out
+ *     (both DR and the shift register are empty). Setting STOP right after
+ *     writing the last byte could cut it off before its 9th clock.
+ *   - A NACK can arrive after ANY byte, not only after the address: the device
+ *     refuses a register or a value. So every wait goes through prvWaitFlag(),
+ *     which watches AF (and the bus-error flags) as well. At the first error the
+ *     loop stops, and prvStop() releases the bus.
+ *
+ * Nothing in this function is time-critical: during a transmit the peripheral
+ * simply stretches SCL (holds it low) if software is late with the next byte, so
+ * a preemption just delays the transfer. (Receiving is different, see step 5.)
+ *
+ * First test: write 0xB6 to register 0xE0 of the BMP280, the soft reset (as a
+ * driver does at start-up): the call must return I2C_OK with the sensor connected
+ * and I2C_ERR_NACK without it. The sensor needs a short time to restart afterwards;
+ * the register can only be read back in step 5.
+ */
+i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
+                            const uint8_t * pucData, uint32_t ulLength )
+{
+    i2c_status_t xStatus;
+    uint32_t ulIndex;
+
+    configASSERT( ucDevice <= 0x7FU );
+    configASSERT( ( pucData != NULL ) || ( ulLength == 0U ) );
+
+    if( prvWaitClear( &I2C1->SR2, I2C_SR2_BUSY ) == pdFALSE )
+    {
+        return I2C_ERR_TIMEOUT;
+    }
+
+    xStatus = prvStartAndAddress( ucDevice );
+
+    if( xStatus == I2C_OK )
+    {
+        xStatus = prvWaitFlag( I2C_SR1_TXE );
+    }
+
+    if( xStatus == I2C_OK )
+    {
+        I2C1->DR = ucRegister;
+    }
+
+    for( ulIndex = 0U; ( ulIndex < ulLength ) && ( xStatus == I2C_OK ); ulIndex++ )
+    {
+        xStatus = prvWaitFlag( I2C_SR1_TXE );
+
+        if( xStatus == I2C_OK )
+        {
+            I2C1->DR = pucData[ ulIndex ];
+        }
+    }
+
+    if( xStatus == I2C_OK )
+    {
+        xStatus = prvWaitFlag( I2C_SR1_BTF );
+    }
+
+    return prvStop( xStatus );
+}
+
+/* ==========================================================================
  * PUBLIC FUNCTION
  * ========================================================================== */
 void i2c_init( void )
 {
-    /* Steps 1) and 2). Step 3) is i2c_probe(); steps 4) onward are added one at
-     * a time. */
+    /* Steps 1) and 2). Step 3) is the shared start/address/stop code, step 4) is
+     * i2c_write_reg(); steps 5) onward are added one at a time. */
     prvI2cClocksResetAndPins();
     prvI2cTimingAndEnable();
 }

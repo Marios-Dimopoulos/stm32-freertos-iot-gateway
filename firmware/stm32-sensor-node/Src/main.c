@@ -113,40 +113,48 @@ static void prvLedInit( void )
 }
 
 /* ==========================================================================
- * TEMPORARY: BMP280 PROBE TEST
+ * TEMPORARY: BMP280 I2C TESTS
  * ==========================================================================
  *
- * Checks once per second whether the BMP280 answers at 0x76 and prints the result
- * (the text goes out through the UART). With the sensor unplugged the result must
- * be NACK, and the task must NOT hang; plug it in while running and it must change
- * to ACK. To be removed when the real sensor task exists (the address constant
- * then lives in bmp280.c).
+ *   - once, when the blink task starts: write the soft-reset value 0xB6 into
+ *     register 0xE0 of the BMP280 (what a driver does first) and report the result;
+ * The text goes out through the UART. With the sensor unplugged it must report
+ * NACK, and the task must NOT hang. To be removed when the real sensor task exists
+ * (the address and register constants then live in bmp280.c).
  */
-#define BMP280_I2C_ADDRESS    ( 0x76U )
+#define BMP280_I2C_ADDRESS      ( 0x76U )
+#define BMP280_REG_RESET        ( 0xE0U )
+#define BMP280_RESET_VALUE      ( 0xB6U )
 
-static void prvReportProbe( void )
+static const char * prvStatusText( i2c_status_t xStatus )
 {
-    switch( i2c_probe( BMP280_I2C_ADDRESS ) )
+    switch( xStatus )
     {
         case I2C_OK:
-            ( void ) uart_write_string( "BMP280 probe: ACK\r\n" );
-            break;
+            return "OK";
 
         case I2C_ERR_NACK:
-            ( void ) uart_write_string( "BMP280 probe: NACK\r\n" );
-            break;
+            return "NACK";
 
         case I2C_ERR_TIMEOUT:
-            ( void ) uart_write_string( "BMP280 probe: TIMEOUT\r\n" );
-            break;
+            return "TIMEOUT";
 
         case I2C_ERR_BUS:
-            ( void ) uart_write_string( "BMP280 probe: BUS ERROR\r\n" );
-            break;
+            return "BUS ERROR";
 
         default:
-            break;
+            return "?";
     }
+}
+
+static void prvSoftResetTest( void )
+{
+    static const uint8_t ucResetValue = BMP280_RESET_VALUE;
+    const char * pcText = prvStatusText( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_RESET, &ucResetValue, 1U ) );
+
+    ( void ) uart_write_string( "BMP280 soft reset write: " );
+    ( void ) uart_write_string( pcText );
+    ( void ) uart_write_string( "\r\n" );
 }
 
 /* ==========================================================================
@@ -190,13 +198,18 @@ static void prvBlinkTask( void * pvParameters )
     ( void ) pvParameters;
 
     /* The first reference point for vTaskDelayUntil(): "now". */
+    /* TEMPORARY: the soft-reset write test, once. The sensor needs a few
+     * milliseconds to restart afterwards (about 2 ms, from the datasheet as I
+     * remember it), so wait before any further access. */
+    prvSoftResetTest();
+    vTaskDelay( pdMS_TO_TICKS( 10 ) );
+
     xLastWakeTime = xTaskGetTickCount();
 
     for( ;; )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
         ( void ) uart_write_string( "LED on\r\n" );     /* TEMPORARY test of the UART */
-        prvReportProbe();                                 /* TEMPORARY test of the I2C probe */
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */
@@ -247,8 +260,8 @@ int main( void )
 
     /* I2C1 for the BMP280, built step by step (see i2c.c). So far it only
      * enables the clocks, resets the peripheral, sets up PB8/PB9, programs the
-     * 100 kHz timing and enables I2C1; i2c_probe() is used by the temporary test in
-     * the blink task. */
+     * 100 kHz timing and enables I2C1; i2c_write_reg() is used by the temporary test
+     * in the blink task. */
     i2c_init();
 
     /*

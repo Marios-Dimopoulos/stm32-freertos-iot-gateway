@@ -95,11 +95,14 @@ firmware/stm32-sensor-node/FreeRTOS/
   open-drain alternate function with the internal pull-up as a backup (MODER
   written last); (2) the 100 kHz timing (`CR2.FREQ` = 42, `CCR` = 210, `TRISE`
   = 43, computed from the real APB1 clock and checked against ST's library
-  formulas) and the enable bit; (3) `i2c_probe()`: START + address, ACK/NACK
-  with distinct status codes and waits bounded in real time by the RTOS tick
-  (task-only, after the scheduler has started). **Verified on the board: the
-  BMP280 answers ACK at 0x76.** A temporary test in the blink task prints the
-  probe result once a second. Not yet: register write/read. Design decisions (register API,
+  formulas) and the enable bit; (3) START + address with ACK/NACK reported as
+  distinct status codes and waits bounded in real time by the RTOS tick
+  (task-only, after the scheduler has started); (4) `i2c_write_reg()`.
+  **Verified on the board: the BMP280 acknowledges at 0x76 and a register
+  write (soft reset, 0xB6 into 0xE0) returns OK.** A temporary test in the
+  blink task prints the write result once at start-up. A probe function
+  (address check only) was used for bring-up and then removed: write/read
+  report a NACK themselves. Not yet: register read. Design decisions (register API,
   7-bit address, distinct error codes, tick-based bounded polling, critical
   section for the time-critical receive bit, single owner without mutex,
   self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; an ADR
@@ -255,3 +258,5 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   checked in the debugger.
 - 2026-10-06: I2C1 timing + enable and `i2c_probe()` done; the BMP280
   (CSB high, SDO low) answers ACK at 0x76.
+- 2026-10-06: `i2c_write_reg()` added and verified (soft-reset write returns
+  OK). `i2c_probe()` removed: the real transactions report ACK/NACK themselves.
