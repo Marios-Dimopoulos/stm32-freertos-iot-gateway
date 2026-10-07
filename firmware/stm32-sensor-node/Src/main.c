@@ -116,58 +116,12 @@ static void prvLedInit( void )
     GPIOA->MODER = ( GPIOA->MODER & ~GPIO_MODER_MODER5 ) | GPIO_MODER_MODER5_0;
 }
 
-/* ==========================================================================
- * TEMPORARY: BMP280 CHIP-ID CHECK
- * ==========================================================================
- *
- * Once per second the blink task reads the chip ID (register 0xD0, expected 0x58)
- * and prints the result through the UART: OK, MISMATCH (the transfer worked but the
- * byte is not 0x58), or the driver's error (NACK, TIMEOUT, BUS ERROR). It is a sign
- * of life for the I2C driver: with the sensor unplugged the line must report NACK
- * and the task must NOT hang, and shorting SDA to ground must give TIMEOUT and then
- * OK again after the release. To be removed when the real sensor task exists (the
- * constants then live in bmp280.c).
- */
-#define BMP280_I2C_ADDRESS      ( 0x76U )
-#define BMP280_REG_CHIP_ID      ( 0xD0U )
-#define BMP280_CHIP_ID          ( 0x58U )
-
-static const char * prvStatusTextI2C( i2c_status_t xStatus )
-{
-    switch( xStatus )
-    {
-        case I2C_OK:
-            return "OK";
-
-        case I2C_ERR_NACK:
-            return "NACK";
-
-        case I2C_ERR_TIMEOUT:
-            return "TIMEOUT";
-
-        case I2C_ERR_BUS:
-            return "BUS ERROR";
-
-        default:
-            return "?";
-    }
-}
-
 static void prvReport( const char * pcWhat, const char * pcResult )
 {
     ( void ) uart_write_string( pcWhat );
     ( void ) uart_write_string( ": " );
     ( void ) uart_write_string( pcResult );
     ( void ) uart_write_string( "\r\n" );
-}
-
-static void prvChipIdTest( void )
-{
-    uint8_t ucId = 0U;
-    const i2c_status_t xStatus = i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_CHIP_ID, &ucId, 1U );
-
-    prvReport( "BMP280 chip ID",
-               ( xStatus != I2C_OK ) ? prvStatusTextI2C( xStatus ) : ( ( ucId == BMP280_CHIP_ID ) ? "OK" : "MISMATCH" ) );
 }
 
 /* ==========================================================================
@@ -217,13 +171,12 @@ static void prvBlinkTask( void * pvParameters )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
         ( void ) uart_write_string( "LED on\r\n" );     /* TEMPORARY test of the UART */
-        prvChipIdTest();                                  /* TEMPORARY test of the I2C read */
-        vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
+        vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 1000 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */
         ( void ) uart_write_string( "LED off\r\n" );    /* TEMPORARY test of the UART */
 
-        vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 500 ) );
+        vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 1000 ) );
     }
 }
 
