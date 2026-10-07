@@ -220,16 +220,37 @@ static void prvUartConfigure( void )
  * line's capacity. The buffer is a static array, so its RAM is declared in our
  * code (ADR-0001).
  *
- * SHARED STATE AND HOW IT IS PROTECTED (ADR-0004). Tasks and the ISR share the
- * buffer, the two counters and the USART2->CR1 register (the task sets TXEIE, the
- * ISR clears it; each is a read-modify-write, the kind of operation an interrupt
- * can split and lose an update of). The task side therefore runs inside a
- * critical section (taskENTER_CRITICAL: BASEPRI is raised to the FreeRTOS line,
- * level 5). Interrupts at level 5 or numerically higher are then held back for
- * the few instructions of the section, so the ISR cannot run in the middle of the
- * task's update. For that to work the USART2 interrupt MUST sit at level >= 5:
- * it is set to level 10 (checked at build time), deliberately less urgent than
- * the future SPI/DMA interrupt. The reverse case cannot happen: a task never
+ * SHARED STATE AND HOW IT IS PROTECTED (ADR-0004). The task side of the buffer
+ * runs inside a critical section (taskENTER_CRITICAL: BASEPRI is raised to the
+ * FreeRTOS line, level 5). Interrupts at level 5 or numerically higher are held
+ * back for the few instructions of the section. There are three reasons, in
+ * order of importance:
+ *
+ *   1) TASK AGAINST TASK (the strongest reason). Several tasks may call
+ *      uart_write(), and a higher-priority task can preempt a lower one at any
+ *      instruction. Without the section: task A reads ulTxHead, task B preempts it,
+ *      reads the SAME ulTxHead, copies its message to the same slots and moves the
+ *      head; when A resumes it overwrites B's bytes and moves the head from its old
+ *      value, so one message is lost and the other is corrupted. Today only one
+ *      task prints, but the planned SPI transmit task (priority 2) will be able to
+ *      preempt the sensor task, so the protection is needed by design.
+ *   2) CHECK AND COPY AS ONE UNIT. The free-space check and the copy must not be
+ *      separated: if another task could take the space between them, two tasks
+ *      would both pass the check and together overflow the buffer. This is also
+ *      what makes the "whole message or nothing" rule hold.
+ *   3) THE SHARED CR1 REGISTER. The task sets TXEIE in USART2->CR1 and the ISR
+ *      clears it; each is a read-modify-write, and CR1 is a register that both
+ *      sides change, so an interrupt could in principle split the task's update.
+ *      My own analysis (not proven formally) is that this race is BENIGN here: the
+ *      ISR only ever changes TXEIE, and a stale write can at worst leave TXEIE set
+ *      once more than needed, which causes one extra interrupt that finds the
+ *      buffer empty and turns it off again. The protection costs a few
+ *      microseconds, so it is kept anyway: a shared register is easier to defend
+ *      when its updates are never split.
+ *
+ * For the section to hold the ISR back, the USART2 interrupt MUST sit at level
+ * >= 5: it is set to level 10 (checked at build time), deliberately less urgent
+ * than the future SPI/DMA interrupt. The reverse case cannot happen: a task never
  * runs while an ISR is in progress. The ISR itself calls no FreeRTOS function.
  * The section also contains a compiler memory barrier, so the byte is really in
  * the array before the head counter moves.
