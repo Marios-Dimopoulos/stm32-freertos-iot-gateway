@@ -2,8 +2,8 @@
  * bmp280.h — Bosch BMP280 temperature and pressure sensor, on I2C1 (address 0x76).
  *
  * WORK IN PROGRESS, built one step at a time (see bmp280.c). So far
- * bmp280_init() resets the sensor, checks its chip ID and reads its calibration
- * constants. The module never touches
+ * bmp280_init() resets the sensor, checks its chip ID, reads its calibration
+ * constants and starts the measurements. The module never touches
  * I2C registers: it only uses i2c_read_reg() / i2c_write_reg().
  */
 
@@ -23,7 +23,8 @@ typedef enum
 /*
  * Resets the sensor and checks that a BMP280 answers: soft reset, a wait for it to
  * restart, then the chip ID is read and compared with 0x58, and finally the 24
- * factory calibration bytes are read and stored inside the module.
+ * factory calibration bytes are read and stored inside the module, and the sensor
+ * is configured (oversampling x16, IIR filter 16) and started in normal mode.
  *
  * It must be called from a TASK, after the scheduler has started, and only from
  * the task that owns the I2C bus: it sleeps with vTaskDelay() while the sensor

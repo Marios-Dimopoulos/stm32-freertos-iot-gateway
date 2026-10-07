@@ -22,7 +22,7 @@
  *
  *   1) soft reset, wait, chip ID                                        <- DONE
  *   2) read the 24 trimming bytes and unpack them                       <- DONE
- *   3) write config and ctrl_meas, read them back
+ *   3) write config and ctrl_meas (no read-back)                        <- DONE
  *   4) the 6-byte burst and the two 20-bit raw values ("no data" check)
  *   5) temperature compensation
  *   6) pressure compensation
@@ -235,12 +235,89 @@ static void prvUnpackTrimming( const uint8_t * pucBytes )
     xCalib.sDigP9 = prvSigned16( &pucBytes[ 22 ] );
 }
 
+/* ==========================================================================
+ * STEP 3) THE TWO CONFIGURATION REGISTERS
+ * ==========================================================================
+ *
+ * Two one-byte read/write registers set how the sensor measures (the field layouts
+ * and codes are from my memory of the datasheet's register descriptions; to be
+ * checked against them). Both reset to 0, which means "sleep mode".
+ *
+ *   ctrl_meas, 0xF4          config, 0xF5
+ *     bits 7:5  osrs_t         bits 7:5  t_sb      standby time between two
+ *                              measurements in normal mode
+ *                                         000 = 0.5 ms, 001 = 62.5 ms, ... up to
+ *                                         several seconds
+ *     bits 4:2  osrs_p         bits 4:2  filter    IIR filter coefficient
+ *                                         000 = off, 001 = 2, 010 = 4, 011 = 8,
+ *                                         1xx = 16
+ *     bits 1:0  mode           bit  0    spi3w_en  SPI 3-wire mode: irrelevant for
+ *                                         I2C, left at 0
+ *   osrs codes: 000 = skipped, 001 = x1, 010 = x2, 011 = x4, 100 = x8, 101 = x16.
+ *   mode codes: 00 = sleep, 01 and 10 = forced, 11 = NORMAL.
+ *
+ * What the settings mean:
+ *   - OVERSAMPLING: the sensor takes several ADC samples per measurement and
+ *     averages them. More samples mean less noise and finer resolution, but a longer
+ *     measurement. x16 for both is the maximum (the settings of the reference code).
+ *   - NORMAL MODE: the sensor measures continuously by itself, and sleeps t_sb
+ *     between two measurements; we read the result whenever we like. (In forced mode
+ *     we would trigger every measurement ourselves.)
+ *   - IIR FILTER: every output is mixed with the earlier ones, so short disturbances
+ *     (a slammed door changes the air pressure briefly) are smoothed away, at the cost
+ *     of a slower response to a real change. It works on the sensor's internal samples,
+ *     not on our once-a-second reads.
+ *
+ * THE ORDER: config FIRST, ctrl_meas SECOND. Writing mode = normal in ctrl_meas
+ * starts the measurements, and as I remember the datasheet, writes to config can be
+ * ignored while the sensor is in normal mode. The two registers are neighbours, but a
+ * single two-byte write from 0xF4 would write ctrl_meas first, which is the wrong
+ * order, so they are two separate one-byte writes.
+ *
+ * The values are built from named fields instead of two bare binary constants, so
+ * that every bit pair can be read as a setting:
+ *   ctrl_meas = ( 5 << 5 ) | ( 5 << 2 ) | 3  = 0xB7
+ *   config    = ( 0 << 5 ) | ( 4 << 2 )      = 0x10
+ *
+ * NO READ-BACK. The two registers are not read again to check the writes: a wrong
+ * or ignored write would show up as wrong or missing measurements, and that is
+ * what step 4 and the following ones check. A failed write is still reported: every
+ * write returns its I2C status (a NACK, a timeout).
+ *
+ * Once ctrl_meas is written the sensor is measuring: from here on the data registers
+ * leave their reset value (80 00 00 80 00 00) after the first measurement, which takes
+ * tens of milliseconds at x16. Reading them is step 4. Because init starts with a soft
+ * reset, a run that finds the sensor already measuring from a previous run still
+ * begins from the same state.
+ */
+#define BMP280_REG_CTRL_MEAS          ( 0xF4U )
+#define BMP280_REG_CONFIG             ( 0xF5U )
+
+#define BMP280_OSRS_X16               ( 5U )
+#define BMP280_MODE_NORMAL            ( 3U )
+#define BMP280_FILTER_16              ( 4U )
+#define BMP280_STANDBY_0_5_MS         ( 0U )
+
+#define BMP280_CTRL_OSRS_T_POS        ( 5U )
+#define BMP280_CTRL_OSRS_P_POS        ( 2U )
+#define BMP280_CTRL_MODE_POS          ( 0U )
+#define BMP280_CONFIG_T_SB_POS        ( 5U )
+#define BMP280_CONFIG_FILTER_POS      ( 2U )
+
+#define BMP280_CTRL_MEAS_VALUE        ( ( BMP280_OSRS_X16 << BMP280_CTRL_OSRS_T_POS ) | \
+                                        ( BMP280_OSRS_X16 << BMP280_CTRL_OSRS_P_POS ) | \
+                                        ( BMP280_MODE_NORMAL << BMP280_CTRL_MODE_POS ) )
+#define BMP280_CONFIG_VALUE           ( ( BMP280_STANDBY_0_5_MS << BMP280_CONFIG_T_SB_POS ) | \
+                                        ( BMP280_FILTER_16 << BMP280_CONFIG_FILTER_POS ) )
+
 bmp280_status_t bmp280_init( void )
 {
     /* The pointer given to i2c_write_reg() is only used during the call (the driver
      * is blocking and has finished with it when it returns), so a local variable is
      * enough. */
     const uint8_t ucResetValue = BMP280_RESET_VALUE;
+    const uint8_t ucConfigValue = BMP280_CONFIG_VALUE;
+    const uint8_t ucCtrlMeasValue = BMP280_CTRL_MEAS_VALUE;
     uint8_t ucId = 0U;
     uint8_t ucTrimming[ BMP280_TRIMMING_BYTES ];
     bmp280_status_t xStatus;
@@ -270,6 +347,17 @@ bmp280_status_t bmp280_init( void )
     if( xStatus == BMP280_OK )
     {
         prvUnpackTrimming( ucTrimming );
+    }
+
+    /* Step 3: config first, then ctrl_meas, which starts the measurements. */
+    if( xStatus == BMP280_OK )
+    {
+        xStatus = prvFromI2c( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_CONFIG, &ucConfigValue, 1U ) );
+    }
+
+    if( xStatus == BMP280_OK )
+    {
+        xStatus = prvFromI2c( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_CTRL_MEAS, &ucCtrlMeasValue, 1U ) );
     }
 
     return xStatus;

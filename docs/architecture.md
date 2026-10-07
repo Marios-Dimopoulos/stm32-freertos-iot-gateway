@@ -136,9 +136,13 @@ firmware/stm32-sensor-node/FreeRTOS/
   `dig_T1` and `dig_P1` unsigned, the other ten signed) into a static struct.
   Checked in the debugger: the raw bytes and the unpacked values were in the
   typical ranges (`dig_T1` 27716 and `dig_T2` 26417 read from the first bytes).
-  The struct is `volatile` only until the maths read it. Next: the two
-  configuration registers, the 6-byte burst and the integer compensation
-  (temperature in hundredths of a degree, pressure in Pa).
+  The struct is `volatile` only until the maths read it. (3) It then writes
+  the two configuration registers, `config` (0xF5, standby 0.5 ms, IIR filter
+  16) before `ctrl_meas` (0xF4, x16 oversampling for both, normal mode), built
+  from named fields (0x10 and 0xB7); `ctrl_meas` starts the measurements. The
+  registers are not read back: a wrong value would show in the measurements.
+  Init still prints `OK` on the board. Next: the 6-byte burst and the integer
+  compensation (temperature in hundredths of a degree, pressure in Pa).
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
