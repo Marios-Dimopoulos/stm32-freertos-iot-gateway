@@ -113,11 +113,15 @@ Option B, with polling (Option C rejected for now), and these choices:
   the bus busy after the reset, and the calls would keep returning `TIMEOUT`. Freeing it
   needs up to nine SCL pulses by hand; not written, because it has not been needed.
 - **A power cycle of the sensor can be required.** After the SDA test, the sensor
-  answered `NACK` until the board was unplugged and plugged again. The cause is not
-  established: a state inside the sensor, or `CSB` brushing ground (as I remember the
-  datasheet, the BMP280 then switches to SPI mode until power is cycled; to be
-  confirmed there). No driver can fix this from the I2C side, so the sensor task has to
-  report it and retry.
+  answered `NACK` until the board was unplugged and plugged again. The most likely
+  cause is `CSB` brushing ground, but that day it was not measured. Later, with the
+  BMP280 module, the same symptom was **reproduced on purpose**: with the sensor
+  powered, moving `CSB` from 3.3 V to GND gave `NACK`, and moving it back to 3.3 V
+  still gave `NACK` until the USB cable was unplugged and plugged in again. So a
+  falling edge on `CSB` locks the sensor into SPI mode until the next power-up (as I
+  remembered the datasheet; confirmed on this breakout). No driver can fix this from
+  the I2C side, so the sensor task has to report it and retry, and `CSB` must be wired
+  firmly to 3.3 V (a loose wire or a glitch on it is enough).
 - The pull-ups of the breakout board were never measured; the internal ones are weak
   (rise time about 1.7 us against the 1 us allowed, with an assumed 50 pF), so external
   4.7 kOhm resistors are the fix if the bus turns flaky.

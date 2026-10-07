@@ -13,8 +13,9 @@ instrument yet** (no logic analyzer; to be checked on D13 later). Register
 values and SysTick `LOAD = 83999` were checked in the debugger. USART2 sends
 `LED on` / `LED off` lines at 115200 baud over the ST-LINK virtual COM port, by
 interrupt through a ring buffer, whole messages or nothing (verified in Tera
-Term, including the drop behaviour when the buffer is full). There are no
-sensor or I2C drivers yet.
+Term, including the drop behaviour when the buffer is full). The I2C1 driver
+works, and the first step of the BMP280 module (soft reset and chip ID) is
+verified on the board; the sensor task and the BMP280 maths do not exist yet.
 
 ### Toolchain / project setup (done)
 
@@ -59,9 +60,11 @@ firmware/stm32-sensor-node/FreeRTOS/
 
 - `main.c`: **temporary bring-up code.** `SystemCoreClockUpdate()`, PA5 set up
   at register level (GPIOA clock enable, read-modify-write on `MODER`), one
-  blink task created with `xTaskCreateStatic()` (priority 1, static 128-word
-  stack + TCB), toggling PA5 through `GPIOA->BSRR` every 500 ms with
-  `vTaskDelayUntil()`. To be removed when the real sensor task exists.
+  blink task created with `xTaskCreateStatic()` (priority 1, static 256-word
+  stack + TCB, not measured since the I2C tests were removed), toggling PA5
+  through `GPIOA->BSRR` every 1000 ms (a 2 s period) with `vTaskDelayUntil()`.
+  It also prints `LED on/off` and calls `bmp280_init()` once at its start,
+  printing the result. To be removed when the real sensor task exists.
   PA5 is also SPI1_SCK in the Phase 2 design.
 - `freertos_callbacks.c`: `vApplicationGetIdleTaskMemory()` (static Idle TCB +
   stack sized with `configMINIMAL_STACK_SIZE`) and
@@ -112,11 +115,25 @@ firmware/stm32-sensor-node/FreeRTOS/
   that the scheduler has started. **Verified: shorting SDA to ground gives
   TIMEOUT and the driver returns to OK after the release, without a reset.**
   Limits: no bus clear (a sensor holding SDA low is not freed), and after that
-  test the sensor answered NACK until the board was power-cycled. Design decisions (register API,
+  test the sensor answered NACK until the board was power-cycled (most likely
+  CSB brushing ground: a falling edge on CSB was later shown to lock the sensor
+  into SPI mode until power-up, see the BMP280 entry). Design decisions (register API,
   7-bit address, distinct error codes, tick-based bounded polling, critical
   section for the time-critical receive bit, single owner without mutex,
   self-recovery, 100 kHz) are listed in the header comment of `i2c.c`; see
   ADR-0007.
+- `bmp280.c` / `bmp280.h`: the BMP280 module, built one step at a time on top
+  of `i2c_read_reg()` / `i2c_write_reg()`. Done: (1) `bmp280_init()` does the
+  soft reset (0xB6 to 0xE0), a 10 ms `vTaskDelay`, then reads the chip ID
+  (0xD0, expected 0x58) and returns `BMP280_OK`, the I2C cause (NACK, TIMEOUT,
+  BUS) or `BMP280_ERR_ID`; `bmp280_status_text()` gives the text. It must run
+  in a task, after the scheduler has started. **Verified on the board:** `OK`
+  with the sensor connected, `NACK` with CSB at GND after a power cycle. With
+  the sensor powered, a falling edge on CSB made it answer NACK until the USB
+  cable was unplugged, even after CSB went back to 3.3 V: CSB must be wired
+  firmly to 3.3 V. Next: the 24 trimming bytes, the two configuration
+  registers, the 6-byte burst and the integer compensation (temperature in
+  hundredths of a degree, pressure in Pa).
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
@@ -151,8 +168,8 @@ be written once the drivers exist.)
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
 - USART2 has no number printing yet, and nothing prints the drop counter. The
-  drop policy was verified with a temporary burst test (removed). No I2C1
-  driver, no BMP280 module.
+  drop policy was verified with a temporary burst test (removed). The BMP280
+  module has no trimming, configuration or compensation yet (step 1 only).
 
 ### Architecture decisions so far
 
@@ -278,3 +295,7 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 - 2026-10-06: I2C error recovery (step 6) added and verified with an SDA-to-ground
   test; `INCLUDE_xTaskGetSchedulerState` enabled for the driver's assertion.
   Recorded as ADR-0007.
+- 2026-10-07: I2C bring-up tests removed from `main.c` (the chip-ID check now
+  lives in `bmp280_init()`). `bmp280.c` step 1 added (soft reset, wait, chip ID) and verified: OK
+  with the sensor connected, NACK with CSB at GND. A falling edge on CSB while
+  powered locks the sensor out of I2C until the USB cable is unplugged.

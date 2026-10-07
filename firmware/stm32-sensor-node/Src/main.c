@@ -27,6 +27,7 @@
 #include "clock.h"
 #include "uart.h"
 #include "i2c.h"
+#include "bmp280.h"
 
 /* ==========================================================================
  * COMPILE-TIME CONSISTENCY CHECK
@@ -163,6 +164,10 @@ static void prvBlinkTask( void * pvParameters )
     TickType_t xLastWakeTime;
 
     ( void ) pvParameters;
+
+    /* TEMPORARY (BMP280 step 1): reset the sensor, check its ID, print the result.
+     * It sleeps about 10 ms inside, so it goes BEFORE the reference point below. */
+    prvReport( "BMP280 init", bmp280_status_text( bmp280_init() ) );
 
     /* The first reference point for vTaskDelayUntil(): "now". */
     xLastWakeTime = xTaskGetTickCount();
