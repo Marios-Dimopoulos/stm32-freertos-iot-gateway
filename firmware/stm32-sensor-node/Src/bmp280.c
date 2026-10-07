@@ -21,7 +21,7 @@
  * Steps, in the order they are built and checked on the board:
  *
  *   1) soft reset, wait, chip ID                                        <- DONE
- *   2) read the 24 trimming bytes and unpack them
+ *   2) read the 24 trimming bytes and unpack them                       <- DONE
  *   3) write config and ctrl_meas, read them back
  *   4) the 6-byte burst and the two 20-bit raw values ("no data" check)
  *   5) temperature compensation
@@ -124,6 +124,117 @@ static bmp280_status_t prvFromI2c( i2c_status_t xStatus )
     return xResult;
 }
 
+/* ==========================================================================
+ * STEP 2) THE TRIMMING BYTES
+ * ==========================================================================
+ *
+ * What they are. The sensor's ADC does not output a temperature or a pressure: it
+ * outputs a raw 20-bit number that depends on the physical properties of THIS chip.
+ * At the factory Bosch measures every chip and stores 12 correction constants in its
+ * non-volatile memory, 2 bytes each, 24 bytes from register 0x88 (as I remember the
+ * datasheet's memory map; 0xA0-0xA1 follow but are reserved). The compensation
+ * formulas combine the raw number with these constants and give the true value.
+ * They never change for a given chip, so they are read ONCE, at init:
+ *
+ *   0x88-0x89  dig_T1   unsigned     0x94-0x95  dig_P4   signed
+ *   0x8A-0x8B  dig_T2   signed       0x96-0x97  dig_P5   signed
+ *   0x8C-0x8D  dig_T3   signed       0x98-0x99  dig_P6   signed
+ *   0x8E-0x8F  dig_P1   unsigned     0x9A-0x9B  dig_P7   signed
+ *   0x90-0x91  dig_P2   signed       0x9C-0x9D  dig_P8   signed
+ *   0x92-0x93  dig_P3   signed       0x9E-0x9F  dig_P9   signed
+ *
+ * Each constant is stored LOW byte first (the low byte at the lower address), so
+ * dig_T2 = ( byte[3] << 8 ) | byte[2]. This is the sensor's byte order; it has
+ * nothing to do with the MCU's.
+ *
+ * THE TYPES MATTER. dig_T1 and dig_P1 are UNSIGNED 16-bit, all the others SIGNED
+ * 16-bit. Treating dig_T1 as signed (a value above 32767 would turn negative), or
+ * dig_T2 as unsigned, gives wrong temperatures with no error of any kind. The struct
+ * below uses the exact types of the datasheet.
+ *
+ * HOW THEY ARE UNPACKED. Field by field, with explicit shifts, through two tiny
+ * helpers. The alternative would be to read the 24 bytes straight into the struct:
+ * it would work here (the Cortex-M4 is little-endian and the 12 fields are 16-bit,
+ * in the same order as the registers, so there is no padding), but it relies on
+ * that layout without saying so. The explicit version can be compared with the table
+ * above line by line.
+ *
+ * The cast of an unsigned 16-bit value to a signed one (prvSigned16) is
+ * implementation-defined in C when the value does not fit (above 32767). Arm
+ * Compiler defines it as the two's-complement wrap, which is what we need: 0xFC18
+ * becomes -1000.
+ *
+ * READ FIRST INTO A LOCAL BUFFER, then unpack only if the read succeeded. A failed
+ * read never leaves a half-written calibration behind, and running init again after
+ * a failure simply tries again. The buffer lives on the task's stack (24 bytes).
+ *
+ * No sanity check of the values (all 0x00, all 0xFF): there is no status code for it
+ * and nothing needs one yet. The dangerous case, dig_P1 = 0, makes the pressure
+ * formula divide by zero; that guard belongs to the maths (step 6).
+ *
+ * The calibration is `volatile` for now ONLY so that the compiler keeps the stores
+ * while nothing reads it yet (without that, a static that is written and never read
+ * can be removed, and the debugger would show nothing). Remove the qualifier when
+ * the compensation functions use it (step 5).
+ *
+ * How to check it on the board: a breakpoint at the end of bmp280_init() (inside
+ * this file, because the variable is static), then watch xCalib and ucTrimming.
+ *   - dig_T1 = ucTrimming[1] * 256 + ucTrimming[0], and so on for the others;
+ *   - typical magnitudes (Bosch's example set, from memory; every chip differs):
+ *     T1 about 27000, T2 about 26000, T3 a small negative number, P1 about 36000,
+ *     P2 about -10000, P6 a small negative number, P9 about 6000;
+ *   - all zeros or all -1 would mean the read did not do what we think; a negative
+ *     T1 or P1 would mean the unsigned type was lost.
+ */
+#define BMP280_REG_TRIMMING        ( 0x88U )
+#define BMP280_TRIMMING_BYTES      ( 24U )
+
+typedef struct
+{
+    uint16_t usDigT1;
+    int16_t sDigT2;
+    int16_t sDigT3;
+    uint16_t usDigP1;
+    int16_t sDigP2;
+    int16_t sDigP3;
+    int16_t sDigP4;
+    int16_t sDigP5;
+    int16_t sDigP6;
+    int16_t sDigP7;
+    int16_t sDigP8;
+    int16_t sDigP9;
+} bmp280_calib_t;
+
+static volatile bmp280_calib_t xCalib;
+
+/* Two bytes in the sensor's order (low byte first) into a 16-bit number. */
+static uint16_t prvUnsigned16( const uint8_t * pucBytes )
+{
+    return ( uint16_t ) ( ( ( uint16_t ) pucBytes[ 1 ] << 8 ) | pucBytes[ 0 ] );
+}
+
+/* The same, for the constants that are signed. */
+static int16_t prvSigned16( const uint8_t * pucBytes )
+{
+    return ( int16_t ) prvUnsigned16( pucBytes );
+}
+
+static void prvUnpackTrimming( const uint8_t * pucBytes )
+{
+    xCalib.usDigT1 = prvUnsigned16( &pucBytes[ 0 ] );
+    xCalib.sDigT2 = prvSigned16( &pucBytes[ 2 ] );
+    xCalib.sDigT3 = prvSigned16( &pucBytes[ 4 ] );
+    xCalib.usDigP1 = prvUnsigned16( &pucBytes[ 6 ] );
+    xCalib.sDigP2 = prvSigned16( &pucBytes[ 8 ] );
+    xCalib.sDigP3 = prvSigned16( &pucBytes[ 10 ] );
+    xCalib.sDigP4 = prvSigned16( &pucBytes[ 12 ] );
+    xCalib.sDigP5 = prvSigned16( &pucBytes[ 14 ] );
+    xCalib.sDigP6 = prvSigned16( &pucBytes[ 16 ] );
+    xCalib.sDigP7 = prvSigned16( &pucBytes[ 18 ] );
+    xCalib.sDigP8 = prvSigned16( &pucBytes[ 20 ] );
+    xCalib.sDigP9 = prvSigned16( &pucBytes[ 22 ] );
+}
+
 bmp280_status_t bmp280_init( void )
 {
     /* The pointer given to i2c_write_reg() is only used during the call (the driver
@@ -131,6 +242,7 @@ bmp280_status_t bmp280_init( void )
      * enough. */
     const uint8_t ucResetValue = BMP280_RESET_VALUE;
     uint8_t ucId = 0U;
+    uint8_t ucTrimming[ BMP280_TRIMMING_BYTES ];
     bmp280_status_t xStatus;
 
     xStatus = prvFromI2c( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_RESET, &ucResetValue, 1U ) );
@@ -147,6 +259,17 @@ bmp280_status_t bmp280_init( void )
     if( ( xStatus == BMP280_OK ) && ( ucId != BMP280_CHIP_ID ) )
     {
         xStatus = BMP280_ERR_ID;
+    }
+
+    /* Step 2: the calibration constants, read into the local buffer first. */
+    if( xStatus == BMP280_OK )
+    {
+        xStatus = prvFromI2c( i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_TRIMMING, ucTrimming, BMP280_TRIMMING_BYTES ) );
+    }
+
+    if( xStatus == BMP280_OK )
+    {
+        prvUnpackTrimming( ucTrimming );
     }
 
     return xStatus;

@@ -131,9 +131,14 @@ firmware/stm32-sensor-node/FreeRTOS/
   with the sensor connected, `NACK` with CSB at GND after a power cycle. With
   the sensor powered, a falling edge on CSB made it answer NACK until the USB
   cable was unplugged, even after CSB went back to 3.3 V: CSB must be wired
-  firmly to 3.3 V. Next: the 24 trimming bytes, the two configuration
-  registers, the 6-byte burst and the integer compensation (temperature in
-  hundredths of a degree, pressure in Pa).
+  firmly to 3.3 V. (2) `bmp280_init()` then reads the 24 factory trimming bytes
+  into a local buffer and, if the read worked, unpacks them (low byte first;
+  `dig_T1` and `dig_P1` unsigned, the other ten signed) into a static struct.
+  Checked in the debugger: the raw bytes and the unpacked values were in the
+  typical ranges (`dig_T1` 27716 and `dig_T2` 26417 read from the first bytes).
+  The struct is `volatile` only until the maths read it. Next: the two
+  configuration registers, the 6-byte burst and the integer compensation
+  (temperature in hundredths of a degree, pressure in Pa).
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
