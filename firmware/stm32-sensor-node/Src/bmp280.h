@@ -10,6 +10,8 @@
 #ifndef BMP280_H
 #define BMP280_H
 
+#include <stdint.h>
+
 typedef enum
 {
     BMP280_OK = 0,
@@ -35,6 +37,26 @@ typedef enum
  * BMP280_ERR_ID. It never hangs: every I2C wait is bounded.
  */
 bmp280_status_t bmp280_init( void );
+
+/* One measurement, already corrected with the sensor's calibration constants. */
+typedef struct
+{
+    int32_t lTemperatureCentiC;    /* hundredths of a degree Celsius: 2508 means 25.08 C */
+    uint32_t ulPressurePa;         /* pascals: 100653 means 1006.53 hPa */
+} bmp280_reading_t;
+
+/*
+ * Reads the latest measurement: one 6-byte burst of the data registers, the two
+ * 20-bit raw values, and the integer compensation into a temperature and a
+ * pressure. Call it only after bmp280_init() has returned BMP280_OK (checked by an
+ * assertion), from the same task and under the same rules as bmp280_init().
+ *
+ * Returns BMP280_OK and fills *pxReading; or the I2C cause of a failure (NACK,
+ * TIMEOUT, BUS); or BMP280_ERR_NO_DATA when the sensor has no measurement yet (the
+ * first tens of milliseconds after init) or the result cannot be computed. On any
+ * error *pxReading is not written.
+ */
+bmp280_status_t bmp280_read( bmp280_reading_t * pxReading );
 
 /* A short text for a status, for the debug output ("OK", "NACK", ...). */
 const char * bmp280_status_text( bmp280_status_t xStatus );

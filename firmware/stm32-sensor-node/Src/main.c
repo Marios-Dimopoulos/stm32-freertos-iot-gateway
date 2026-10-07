@@ -125,6 +125,10 @@ static void prvReport( const char * pcWhat, const char * pcResult )
     ( void ) uart_write_string( "\r\n" );
 }
 
+/* TEMPORARY: the last measurement, kept in a static so that the debugger can show it
+ * (numbers cannot be printed until the formatter exists). */
+static bmp280_reading_t xBmpReading;
+
 /* ==========================================================================
  * BLINK TASK
  * ==========================================================================
@@ -162,12 +166,14 @@ static void prvReport( const char * pcWhat, const char * pcResult )
 static void prvBlinkTask( void * pvParameters )
 {
     TickType_t xLastWakeTime;
+    bmp280_status_t xBmpInitStatus;
 
     ( void ) pvParameters;
 
-    /* TEMPORARY (BMP280 step 1): reset the sensor, check its ID, print the result.
-     * It sleeps about 10 ms inside, so it goes BEFORE the reference point below. */
-    prvReport( "BMP280 init", bmp280_status_text( bmp280_init() ) );
+    /* TEMPORARY (BMP280): initialise the sensor and print the result. It sleeps
+     * about 10 ms inside, so it goes BEFORE the reference point below. */
+    xBmpInitStatus = bmp280_init();
+    prvReport( "BMP280 init", bmp280_status_text( xBmpInitStatus ) );
 
     /* The first reference point for vTaskDelayUntil(): "now". */
     xLastWakeTime = xTaskGetTickCount();
@@ -176,6 +182,15 @@ static void prvBlinkTask( void * pvParameters )
     {
         GPIOA->BSRR = GPIO_BSRR_BS5;                                  /* LED on  */
         ( void ) uart_write_string( "LED on\r\n" );     /* TEMPORARY test of the UART */
+
+        /* TEMPORARY: one measurement per period. bmp280_read() asserts that init
+         * succeeded, so it is only called then. Look at xBmpReading in the debugger
+         * (a breakpoint on the vTaskDelayUntil() line below). */
+        if( xBmpInitStatus == BMP280_OK )
+        {
+            prvReport( "BMP280 read", bmp280_status_text( bmp280_read( &xBmpReading ) ) );
+        }
+
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( 1000 ) );
 
         GPIOA->BSRR = GPIO_BSRR_BR5;                                  /* LED off */

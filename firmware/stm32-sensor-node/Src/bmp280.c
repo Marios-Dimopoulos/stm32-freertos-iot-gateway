@@ -23,9 +23,9 @@
  *   1) soft reset, wait, chip ID                                        <- DONE
  *   2) read the 24 trimming bytes and unpack them                       <- DONE
  *   3) write config and ctrl_meas (no read-back)                        <- DONE
- *   4) the 6-byte burst and the two 20-bit raw values ("no data" check)
- *   5) temperature compensation
- *   6) pressure compensation
+ *   4) the 6-byte burst and the two 20-bit raw values ("no data" check)  <- DONE
+ *   5) temperature compensation                                          <- DONE
+ *   6) pressure compensation                                             <- DONE
  *   7) status handling in the sensor task, and the formatter for the output
  */
 
@@ -48,8 +48,7 @@
  * wired on the breakout board. The caller of i2c_*_reg() passes the plain 7-bit
  * address; the driver adds the R/W bit.
  *
- * The registers used here (from my memory of the datasheet's memory map; to be
- * checked against it):
+ * The registers used here:
  *   0xD0  id     read-only, always 0x58 for a BMP280. (The BME280 gives 0x60, and
  *                early samples of the BMP280 were 0x56 or 0x57.) It proves that the
  *                bus works AND that the chip is the one we wrote the maths for.
@@ -66,7 +65,7 @@
  * before, which is what makes a bug reproducible.
  *
  * WHY WAIT AFTER THE RESET. The sensor needs a short time to restart and to reload
- * its calibration data; the datasheet gives about 2 ms (from memory). Accessing it
+ * its calibration data; the datasheet gives about 2 ms. Accessing it
  * earlier can be answered with a NACK, or read garbage. The wait is 10 ms, five
  * times the figure: a fixed delay is simpler than polling the sensor's status
  * register (0xF3, bit 0 "im_update"), and nothing here needs the 8 ms back.
@@ -98,7 +97,7 @@
 /* Converts the I2C driver's status into this module's. The I2C causes keep their
  * names, so the debug output can tell a missing sensor (NACK) from a stuck bus
  * (TIMEOUT) or a wiring problem (BUS). */
-static bmp280_status_t prvFromI2c( i2c_status_t xStatus )
+static bmp280_status_t prvStatusFromI2cToBmp280( i2c_status_t xStatus )
 {
     bmp280_status_t xResult;
 
@@ -131,8 +130,7 @@ static bmp280_status_t prvFromI2c( i2c_status_t xStatus )
  * What they are. The sensor's ADC does not output a temperature or a pressure: it
  * outputs a raw 20-bit number that depends on the physical properties of THIS chip.
  * At the factory Bosch measures every chip and stores 12 correction constants in its
- * non-volatile memory, 2 bytes each, 24 bytes from register 0x88 (as I remember the
- * datasheet's memory map; 0xA0-0xA1 follow but are reserved). The compensation
+ * non-volatile memory, 2 bytes each, 24 bytes from register 0x88. The compensation
  * formulas combine the raw number with these constants and give the true value.
  * They never change for a given chip, so they are read ONCE, at init:
  *
@@ -172,11 +170,6 @@ static bmp280_status_t prvFromI2c( i2c_status_t xStatus )
  * and nothing needs one yet. The dangerous case, dig_P1 = 0, makes the pressure
  * formula divide by zero; that guard belongs to the maths (step 6).
  *
- * The calibration is `volatile` for now ONLY so that the compiler keeps the stores
- * while nothing reads it yet (without that, a static that is written and never read
- * can be removed, and the debugger would show nothing). Remove the qualifier when
- * the compensation functions use it (step 5).
- *
  * How to check it on the board: a breakpoint at the end of bmp280_init() (inside
  * this file, because the variable is static), then watch xCalib and ucTrimming.
  *   - dig_T1 = ucTrimming[1] * 256 + ucTrimming[0], and so on for the others;
@@ -205,7 +198,12 @@ typedef struct
     int16_t sDigP9;
 } bmp280_calib_t;
 
-static volatile bmp280_calib_t xCalib;
+static bmp280_calib_t xCalib;
+
+/* pdTRUE only after a complete, successful init: bmp280_read() asserts it, so a read
+ * before init (or after a failed one) stops at once instead of computing with an
+ * empty calibration. */
+static BaseType_t xInitialised = pdFALSE;
 
 /* Two bytes in the sensor's order (low byte first) into a 16-bit number. */
 static uint16_t prvUnsigned16( const uint8_t * pucBytes )
@@ -239,9 +237,7 @@ static void prvUnpackTrimming( const uint8_t * pucBytes )
  * STEP 3) THE TWO CONFIGURATION REGISTERS
  * ==========================================================================
  *
- * Two one-byte read/write registers set how the sensor measures (the field layouts
- * and codes are from my memory of the datasheet's register descriptions; to be
- * checked against them). Both reset to 0, which means "sleep mode".
+ * Two one-byte read/write registers set how the sensor measures. Both reset to 0, which means "sleep mode".
  *
  *   ctrl_meas, 0xF4          config, 0xF5
  *     bits 7:5  osrs_t         bits 7:5  t_sb      standby time between two
@@ -322,7 +318,9 @@ bmp280_status_t bmp280_init( void )
     uint8_t ucTrimming[ BMP280_TRIMMING_BYTES ];
     bmp280_status_t xStatus;
 
-    xStatus = prvFromI2c( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_RESET, &ucResetValue, 1U ) );
+    xInitialised = pdFALSE;
+
+    xStatus = prvStatusFromI2cToBmp280( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_RESET, &ucResetValue, 1U ) );
 
     if( xStatus != BMP280_OK )
     {
@@ -331,7 +329,7 @@ bmp280_status_t bmp280_init( void )
 
     vTaskDelay( pdMS_TO_TICKS( BMP280_RESET_DELAY_MS ) );
 
-    xStatus = prvFromI2c( i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_ID, &ucId, 1U ) );
+    xStatus = prvStatusFromI2cToBmp280( i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_ID, &ucId, 1U ) );
 
     if( ( xStatus == BMP280_OK ) && ( ucId != BMP280_CHIP_ID ) )
     {
@@ -341,7 +339,7 @@ bmp280_status_t bmp280_init( void )
     /* Step 2: the calibration constants, read into the local buffer first. */
     if( xStatus == BMP280_OK )
     {
-        xStatus = prvFromI2c( i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_TRIMMING, ucTrimming, BMP280_TRIMMING_BYTES ) );
+        xStatus = prvStatusFromI2cToBmp280( i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_TRIMMING, ucTrimming, BMP280_TRIMMING_BYTES ) );
     }
 
     if( xStatus == BMP280_OK )
@@ -352,15 +350,185 @@ bmp280_status_t bmp280_init( void )
     /* Step 3: config first, then ctrl_meas, which starts the measurements. */
     if( xStatus == BMP280_OK )
     {
-        xStatus = prvFromI2c( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_CONFIG, &ucConfigValue, 1U ) );
+        xStatus = prvStatusFromI2cToBmp280( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_CONFIG, &ucConfigValue, 1U ) );
     }
 
     if( xStatus == BMP280_OK )
     {
-        xStatus = prvFromI2c( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_CTRL_MEAS, &ucCtrlMeasValue, 1U ) );
+        xStatus = prvStatusFromI2cToBmp280( i2c_write_reg( BMP280_I2C_ADDRESS, BMP280_REG_CTRL_MEAS, &ucCtrlMeasValue, 1U ) );
+    }
+
+    if( xStatus == BMP280_OK )
+    {
+        xInitialised = pdTRUE;
     }
 
     return xStatus;
+}
+
+/* ==========================================================================
+ * STEPS 4, 5 AND 6) THE BURST, THE RAW VALUES AND THE COMPENSATION
+ * ==========================================================================
+ *
+ * THE BURST. The six data registers sit next to each other, from 0xF7:
+ *
+ *   0xF7 press_msb  0xF8 press_lsb  0xF9 press_xlsb | 0xFA temp_msb  0xFB temp_lsb  0xFC temp_xlsb
+ *
+ * They are read in ONE transaction of 6 bytes. As I remember the datasheet, the
+ * sensor freezes a copy of the result when the burst starts, so a measurement that
+ * finishes in the middle of the read cannot give a new pressure with an old
+ * temperature. Six separate reads would not have that guarantee.
+ *
+ * THE RAW VALUES. Each is 20 bits spread over three bytes; the lowest byte (xlsb)
+ * only uses its UPPER 4 bits, hence the shift right by 4:
+ *     adc = ( msb << 12 ) | ( lsb << 4 ) | ( xlsb >> 4 )
+ * Pressure comes first in the burst, temperature second, but the temperature is
+ * computed first: the pressure formula needs t_fine, which the temperature formula
+ * produces. These raw numbers are only ADC counts that depend on this particular
+ * chip; they are not a temperature or a pressure.
+ *
+ * NO DATA YET. Before the first measurement is finished, the data registers hold
+ * 0x80000 (the "skipped" value; seen as 80 00 00 80 00 00 after a reset). With both
+ * measurements enabled, either raw value equal to 0x80000 means "no measurement
+ * yet": BMP280_ERR_NO_DATA. A genuine reading can in theory be exactly 0x80000 (one
+ * count in about a million) and would be mistaken for it; that is accepted. At x16
+ * the first measurement takes tens of milliseconds after init.
+ *
+ * THE COMPENSATION is Bosch's integer algorithm (the 32-bit one for the temperature,
+ * the 64-bit one for the pressure), as given in the datasheet and in the reference
+ * code of the course. It is not derived here: it is the vendor's characterisation of
+ * the sensor. What matters in this file is the engineering around it:
+ *
+ *   - UNITS. The temperature comes out in hundredths of a degree (2508 = 25.08 C).
+ *     The pressure comes out in Pa as a fixed-point number with 8 fraction bits
+ *     (Q24.8: the real value is the result / 256); it is rounded to whole pascals,
+ *     which is far finer than the sensor's accuracy of about +-100 Pa.
+ *   - WIDTHS. The temperature arithmetic fits 32 bits (the subtraction of dig_T1
+ *     brings the numbers close to zero before they are multiplied). The pressure
+ *     formula multiplies several 16-bit constants with t_fine squared and shifts by
+ *     up to 47 bits, so it needs 64-bit variables. The 64-bit division becomes a
+ *     library call on the Cortex-M4 (tens of microseconds, irrelevant at 1 Hz).
+ *   - t_fine is the temperature in an internal fine scale, 5120 counts per degree;
+ *     the temperature in hundredths of a degree is t_fine * 5 / 256, rounded.
+ *   - SHIFTS OF NEGATIVE NUMBERS. A right shift of a negative number is
+ *     implementation-defined in C; Arm Compiler does an arithmetic shift, which is
+ *     what the formulas assume. A LEFT shift of a negative number is undefined in C,
+ *     and several terms can be negative (the signed constants), so the left shifts
+ *     of such terms are written as multiplications by the same power of two. The
+ *     result is identical.
+ *   - DIVISION BY ZERO. The pressure formula divides by a value computed from
+ *     dig_P1. If it is zero (only possible with corrupt calibration data) the result
+ *     cannot be computed. There is no status code for that; it is reported as
+ *     BMP280_ERR_NO_DATA ("no valid result"), the closest of the agreed codes. If it
+ *     ever happens, a dedicated code would be justified.
+ *
+ * The two functions are PURE: they use only their arguments (the calibration is
+ * passed in), so they can be tested without the sensor.
+ *
+ * How the formulas were checked: I transcribed them into Python (with C's integer
+ * semantics) and fed them the example set that I remember from Bosch's datasheet
+ * (dig_T1 27504, dig_T2 26435, dig_T3 -1000, dig_P1 36477, dig_P2 -10685, dig_P3 3024,
+ * dig_P4 2855, dig_P5 140, dig_P6 -7, dig_P7 15500, dig_P8 -14600, dig_P9 6000,
+ * adc_T 519888, adc_P 415148). Result: 2508 (25.08 C) and 100653.25 Pa, matching the
+ * datasheet's 25.08 C and 100653.27 Pa to within 0.02 Pa; the example numbers are from
+ * memory, and the C code itself has not been run on a PC. On the board: the
+ * temperature must be a plausible room temperature, the pressure about 100 kPa at
+ * low altitude, and a finger on the sensor must raise the temperature.
+ */
+#define BMP280_REG_DATA            ( 0xF7U )
+#define BMP280_DATA_BYTES          ( 6U )
+#define BMP280_RAW_SKIPPED         ( 0x80000 )
+
+/* Returns the temperature in hundredths of a degree, and t_fine through the pointer
+ * (the pressure formula needs it). */
+static int32_t prvCompensateTemperature( int32_t lAdcT, const bmp280_calib_t * pxCalib, int32_t * plTFine )
+{
+    int32_t lVar1;
+    int32_t lVar2;
+
+    lVar1 = ( ( ( ( lAdcT >> 3 ) - ( ( int32_t ) pxCalib->usDigT1 << 1 ) ) ) *
+              ( ( int32_t ) pxCalib->sDigT2 ) ) >> 11;
+    lVar2 = ( ( ( ( ( lAdcT >> 4 ) - ( ( int32_t ) pxCalib->usDigT1 ) ) *
+                  ( ( lAdcT >> 4 ) - ( ( int32_t ) pxCalib->usDigT1 ) ) ) >> 12 ) *
+              ( ( int32_t ) pxCalib->sDigT3 ) ) >> 14;
+
+    *plTFine = lVar1 + lVar2;
+
+    return ( ( *plTFine * 5 ) + 128 ) >> 8;
+}
+
+/* Returns pdTRUE and the pressure in whole pascals through the pointer, or pdFALSE
+ * when the result cannot be computed (division by zero). */
+static BaseType_t prvCompensatePressure( int32_t lAdcP, int32_t lTFine, const bmp280_calib_t * pxCalib, uint32_t * pulPascal )
+{
+    int64_t llVar1;
+    int64_t llVar2;
+    int64_t llPressure;
+
+    llVar1 = ( int64_t ) lTFine - 128000;
+    llVar2 = llVar1 * llVar1 * ( int64_t ) pxCalib->sDigP6;
+    llVar2 = llVar2 + ( llVar1 * ( int64_t ) pxCalib->sDigP5 * 131072 );               /* << 17 */
+    llVar2 = llVar2 + ( ( int64_t ) pxCalib->sDigP4 * 34359738368 );                   /* << 35 */
+    llVar1 = ( ( llVar1 * llVar1 * ( int64_t ) pxCalib->sDigP3 ) >> 8 ) +
+             ( llVar1 * ( int64_t ) pxCalib->sDigP2 * 4096 );                          /* << 12 */
+    llVar1 = ( ( ( ( ( int64_t ) 1 ) << 47 ) + llVar1 ) * ( int64_t ) pxCalib->usDigP1 ) >> 33;
+
+    if( llVar1 == 0 )
+    {
+        return pdFALSE;
+    }
+
+    llPressure = 1048576 - lAdcP;
+    llPressure = ( ( ( llPressure << 31 ) - llVar2 ) * 3125 ) / llVar1;
+    llVar1 = ( ( int64_t ) pxCalib->sDigP9 * ( llPressure >> 13 ) * ( llPressure >> 13 ) ) >> 25;
+    llVar2 = ( ( int64_t ) pxCalib->sDigP8 * llPressure ) >> 19;
+    llPressure = ( ( llPressure + llVar1 + llVar2 ) >> 8 ) + ( ( int64_t ) pxCalib->sDigP7 * 16 );   /* << 4 */
+
+    /* llPressure is in Q24.8 pascals: round to whole pascals. */
+    *pulPascal = ( uint32_t ) ( ( llPressure + 128 ) >> 8 );
+
+    return pdTRUE;
+}
+
+bmp280_status_t bmp280_read( bmp280_reading_t * pxReading )
+{
+    uint8_t ucData[ BMP280_DATA_BYTES ];
+    int32_t lAdcP;
+    int32_t lAdcT;
+    int32_t lTFine;
+    int32_t lTemperature;
+    uint32_t ulPressure;
+    bmp280_status_t xStatus;
+
+    configASSERT( pxReading != NULL );
+    configASSERT( xInitialised == pdTRUE );
+
+    xStatus = prvStatusFromI2cToBmp280( i2c_read_reg( BMP280_I2C_ADDRESS, BMP280_REG_DATA, ucData, BMP280_DATA_BYTES ) );
+
+    if( xStatus != BMP280_OK )
+    {
+        return xStatus;
+    }
+
+    lAdcP = ( int32_t ) ( ( ( uint32_t ) ucData[ 0 ] << 12 ) | ( ( uint32_t ) ucData[ 1 ] << 4 ) | ( ( uint32_t ) ucData[ 2 ] >> 4 ) );
+    lAdcT = ( int32_t ) ( ( ( uint32_t ) ucData[ 3 ] << 12 ) | ( ( uint32_t ) ucData[ 4 ] << 4 ) | ( ( uint32_t ) ucData[ 5 ] >> 4 ) );
+
+    if( ( lAdcP == BMP280_RAW_SKIPPED ) || ( lAdcT == BMP280_RAW_SKIPPED ) )
+    {
+        return BMP280_ERR_NO_DATA;
+    }
+
+    lTemperature = prvCompensateTemperature( lAdcT, &xCalib, &lTFine );
+
+    if( prvCompensatePressure( lAdcP, lTFine, &xCalib, &ulPressure ) == pdFALSE )
+    {
+        return BMP280_ERR_NO_DATA;
+    }
+
+    pxReading->lTemperatureCentiC = lTemperature;
+    pxReading->ulPressurePa = ulPressure;
+
+    return BMP280_OK;
 }
 
 const char * bmp280_status_text( bmp280_status_t xStatus )

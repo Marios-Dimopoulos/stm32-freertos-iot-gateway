@@ -141,8 +141,17 @@ firmware/stm32-sensor-node/FreeRTOS/
   16) before `ctrl_meas` (0xF4, x16 oversampling for both, normal mode), built
   from named fields (0x10 and 0xB7); `ctrl_meas` starts the measurements. The
   registers are not read back: a wrong value would show in the measurements.
-  Init still prints `OK` on the board. Next: the 6-byte burst and the integer
-  compensation (temperature in hundredths of a degree, pressure in Pa).
+  Init still prints `OK` on the board. (4-6) `bmp280_read()` does one 6-byte
+  burst from 0xF7, assembles the two 20-bit raw values (`0x80000` means no
+  measurement yet: `BMP280_ERR_NO_DATA`), and applies Bosch's integer
+  compensation as two pure functions (temperature in 32 bits, pressure in 64
+  bits, left shifts of possibly negative terms written as multiplications).
+  It returns a `bmp280_reading_t`: temperature in hundredths of a degree,
+  pressure in Pa; it asserts that init succeeded. **Verified on the board:**
+  the reading in the debugger was 2364 (23.64 C) and 101969 Pa. The formulas
+  were also checked in Python against the example values remembered from the
+  datasheet (25.08 C, 100653 Pa); the C code itself has not been run on a PC.
+  The only library function the module needs is the 64-bit division.
 - Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
