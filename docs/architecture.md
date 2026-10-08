@@ -4,18 +4,20 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phase 1, RTOS running at 84 MHz (temporary blink test)
+## Current status: Phase 1 working on the board (sensor task at 84 MHz)
 
-FreeRTOS builds, links and runs on the Nucleo at **84 MHz** (HSI + PLL): one
-temporary task blinks the user LED (LD2 on PA5) from the scheduler. **Observed:
-it blinks at about 1 s by eye; the period has not been measured with an
-instrument yet** (no logic analyzer; to be checked on D13 later). Register
-values and SysTick `LOAD = 83999` were checked in the debugger. USART2 sends
-`LED on` / `LED off` lines at 115200 baud over the ST-LINK virtual COM port, by
-interrupt through a ring buffer, whole messages or nothing (verified in Tera
-Term, including the drop behaviour when the buffer is full). The I2C1 driver
-works, and the first step of the BMP280 module (soft reset and chip ID) is
-verified on the board; the sensor task and the BMP280 maths do not exist yet.
+FreeRTOS builds, links and runs on the Nucleo at **84 MHz** (HSI + PLL). One
+task, the sensor task, reads the BMP280 over I2C1 once a second and prints
+`T=23.64 C  P=1019.69 hPa` over USART2 (115200 baud, ST-LINK virtual COM port,
+Tera Term). The readings are stable and plausible for the room. Register values
+and SysTick `LOAD = 83999` were checked in the debugger; the true clock
+frequency has not been measured with an instrument (no logic analyzer yet).
+If the sensor stops answering the task prints the cause and initialises it
+again on the next period. **Verified on the board:** disconnecting the sensor
+(or its lines) gives `NACK`, and everything comes back by itself when it is
+reconnected; a falling edge on CSB locks the sensor out of I2C until its power
+is cycled (see ADR-0007). What is still to do for Phase 1: README, the drivers
+ADR and the BMP280 ADR, and the milestone quiz.
 
 ### Toolchain / project setup (done)
 
@@ -58,14 +60,26 @@ firmware/stm32-sensor-node/FreeRTOS/
 
 ### Application code (`firmware/stm32-sensor-node/Src/`)
 
-- `main.c`: **temporary bring-up code.** `SystemCoreClockUpdate()`, PA5 set up
-  at register level (GPIOA clock enable, read-modify-write on `MODER`), one
-  blink task created with `xTaskCreateStatic()` (priority 1, static 256-word
-  stack + TCB, not measured since the I2C tests were removed), toggling PA5
-  through `GPIOA->BSRR` every 1000 ms (a 2 s period) with `vTaskDelayUntil()`.
-  It also prints `LED on/off` and calls `bmp280_init()` once at its start,
-  printing the result. To be removed when the real sensor task exists.
-  PA5 is also SPI1_SCK in the Phase 2 design.
+- `main.c`: start-up only, in a fixed order: `clock_init_84mhz()`,
+  `SystemCoreClockUpdate()`, `uart_init()`, `i2c_init()`, `sensor_task_create()`,
+  `vTaskStartScheduler()` (ADR-0003). The temporary blink task and the LED code
+  are gone (PA5 is SPI1_SCK in the Phase 2 design); they are in the git history.
+- `sensor_task.c` / `sensor_task.h`: the sensor task, which owns the BMP280 and
+  the I2C bus (priority 1, static 256-word stack + TCB, `vTaskDelayUntil` with a
+  1 s period). Each period: if the sensor is not initialised it calls
+  `bmp280_init()`; otherwise `bmp280_read()` and prints the line. **Any failure**
+  is counted, printed as `BMP280 error: <cause> (failures: n)`, and the next
+  period initialises the sensor again, so a sensor that was power-cycled
+  recovers without resetting the MCU. Every line is built in a 64-byte buffer
+  (sized for the worst case) and sent with one `uart_write()`. The stack was
+  measured: 89 words peak (167 free), kept at 256 on purpose (ADR-0005).
+- `format.c` / `format.h`: three tiny text functions with no `printf` and no
+  `malloc`: `format_text`, `format_u32` and `format_fixed2` (a number in
+  hundredths with two decimals: 2364 gives `23.64`, -5 gives `-0.05`). They write
+  into the caller's buffer and return the length, or 0 with nothing written if the
+  text does not fit. The algorithm was checked in Python on edge cases
+  (including the smallest `int32_t`); the C was exercised on the board with real
+  values only.
 - `freertos_callbacks.c`: `vApplicationGetIdleTaskMemory()` (static Idle TCB +
   stack sized with `configMINIMAL_STACK_SIZE`) and
   `vApplicationStackOverflowHook()` (raise BASEPRI and loop forever).
@@ -81,7 +95,7 @@ firmware/stm32-sensor-node/FreeRTOS/
   alternate function (AFR written before MODER), 8N1 at 115200 with the
   divisor `BRR = round(PCLK1 / baud)` computed from the real clock registers
   (365 = 0x16D at 42 MHz; it would still be readable on the HSI), and
-  `uart_write()` / `uart_write_string()`: copy a whole message into a 256-byte
+  `uart_write()`: copies a whole message into a 256-byte
   static ring buffer inside one FreeRTOS critical section and set `TXEIE`;
   `USART2_IRQHandler` (level 10, i.e. at or below the FreeRTOS line, checked
   with `_Static_assert`) drains it and clears `TXEIE` when empty. **All or
@@ -152,7 +166,9 @@ firmware/stm32-sensor-node/FreeRTOS/
   were also checked in Python against the example values remembered from the
   datasheet (25.08 C, 100653 Pa); the C code itself has not been run on a PC.
   The only library function the module needs is the 64-bit division.
-- Footprint from the real Keil build (`Listings/stm32-sensor-node.map`): Code
+- Footprint (OUTDATED: measured before the I2C, BMP280, formatter and sensor
+  task code existed; re-read it from the next build's map file) from the real
+  Keil build (`Listings/stm32-sensor-node.map`): Code
   6756 B, RO data 472 B, RAM 3008 B of 128 KB (includes the 1 KB main stack
   and the 512 B C-library heap reserved by the startup file). **No `malloc`
   is linked** (confirmed in that map). Keil's static stack report gives 324 B
@@ -163,10 +179,10 @@ firmware/stm32-sensor-node/FreeRTOS/
 The course/teacher drivers (ARM University Program, ST Standard Peripheral
 Library, teacher-written I2C) are kept **locally only** in
 `firmware/**/reference/` (git-ignored, outside the Keil project) as reading
-material. GPIO, USART2 and I2C1 drivers will be written from scratch at
-register level; the BMP280 maths will come from the author's own
-`functions.c` after verification against the datasheet. (An ADR for this will
-be written once the drivers exist.)
+material. The clock, USART2 and I2C1 drivers were written from scratch at
+register level, and the BMP280 module is built on them (the compensation
+formulas are Bosch's, as in the author's own `functions.c`). The ADR for the
+decision to write own register-level drivers is still to be written.
 
 ### Known gaps (real current state, not bugs)
 
@@ -175,19 +191,21 @@ be written once the drivers exist.)
   `clock_init_84mhz()` have never been triggered. `SystemCoreClock` reports
   HCLK only: USART2 and I2C1 must use the 42 MHz APB1 clock.
 - `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
-- Blink period not measured yet (no logic analyzer): the blink looks like 1 s
-  by eye only.
-- Measured stack peaks (ADR-0005): blink 27 words by the `0xA5` pattern; Idle
-  at least 21 words actually written (the pattern said 14, but R4-R11 were
-  saved with the fill value, so the pattern was forged by data). Both arrays
-  are 128 words; `configMINIMAL_STACK_SIZE` stays 128.
+- No timing has been measured with an instrument (no logic analyzer): the
+  1 s sensor period is only checked by the lines in Tera Term.
+- Measured stack peaks (ADR-0005): the sensor task 89 words (167 of its 256
+  free); Idle at least 21 words actually written (the `0xA5` pattern said 14,
+  but R4-R11 were saved with the fill value, so the pattern was forged by data).
+  The Idle array is 128 words (`configMINIMAL_STACK_SIZE`).
 - The startup file reserves a 512-byte C-library heap that nothing uses;
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
-- USART2 has no number printing yet, and nothing prints the drop counter. The
-  drop policy was verified with a temporary burst test (removed). The BMP280
-  module has no trimming, configuration or compensation yet (step 1 only).
+- Nothing prints the UART drop counter. The drop policy was verified with a
+  temporary burst test (removed).
+- The I2C driver has no bus clear (a sensor holding SDA low is not freed), and
+  its 3-or-more-byte receive sequence has not been compared with the manual's
+  figure.
 
 ### Architecture decisions so far
 
@@ -204,7 +222,7 @@ be written once the drivers exist.)
 Below is the target shape for Phase 1, kept here as a near-term plan,
 clearly marked as such.
 
-## Phase 1 target (not yet implemented)
+## Phase 1 target (implemented; the shape below is what runs)
 
 ```
 ┌─────────────────────────────┐
@@ -228,8 +246,9 @@ clearly marked as such.
   `0x77` depending on the SDO pin.
 - **Debug logging:** the sensor task prints readings directly over USART2
   (PA2 = TX, PA3 = RX), which the Nucleo's ST-LINK exposes as a virtual COM
-  port. This is a blocking, debug-only aid for bring-up, not part of the
-  data path (that is SPI + DMA). No dedicated logging task.
+  port, by interrupt through a ring buffer, whole messages or nothing. This
+  is a debug-only aid, not part of the data path (that is SPI + DMA). No
+  dedicated logging task.
 - No MPU-6050 IMU: it was dropped from the design.
 - All RTOS objects (the task itself, any queue used to hand data off) are
   statically allocated.
@@ -242,7 +261,7 @@ Task priority: higher number = more urgent. `configMAX_PRIORITIES = 3`.
 | Priority | Task | Phase | Why this level |
 |---|---|---|---|
 | 2 | Transmit task (SPI + DMA to the Pi) | 2 (not written) | The Pi is the SPI master and clocks data out when it decides, so the deadline is imposed from outside. |
-| 1 | Sensor task (BMP280 over I2C1, plus debug prints) | 1 (not written) | Period chosen by us; a few ms of lateness is harmless. |
+| 1 | Sensor task (BMP280 over I2C1, plus debug prints) | 1 (written) | Period chosen by us; a few ms of lateness is harmless. |
 | 0 | Idle | kernel | Runs when nothing else is ready. |
 
 Interrupt levels are a separate system (lower number = more urgent): ISRs
@@ -250,11 +269,8 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 
 ## Open questions / not yet decided
 
-- Exact sensor read interval.
-- Whether raw or calibration-compensated BMP280 values are computed
-  on-device vs. passed through raw (compensation requires the factory
-  trimming parameters stored in the sensor's NVM — see BMP280 datasheet
-  §3.11.2 "Trimming parameter readout" and §3.11.3 "Compensation formula").
+- (Decided) The sensor is read once a second, and the BMP280 values are
+  compensated on the MCU into integers (hundredths of a degree and pascals).
 - Whether a queue is used to hand data from the sensor task to a
   (currently nonexistent) transmit task, or whether Phase 1 is entirely
   self-contained and just gets a value into a global static buffer to make
@@ -317,3 +333,13 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   lives in `bmp280_init()`). `bmp280.c` step 1 added (soft reset, wait, chip ID) and verified: OK
   with the sensor connected, NACK with CSB at GND. A falling edge on CSB while
   powered locks the sensor out of I2C until the USB cable is unplugged.
+- 2026-10-07: BMP280 steps 2 to 6 done and verified (trimming bytes,
+  configuration, burst read, integer compensation: 23.64 C and 101969 Pa in
+  the debugger). `format.c` added.
+- 2026-10-08: `uart_write_string()` removed: its only caller (the sensor task's
+  init line) now builds the line with the formatter and sends it with
+  `uart_write()`, so the UART has a single way to send.
+- 2026-10-08: the real sensor task replaces the blink task and the LED code;
+  `main.c` is start-up only. The sensor is read once a second and re-initialised
+  after any error. Stack measured (89 words peak, 256 kept), recorded in
+  ADR-0005. Disconnect/reconnect tests passed; CSB lock-out reproduced again.

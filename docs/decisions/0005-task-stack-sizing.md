@@ -46,6 +46,23 @@ but looks untouched, and the first non-`0xA5` byte lands exactly on the saved
 EXC_RETURN at `0x284`. **The `0xA5` pattern can be forged by real data, so a
 measured peak can under-report.**
 
+### Measurement of the sensor task (2026-10-08)
+
+The blink task was replaced by the real sensor task (BMP280 over I2C, the
+formatter, the UART), with a 256-word (1 KB) stack. For a while it printed
+`uxTaskGetStackHighWaterMark()` every 10 s (temporary code, now removed).
+Result: **167 words free at the minimum, so the peak is 89 words (356 B)**.
+
+The value was the same with the sensor connected and with it disconnected (the
+`NACK` errors, then the re-initialisation after it was reconnected). That is
+expected: the deepest path is the successful init (the 24-byte trimming buffer,
+the I2C receive sequence with its critical section), and it runs at start-up,
+before the first report; a failing init returns at its first I2C call, so it is
+shallower. The 89 words are still a lower bound. They very likely include
+interrupt frames (when SysTick or USART2 fire, the hardware pushes an 8-word frame
+onto the task's stack, and the I2C busy-waits last long enough compared with the
+1 ms tick for that to have happened many times), but that was not forced.
+
 ## Options considered
 
 ### Option A: estimate from the call graph and round up
@@ -81,9 +98,15 @@ Idle has been seen to write at least 21 words, so 128 is about 6x that, and
 shrinking it would gain nothing while RAM is this plentiful (Option C).
 
 Each task's stack size is a named macro whose comment records the measured
-peak and how it was measured. The blink task's 128 words are a starting value
-for a temporary task and will not carry over to the sensor task, which calls
-the I2C and UART code and will need its own measurement.
+peak and how it was measured. The blink task's 128 words were a starting value
+for a temporary task and did not carry over.
+
+**The sensor task keeps its 256 words**, which is 2.9 times the measured peak of
+89 words. The rule alone (peak plus at least 50%) would allow about 160 words, and
+that is the number Option B points at. 256 was kept on purpose: the whole program
+uses about 3 KB of 128 KB, so the 384 bytes saved would buy nothing, and the task
+will grow before Phase 2. This is a deliberate departure from the tightest value
+the rule gives, not a missing measurement.
 
 ## Consequences
 
@@ -94,8 +117,9 @@ the I2C and UART code and will need its own measurement.
   would run into the 512 B heap block and then `.bss`), so ISRs must stay
   small. Keil's static report says 324 B for the start-up chain, which does
   not include interrupts.
-- The real sensor task should read `uxTaskGetStackHighWaterMark()` itself and
-  report it over USART2 during bring-up.
+- The sensor task reported its high-water mark over USART2 during bring-up (done,
+  see the measurement above; the temporary code is removed). Repeat the
+  measurement whenever a task's code changes.
 - Revisit the Idle size only if RAM becomes tight or a hook is added to Idle.
 
 ## Interview angle

@@ -104,6 +104,13 @@ Option B, with polling (Option C rejected for now), and these choices:
 - Touching SDA to ground gives `TIMEOUT`, and the driver is back to `OK` after
   releasing it, without resetting the board. A sensor that does not answer gives
   `NACK` without hanging.
+- Retested on 2026-10-08 with the sensor task running (it initialises the sensor
+  again after every error): disconnecting the sensor completely gives `NACK`, and
+  everything comes back by itself when it is reconnected. Grounding SDA this time
+  gave `NACK`, not `TIMEOUT` as on 2026-10-06; the difference was not investigated
+  (it may depend on when in a transfer the line is grounded). The CSB lock-out was
+  reproduced again: CSB to GND while running gives `NACK`, and putting it back to
+  3.3 V still gives `NACK` until the USB cable is unplugged.
 
 ### What is not verified, or not done
 - **The 3-or-more-bytes receive sequence is from my memory of RM0383.** It works on

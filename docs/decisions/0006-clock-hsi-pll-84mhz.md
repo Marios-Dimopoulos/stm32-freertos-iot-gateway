@@ -46,7 +46,8 @@ before any output exists, with nothing to show why.
     Nucleo user manual; I could not confirm it from here);
   - needs `HSEBYP` and a bounded wait for `HSERDY`;
   - `system_stm32f4xx.c` defines `HSE_VALUE` as 25 MHz by default, so with an
-    8 MHz source `SystemCoreClockUpdate()` would report about 2.6x too much and
+    8 MHz source `SystemCoreClockUpdate()` would compute 25 MHz / 4 * 168 / 4 =
+    262.5 MHz instead of 84 MHz (3.1x too much) and
     the SysTick reload would be wrong, silently, unless `HSE_VALUE=8000000` is
     set project-wide.
 
