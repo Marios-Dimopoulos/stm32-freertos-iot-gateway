@@ -1,11 +1,6 @@
 /*
  * uart.h — USART2 driver: debug text to the PC over the ST-LINK's virtual COM
  * port (PA2 = TX), shown in Tera Term.
- *
- * WORK IN PROGRESS, built one step at a time (see uart.c). So far uart_init()
- * sets up the clocks and the TX pin, configures 115200 8N1 and enables the
- * transmitter, and messages are sent in the background by the TX interrupt
- * through a ring buffer, whole or not at all (with a drop counter).
  */
 
 #ifndef UART_H
@@ -41,10 +36,6 @@ void uart_init( void );
  * and is not valid before vTaskStartScheduler(). It never waits.
  */
 uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength );
-
-/* Same, for a zero-terminated string (the terminator is not sent). The pointer
- * must not be NULL. A newline for Tera Term is "\r\n". */
-uart_status_t uart_write_string( const char * pcText );
 
 /* Number of messages dropped so far because the buffer had no room. */
 uint32_t uart_dropped_messages( void );

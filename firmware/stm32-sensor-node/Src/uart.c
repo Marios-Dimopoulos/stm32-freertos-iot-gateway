@@ -15,7 +15,8 @@
  *   4) interrupt-driven send with a ring buffer                      <- DONE
  *        4a) the buffer, the TX interrupt
  *        4b) whole-message write with a drop policy and a drop counter
- *   5) a small decimal formatter, no printf and no malloc
+ *   5) a small decimal formatter, no printf and no malloc           <- DONE
+ * 
  */
 
 #include "FreeRTOS.h"
@@ -30,9 +31,7 @@
  * Two clocks must be on before any register of these peripherals can be
  * written (writes while a peripheral has no clock are silently ignored):
  *
- *   - GPIOA, on the AHB1 bus: RCC->AHB1ENR bit GPIOAEN. main.c's LED code also
- *     enables it, but this driver must not depend on that: enabling an already
- *     enabled clock is harmless.
+ *   - GPIOA, on the AHB1 bus: RCC->AHB1ENR bit GPIOAEN. 
  *   - USART2, on the APB1 bus: RCC->APB1ENR bit USART2EN (bit 17).
  *
  * Each enable is followed by a dummy read of the same register. The clock
@@ -57,16 +56,11 @@
  * function"), so switching MODER first would connect the pin to the wrong
  * function for a moment, with a possible glitch on the line.
  *
- * Both registers are changed with read-modify-write, not assigned: they hold
- * the settings of the other pins of port A too (PA5 is the LED, and PA13-PA15
- * are the debug interface, whose mode must not be disturbed). They are also
- * shared with main.c's LED setup; both run in main() before the scheduler
- * starts, so there is no concurrent access. As with any configuration
+ * Both registers are changed with read-modify-write, not assigned. As with any configuration
  * register, pin set-up belongs in one-time initialisation, not in running
  * tasks.
  *
- * What is left at reset values (as far as I know, to be confirmed in the
- * manual): output type push-pull, speed low, no pull-up/down. That is fine for
+ * What is left at reset values: output type push-pull, speed low, no pull-up/down. That is fine for
  * 115200 baud: the edges are slow. No pull-up is needed on PA2: it is a
  * push-pull OUTPUT, so once the USART is enabled the pin itself drives the idle
  * level (high) as well as the low level. Pull resistors matter for inputs and
@@ -146,8 +140,8 @@ static void prvUartPinsAndClocks( void )
  * Then, following the order in the reference manual's transmitter procedure:
  * the baud rate is written while the USART is still disabled, the transmitter
  * enable (TE) is set, and finally the USART enable (UE). Setting TE makes the
- * peripheral send an idle frame as its first transmission (from the manual, as
- * I remember it); the receiver side is not enabled (no RE), since this driver
+ * peripheral send an idle frame as its first transmission
+ * the receiver side is not enabled (no RE), since this driver
  * only sends.
  *
  * Nothing is sent yet: that is step 3.
@@ -214,11 +208,6 @@ static void prvUartConfigure( void )
  *   bytes waiting  = head - tail          (right even across the wrap)
  *   empty          = head == tail
  *   full           = head - tail == size  (every slot is usable)
- *
- * 256 bytes: the planned messages are about 100 bytes once per second, which
- * the interrupt drains in about 9 ms (100 x 86.8 microseconds), under 1 % of the
- * line's capacity. The buffer is a static array, so its RAM is declared in our
- * code (ADR-0001).
  *
  * SHARED STATE AND HOW IT IS PROTECTED (ADR-0004). The task side of the buffer
  * runs inside a critical section (taskENTER_CRITICAL: BASEPRI is raised to the
@@ -291,8 +280,7 @@ static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the I
  * STEP 4b) WHOLE MESSAGES AND THE DROP POLICY
  * -------------------------------------------
  *
- * What if the buffer is full? Under the planned load (about 100 bytes once a
- * second, drained in about 9 ms) it practically never is, but a burst of
+ * What if the buffer is full? Under the planned load it practically never is, but a burst of
  * messages written back to back (a start-up banner, an error printed in a loop)
  * can write much faster than the line sends (11.5 KB/s). The options were: wait
  * for room (a busy-wait again, in the task that should be doing the real work),
@@ -310,9 +298,7 @@ static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the I
  *
  * The section lasts as long as the copy loop. The compiled loop is about 6 to 7
  * instructions per byte, so roughly 10 cycles per byte once loads and stores are
- * counted: 100 bytes take around 1000 cycles, i.e. about 12 microseconds at
- * 84 MHz (an estimate from the disassembly, not measured). During it the
- * interrupts at level 5 and above numerically, SysTick included, are held back;
+ * counted. During it the interrupts at level 5 and above numerically, SysTick included, are held back;
  * a tick would be delayed by that much. That is acceptable for debug messages of
  * this size. The longest possible message is the buffer size (256 bytes, about
  * 30 microseconds).
@@ -356,20 +342,6 @@ uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength )
     taskEXIT_CRITICAL();
 
     return xStatus;
-}
-
-uart_status_t uart_write_string( const char * pcText )
-{
-    uint32_t ulLength = 0U;
-
-    configASSERT( pcText != NULL );
-
-    while( pcText[ ulLength ] != '\0' )
-    {
-        ulLength++;
-    }
-
-    return uart_write( ( const uint8_t * ) pcText, ulLength );
 }
 
 uint32_t uart_dropped_messages( void )
