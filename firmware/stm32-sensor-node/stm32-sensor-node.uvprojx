@@ -414,6 +414,16 @@
               <FileType>1</FileType>
               <FilePath>.\Src\bmp280.c</FilePath>
             </File>
+            <File>
+              <FileName>format.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\format.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_task.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\sensor_task.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
