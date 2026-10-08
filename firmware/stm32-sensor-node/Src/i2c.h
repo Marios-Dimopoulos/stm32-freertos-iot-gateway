@@ -1,10 +1,5 @@
 /*
  * i2c.h — I2C1 master driver: the BMP280 sensor on PB8 (SCL) / PB9 (SDA).
- *
- * WORK IN PROGRESS, built one step at a time (see i2c.c). So far i2c_init()
- * enables the clocks, resets the peripheral, sets up the two pins, programs the
- * 100 kHz timing and enables I2C1, i2c_write_reg() writes registers and
- * i2c_read_reg() reads them, and the driver recovers from bus errors by itself.
  */
 
 #ifndef I2C_H

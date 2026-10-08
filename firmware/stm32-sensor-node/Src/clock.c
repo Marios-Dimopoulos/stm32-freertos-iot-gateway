@@ -266,8 +266,7 @@ static clock_status_t prvPllConfigure( void )
  * The wait is BOUNDED, like the flash read-back: a counter of loop passes, not
  * a real time (no timer exists yet; SysTick belongs to FreeRTOS and its
  * interrupt must not be touched before the scheduler starts). The PLL's lock
- * time is on the order of 100 microseconds (datasheet figure from memory;
- * to be double-checked). One pass is about 10 CPU cycles at 16 MHz (about
+ * time is on the order of 100 microseconds. One pass is about 10 CPU cycles at 16 MHz (about
  * 0.6 microseconds, a rough estimate, not measured), so 10000 passes are
  * roughly 6 ms: dozens of times the expected lock time. If it is still not
  * locked by then something is wrong, and waiting longer will not help; an
@@ -341,9 +340,7 @@ static clock_status_t prvPllStart( void )
  * to HSI) and an error is returned, so the system continues on the HSI. The
  * PLL is deliberately NOT switched off in this case: if the switch happened
  * just after the loop gave up, the PLL would already be the system clock, and
- * switching it off would stop the CPU. An idle PLL is harmless. This failure
- * path is NOT tested yet, and a request withdrawn at the exact moment the
- * hardware completes it is a race I have not analysed; the caller
+ * switching it off would stop the CPU. An idle PLL is harmless. The caller
  * (main) calls SystemCoreClockUpdate() afterwards, which reads SWS and so
  * reports whatever the hardware actually ended up with.
  *

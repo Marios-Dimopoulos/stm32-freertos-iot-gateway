@@ -1,10 +1,5 @@
 /*
  * bmp280.h — Bosch BMP280 temperature and pressure sensor, on I2C1 (address 0x76).
- *
- * WORK IN PROGRESS, built one step at a time (see bmp280.c). So far
- * bmp280_init() resets the sensor, checks its chip ID, reads its calibration
- * constants and starts the measurements. The module never touches
- * I2C registers: it only uses i2c_read_reg() / i2c_write_reg().
  */
 
 #ifndef BMP280_H
