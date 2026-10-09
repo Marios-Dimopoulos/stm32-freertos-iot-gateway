@@ -16,8 +16,7 @@ If the sensor stops answering the task prints the cause and initialises it
 again on the next period. **Verified on the board:** disconnecting the sensor
 (or its lines) gives `NACK`, and everything comes back by itself when it is
 reconnected; a falling edge on CSB locks the sensor out of I2C until its power
-is cycled (see ADR-0007). **Still to do for Phase 1:** the README, the ADR for
-writing own register-level drivers, an ADR for the BMP280 module, and a fresh
+is cycled (see ADR-0007). **Still to do for Phase 1:** the README, and a fresh
 reading of the footprint from the next build.
 
 ### Toolchain / project setup (done)
@@ -92,8 +91,10 @@ firmware/stm32-sensor-node/FreeRTOS/
   never hangs; on failure the CPU stays on the HSI. PLL limits are checked
   with `_Static_assert`. `main()` calls it before `SystemCoreClockUpdate()`.
 - `uart.c` / `uart.h`: my own register-level USART2 driver (TX only, PA2 =
-  AF7). `uart_init()` enables the USART2 and GPIOA clocks, sets PA2 as
-  alternate function (AFR written before MODER), configures 8N1 at 115200 with
+  AF7). `uart_init()` enables the USART2 and GPIOA clocks, sets PA2 as a
+  push-pull, no-pull, low-speed alternate function (stated explicitly even
+  where it equals the reset value; AFR written before MODER, MODER last),
+  configures 8N1 at 115200 with
   the divisor `BRR = round(PCLK1 / baud)` computed from the real clock
   registers (365 = 0x16D at 42 MHz; it would still be readable on the HSI),
   enables the transmitter, and sets the interrupt priority before enabling it.
@@ -163,10 +164,7 @@ firmware/stm32-sensor-node/FreeRTOS/
   debugger, now printed every second, stable. With the sensor powered, a
   falling edge on CSB makes it answer NACK until its power is cycled, even
   after CSB goes back to 3.3 V (reproduced twice): CSB must be wired firmly to
-  3.3 V. The formulas were also checked in Python (with C's integer rules)
-  against the example values remembered from the datasheet (25.08 C, 100653 Pa);
-  the C code itself has not been run on a PC. The only library function the
-  module needs is the 64-bit division (`__aeabi_ldivmod`).
+  3.3 V.
 - Footprint, from the Keil build of 2026-10-08 20:05
   (`Listings/stm32-sensor-node.map`). That build still contained the temporary
   stack-report code (since removed), so the real numbers are slightly smaller;
@@ -185,8 +183,8 @@ Library, teacher-written I2C) are kept **locally only** in
 `firmware/**/reference/` (git-ignored, outside the Keil project) as reading
 material. The clock, USART2 and I2C1 drivers were written from scratch at
 register level, and the BMP280 module is built on them (the compensation
-formulas are Bosch's, as in the author's own `functions.c`). The ADR for the
-decision to write own register-level drivers is still to be written.
+formulas are Bosch's, as in the `functions.c`). The decision to write own
+register-level drivers instead of using a vendor library is ADR-0008.
 
 ### Known gaps (real current state, not bugs)
 
@@ -212,8 +210,8 @@ decision to write own register-level drivers is still to be written.
   figure, and nothing reads `i2c_recovery_count()`.
 - The BMP280 can be locked out of I2C by a glitch on CSB until its power is
   cycled; the sensor task reports it and keeps trying, but only a power cycle
-  fixes it. The ADRs for writing own drivers and for the BMP280 module are not
-  written yet.
+  fixes it.
+
 
 ### Architecture decisions so far
 
@@ -226,10 +224,10 @@ decision to write own register-level drivers is still to be written.
 - ADR-0006: CPU at 84 MHz from the HSI through the PLL, in its own module.
 - ADR-0007: I2C1 driver: register-oriented polling API with tick-based timeouts and
   self-recovery.
-
-Not written yet (decided to write them): an ADR for writing own register-level
-drivers instead of using a vendor library, and an ADR for the BMP280 module
-(normal mode, integer results, the status codes, init after every error).
+- ADR-0008: own register-level drivers instead of a vendor library (decided
+  2026-10-02, recorded 2026-10-08).
+- ADR-0009: BMP280 module: normal mode, integer results, initialise again after
+  every error.
 
 ## Phase 1 design (implemented: this is what runs)
 
@@ -361,3 +359,6 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
   task removed from the text, the optional-API row of the FreeRTOS table
   completed, the footprint taken from the 2026-10-08 map, the Phase 1 section
   marked as implemented, and the open questions and known gaps refreshed.
+- 2026-10-08: ADR-0008 (own register-level drivers, decided 2026-10-02) and
+  ADR-0009 (BMP280 module design) written; ADR-0006 and ADR-0007 now point to
+  ADR-0008.
