@@ -16,7 +16,7 @@ time (`xTaskCreate` → `pvPortMalloc`, backed by one of `heap_1.c`–`heap_5.c`
 or from buffers the application declares at compile time (`xTaskCreateStatic`
 and friends). The kernel's default is dynamic allocation enabled.
 
-If we did nothing, we would get the default: a heap sized by guesswork,
+If i did nothing, i would get the default: a heap sized by guesswork,
 objects that can fail to be created at run time if the heap is too small or
 fragmented, and RAM usage that only shows up as one opaque `ucHeap[]` array
 in the map file. CLAUDE.md sets "no dynamic memory allocation in the FreeRTOS

@@ -49,7 +49,7 @@ events) wakes a task, so all of them need the `...FromISR()` functions.
 ### Option B: threshold at level 1
 - How it works: only level 0 is kernel-unaware, levels 1-15 are kernel-aware.
 - Pros: the most levels for ISRs that use the kernel.
-- Cons: only one level for a time-critical ISR, and we only need a handful of
+- Cons: only one level for a time-critical ISR, and i only need a handful of
   kernel-aware levels, so this gains nothing.
 
 ### Option C: threshold at level 15

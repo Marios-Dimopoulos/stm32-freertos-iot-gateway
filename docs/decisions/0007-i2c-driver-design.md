@@ -7,8 +7,7 @@
 ## Context
 
 The BMP280 sensor sits on I2C1 (PB8 = SCL, PB9 = SDA). The driver is written at
-register level, without ST's HAL or library (see the drivers section of
-`architecture.md`). The STM32F4 I2C peripheral is an older design that leaves the
+register level, without ST's HAL or library (see ADR-0008). The STM32F4 I2C peripheral is an older design that leaves the
 software to drive each phase of a transfer and to react to flags at precise moments,
 especially when receiving: the master must clear ACK and request STOP before the
 9th clock of the last byte (a window of about 90 microseconds at 100 kHz), and the
@@ -116,7 +115,7 @@ Option B, with polling (Option C rejected for now), and these choices:
 - **The 3-or-more-bytes receive sequence is from my memory of RM0383.** It works on
   the board, but it has not been compared with the manual's figure; that is still to be
   done, and it is the only place where the manual could contradict the code.
-- **No bus clear.** `SWRST` resets only our side. A sensor that holds SDA low would keep
+- **No bus clear.** `SWRST` resets only my side. A sensor that holds SDA low would keep
   the bus busy after the reset, and the calls would keep returning `TIMEOUT`. Freeing it
   needs up to nine SCL pulses by hand; not written, because it has not been needed.
 - **A power cycle of the sensor can be required.** After the SDA test, the sensor
@@ -130,7 +129,7 @@ Option B, with polling (Option C rejected for now), and these choices:
   the I2C side, so the sensor task has to report it and retry, and `CSB` must be wired
   firmly to 3.3 V (a loose wire or a glitch on it is enough).
 - The pull-ups of the breakout board were never measured; the internal ones are weak
-  (rise time about 1.7 us against the 1 us allowed, with an assumed 50 pF), so external
+  (rise time about 1.7 me against the 1 me allowed, with an assumed 50 pF), so external
   4.7 kOhm resistors are the fix if the bus turns flaky.
 - The recovery counter was not confirmed to have gone up during the SDA test.
 

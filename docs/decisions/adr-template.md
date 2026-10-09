@@ -6,8 +6,8 @@
 
 ## Context
 
-What problem are we solving? What forces are at play (constraints from
-CLAUDE.md, hardware limits, budget, time)? What would happen if we did
+What problem am i solving? What forces are at play (constraints from
+CLAUDE.md, hardware limits, budget, time)? What would happen if i did
 nothing / kept the naive approach?
 
 ## Options considered

@@ -7,7 +7,7 @@
 ## Context
 
 With static allocation (ADR-0001) every task stack is a fixed array declared
-in our code, so its size must be chosen up front. Too small and the task
+in my code, so its size must be chosen up front. Too small and the task
 overflows: a Cortex-M stack grows downward, so it silently overwrites whatever
 the linker placed below the array (another task's TCB, a queue, a global).
 Nothing crashes at that moment, and the failure shows up later somewhere
@@ -86,7 +86,7 @@ onto the task's stack, and the I2C busy-waits last long enough compared with the
 - How it works: shrink each stack to the smallest value that has not failed
   (e.g. Idle at 64 words).
 - Pros: saves RAM (256 B on Idle).
-- Cons: saves RAM we do not need to save, and removes the margin that covers
+- Cons: saves RAM i do not need to save, and removes the margin that covers
   paths not yet exercised and the under-reporting above.
 
 ## Decision

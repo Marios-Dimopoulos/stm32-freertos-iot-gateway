@@ -28,7 +28,7 @@ The forces at play:
 - The target clock is 84 MHz from the PLL, but **no clock-tree code exists
   yet**. After reset, `SystemInit()` leaves the chip on the 16 MHz HSI
   oscillator.
-- We want to build and test the RTOS *before* writing the PLL code, and not
+- i want to build and test the RTOS *before* writing the PLL code, and not
   have to revisit the RTOS config when the PLL code is added.
 - The node is USB-powered, so power is not a concern.
 - The logic analyzer and the Keil debugger make the result directly
@@ -43,7 +43,7 @@ The forces at play:
   83,999.
 - Pros: The value is visible in the header, and there's no run-time ordering
   to get right.
-- Cons: It states the clock we *intend*, not the one we *have*. Today (16 MHz)
+- Cons: It states the clock i *intend*, not the one i *have*. Today (16 MHz)
   every tick would be 84,000 × 62.5 ns = 5.25 ms, so all delays would be
   5.25× too long with no error or warning. Any future clock change must also
   remember to edit this header.

@@ -59,7 +59,7 @@ before any output exists, with nothing to show why.
 ### Where the code lives (independent of A/B/C)
 - In `main.c`: fewer files, but mixes hardware bring-up with application code.
 - In ST's HAL or generated code: not used in this project (own register-level
-  drivers).
+  drivers, see ADR-0008).
 - In its own module, `Src/clock.c` + `clock.h`: one function,
   `clock_init_84mhz()`, called from `main()` before `SystemCoreClockUpdate()`.
 
