@@ -52,30 +52,53 @@
  *                           functions in the datasheet lists PA2 -> AF7 =
  *                           USART2_TX.
  *
- * AFR is written BEFORE MODER. The reset value of AFR is 0 (AF0, "system
- * function"), so switching MODER first would connect the pin to the wrong
- * function for a moment, with a possible glitch on the line.
+ * Three more properties of the pin are set explicitly, although for PA2 each one
+ * equals its reset value (the same style as the I2C pins: the code states the
+ * intent, it does not rely on the reset state):
  *
- * Both registers are changed with read-modify-write, not assigned. As with any configuration
- * register, pin set-up belongs in one-time initialisation, not in running
- * tasks.
+ *   OTYPER (1 bit per pin):  0 = PUSH-PULL (1 would be open-drain). A USART TX pin
+ *                            is an ordinary output: it drives the line high AND
+ *                            low itself. Open-drain is for I2C, where several
+ *                            devices share the line.
+ *   PUPDR  (2 bits per pin): 00 = NO pull-up or pull-down. A push-pull output
+ *                            does not need one: once the USART is enabled the
+ *                            pin itself drives the idle level (high) as well as
+ *                            the low level. Pull resistors matter for inputs and
+ *                            for open-drain outputs (such as I2C), not here.
+ *   OSPEEDR (2 bits per pin): 00 = LOW speed. The speed setting limits how fast
+ *                            the output edges are. A bit lasts 8.68 microseconds
+ *                            at 115200 baud, so slow edges are plenty, and they
+ *                            radiate less than fast ones. (The I2C pins use the
+ *                            highest setting because the I2C specification limits
+ *                            the fall time; nothing like that applies here.)
  *
- * What is left at reset values: output type push-pull, speed low, no pull-up/down. That is fine for
- * 115200 baud: the edges are slow. No pull-up is needed on PA2: it is a
- * push-pull OUTPUT, so once the USART is enabled the pin itself drives the idle
- * level (high) as well as the low level. Pull resistors matter for inputs and
- * for open-drain outputs (such as I2C), not here. (Between this step and the
- * USART being enabled in step 2 the level of the pin is not guaranteed by
- * anything I have checked, so a stray character may reach the terminal at
- * start-up; it would be harmless.)
+ * ORDER: everything that describes the pin (output type, pull, speed, and the
+ * function number in AFR) is written BEFORE MODER, and MODER is written LAST,
+ * because MODER is what connects the pin to the peripheral. The reset value of AFR
+ * is 0 (AF0, "system function"), so switching MODER first would connect the pin to
+ * the wrong function for a moment, with a possible glitch on the line.
  *
- * Expected values afterwards (with the LED setup from main.c already done,
- * which is the case when the scheduler is running):
- *   RCC->APB1ENR  (0x40023840) bit 17 set        -> 0x00020000
- *   GPIOA->AFR[0] (0x40020020) bits 11:8 = 7     -> 0x00000700
- *   GPIOA->MODER  (0x40020000)                   -> 0xA8000420
+ * All of these registers are changed with read-modify-write, not assigned: they
+ * hold the settings of the other pins of port A too (PA13-PA15 are the debug
+ * interface, with their own pull-up/pull-down and speed settings, which must not be
+ * disturbed). As with any configuration register, pin set-up belongs in one-time
+ * initialisation, not in running tasks.
+ *
+ * (Between this step and the USART being enabled in step 2 the level of the pin is
+ * not guaranteed by anything I have checked, so a stray character may reach the
+ * terminal at start-up; it would be harmless.)
+ *
+ * Expected values afterwards (the reset values are quoted from memory of the
+ * manual; only the bits of PA2 are ours):
+ *   RCC->APB1ENR   (0x40023840) bit 17 set         -> 0x00020000
+ *   GPIOA->MODER   (0x40020000)                    -> 0xA8000020
  *     reset 0xA8000000 (PA13-PA15 as alternate function for SWD),
- *     + PA5 as output (01 at bits 11:10 = 0x400), + PA2 as AF (10 at bits 5:4 = 0x20).
+ *     + PA2 as AF (10 at bits 5:4 = 0x20).
+ *   GPIOA->OTYPER  (0x40020004)                    -> 0x00000000  PA2 push-pull
+ *   GPIOA->OSPEEDR (0x40020008)                    -> 0x0C000000  reset value; PA2 = 00
+ *   GPIOA->PUPDR   (0x4002000C)                    -> 0x64000000  reset value (the
+ *                                                     debug pins' pulls); PA2 = 00
+ *   GPIOA->AFR[0]  (0x40020020) bits 11:8 = 7      -> 0x00000700
  */
 #define UART_TX_ALTERNATE_FUNCTION    ( 7U )    /* AF7 = USART1..3 on PA2 (datasheet table) */
 
@@ -86,6 +109,12 @@ static void prvUartPinsAndClocks( void )
 
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
     ( void ) RCC->APB1ENR;
+
+    GPIOA->OTYPER &= ~GPIO_OTYPER_OT2;
+
+    GPIOA->PUPDR &= ~GPIO_PUPDR_PUPD2;
+
+    GPIOA->OSPEEDR &= ~GPIO_OSPEEDR_OSPEED2;
 
     GPIOA->AFR[ 0 ] = ( GPIOA->AFR[ 0 ] & ~GPIO_AFRL_AFSEL2 ) |
                       ( UART_TX_ALTERNATE_FUNCTION << GPIO_AFRL_AFSEL2_Pos );
