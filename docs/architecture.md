@@ -4,20 +4,30 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phase 1 working on the board (sensor task at 84 MHz)
+## Current status: Phase 1 complete and working on the board; Phase 2 not started
 
 FreeRTOS builds, links and runs on the Nucleo at **84 MHz** (HSI + PLL). One
 task, the sensor task, reads the BMP280 over I2C1 once a second and prints
-`T=23.64 C  P=1019.69 hPa` over USART2 (115200 baud, ST-LINK virtual COM port,
-Tera Term). The readings are stable and plausible for the room. Register values
-and SysTick `LOAD = 83999` were checked in the debugger; the true clock
-frequency has not been measured with an instrument (no logic analyzer yet).
-If the sensor stops answering the task prints the cause and initialises it
-again on the next period. **Verified on the board:** disconnecting the sensor
-(or its lines) gives `NACK`, and everything comes back by itself when it is
-reconnected; a falling edge on CSB locks the sensor out of I2C until its power
-is cycled (see ADR-0007). **Still to do for Phase 1:** the README, and a fresh
-reading of the footprint from the next build.
+`T=24.08 C  P=1017.61 hPa` over USART2 (115200 baud, ST-LINK virtual COM port,
+Tera Term; a screenshot is in `docs/captures/phase1-terminal-output.png`). The
+readings are stable and plausible for the room. Register values and SysTick
+`LOAD = 83999` were checked in the debugger; the true clock frequency has not
+been measured with an instrument (no logic analyzer yet). If the sensor stops
+answering the task prints the cause and initialises it again on the next
+period. **Verified on the board:** disconnecting the sensor (or its lines)
+gives `NACK`, and everything comes back by itself when it is reconnected; a
+falling edge on CSB locks the sensor out of I2C until its power is cycled (see
+ADR-0007).
+
+**What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
+FreeRTOS kernel and seven application modules (clock, uart, i2c, bmp280,
+format, sensor task, main), nine ADRs (`docs/decisions/`), the README, and this
+document. Everything is committed and pushed. **What does not exist:** anything
+for Phase 2 (SPI, DMA, the transmit task), the logic analyzer (not purchased),
+and the whole Linux side (Phases 3 and 4).
+
+**Where to continue:** see "Where to continue" below. The first real work is
+Phase 2, and its first step is a design decision (the SPI roles), not code.
 
 ### Toolchain / project setup (done)
 
@@ -164,17 +174,18 @@ firmware/stm32-sensor-node/FreeRTOS/
   debugger, now printed every second, stable. With the sensor powered, a
   falling edge on CSB makes it answer NACK until its power is cycled, even
   after CSB goes back to 3.3 V (reproduced twice): CSB must be wired firmly to
-  3.3 V.
-- Footprint, from the Keil build of 2026-10-08 20:05
-  (`Listings/stm32-sensor-node.map`). That build still contained the temporary
-  stack-report code (since removed), so the real numbers are slightly smaller;
-  re-read them from the next build. Code 12,672 B, RO data 644 B (13.3 KB of
-  flash in total), RAM 3,816 B of 128 KB (RW 8 B + ZI 3,808 B, including the
-  1 KB main stack, the 512 B C-library heap reserved by the startup file, the
-  two task stacks and the UART buffer). **No `malloc` is linked** (the only
-  matches in the map are the library function `_get_argv_nomalloc`). Keil's
-  static stack report gave 324 B for the start-up call chain on the main stack
-  in an earlier build (interrupts not included).
+  3.3 V. The register layouts and codes are from memory of the datasheet and
+  have not been checked against its text. Decisions: ADR-0009.
+- Footprint, from the Keil build of 2026-10-09 12:19
+  (`Listings/stm32-sensor-node.map`, built after the last source change): Code
+  12,452 B, RO data 604 B (13,064 B = 12.8 KB of flash in total), RAM 3,816 B
+  of 128 KB (RW 8 B + ZI 3,808 B, including the 1 KB main stack, the 512 B
+  C-library heap reserved by the startup file, the two task stacks and the UART
+  buffer). **No `malloc` is linked** (the only matches in the map are the
+  library function `_get_argv_nomalloc`). The 64-bit division comes from the C
+  library (`__aeabi_ldivmod`). Keil's static stack report gave 324 B for the
+  start-up call chain on the main stack in an earlier build (interrupts not
+  included).
 
 ### Drivers
 
@@ -211,7 +222,9 @@ register-level drivers instead of using a vendor library is ADR-0008.
 - The BMP280 can be locked out of I2C by a glitch on CSB until its power is
   cycled; the sensor task reports it and keeps trying, but only a power cycle
   fixes it.
-
+- No logic analyzer yet, so `docs/captures/` has only a terminal screenshot.
+  `docs/budget.md` still lists the BMP280 as not purchased.
+- There is no LICENSE file (a decision, not an oversight).
 
 ### Architecture decisions so far
 
@@ -273,6 +286,53 @@ Task priority: higher number = more urgent. `configMAX_PRIORITIES = 3`.
 
 Interrupt levels are a separate system (lower number = more urgent): ISRs
 that call `...FromISR()` functions must be at level 5 or a larger number.
+
+## Where to continue
+
+### Small Phase 1 leftovers (optional; none blocks Phase 2)
+
+- A HardFault handler that records the stacked PC and the fault registers.
+- `Heap_Size` 0 in the start-up file: it reclaims 512 B, and any accidental
+  `malloc` then fails loudly.
+- An assertion in `uart_write()` that the scheduler has started, like the I2C
+  driver's.
+- Compare the I2C 3-or-more-byte receive sequence with the RM0383 figure, and
+  check the BMP280 register descriptions in the code against the datasheet text
+  (the follow-ups of ADR-0007 and ADR-0009).
+- Update `docs/budget.md` with the real purchases (the BMP280).
+- Learning checkpoints: quizzes done for the clock module, the UART and the I2C
+  driver (questions 1 to 7); not done yet for the formatter, the BMP280 module,
+  the sensor task and the FreeRTOS configuration.
+
+### Phase 2: the next real work (candidate first steps; nothing here is decided)
+
+1. **Get the logic analyzer** (about 8.50 to 30.80 EUR in `docs/budget.md`). It
+   also lets me measure the true clock frequency (on the MCO pin) and capture the
+   I2C transaction for `docs/captures/`.
+2. **Settle the SPI roles first, in an ADR.** The task table and the Linux plan
+   (a kernel `spi_driver` on the Pi) imply that the Pi is the SPI **master** and
+   the STM32 a **slave**. If that holds, the "SPI1 prescaler /16 = 5.25 MHz" note in
+   ADR-0006 does not apply (as I understand it, in slave mode the clock comes from
+   the master), and the 6 MHz limit has to be enforced on the Pi's side (its
+   configured maximum SPI frequency). This is my reading, not a verified fact:
+   check RM0383 before deciding.
+3. **The frame format** of one reading: fixed size, temperature as `int32_t`
+   hundredths of a degree, pressure as `uint32_t` pascals; whether to add a
+   sequence number and a checksum.
+4. **The hand-off** from the sensor task to the transmit task (a statically
+   created queue, see the open questions) and the **DMA mode** (normal mode fits
+   fixed-size messages; circular mode has the overwrite risk described in
+   `docs/plan.md`).
+5. **Pins:** SPI1 is PA4 (NSS), PA5 (SCK), PA6 (MISO), PA7 (MOSI); PA5 is free
+   now that the LED code is gone. DMA interrupts must be at level 5 or
+   numerically higher (ADR-0004).
+6. **Working style:** as for the drivers (ADR-0008): one step at a time,
+   explained before it is written, bounded waits, a status code for every
+   failure, and an ADR for the SPI and DMA decisions.
+
+### Phases 3 and 4
+
+Not started. No decisions yet beyond the plan (Yocto or Buildroot is undecided).
 
 ## Open questions / not yet decided
 
@@ -362,3 +422,13 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 - 2026-10-08: ADR-0008 (own register-level drivers, decided 2026-10-02) and
   ADR-0009 (BMP280 module design) written; ADR-0006 and ADR-0007 now point to
   ADR-0008.
+- 2026-10-09: `prvUartPinsAndClocks()` now sets PA2's output type, pull and
+  speed explicitly (same values as the reset state, stated for intent, like the
+  I2C pins); `GPIOA->MODER` expected value is now `0xA8000020` without the LED.
+- 2026-10-09: `README.md` rewritten around what is verified and what is not, with
+  the terminal screenshot in `docs/captures/`. The comments and ADRs are being
+  moved to the first person.
+- 2026-10-09: status brought up to date: Phase 1 complete, footprint from the
+  2026-10-09 map (Code 12,452 B, RO data 604 B, RAM 3,816 B), a "Where to
+  continue" section added (Phase 1 leftovers, Phase 2 candidate steps, including
+  the open question of the SPI roles).
