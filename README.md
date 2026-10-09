@@ -41,13 +41,6 @@ FreeRTOS included.
 - The real CPU clock frequency has never been measured with an instrument (the
   internal oscillator is about 1% accurate), and the error paths of the clock module
   have never been triggered.
-- The I2C receive sequence for three or more bytes is from my memory of the
-  reference manual. It works on the board, but I have not compared it with the
-  manual's figure. There is no bus clear.
-- The BMP280 register layouts and codes in the code are from my memory of the
-  datasheet and have not been checked against its text. The compensation formulas
-  were checked in Python against example values I remember; the C code itself has
-  not been run on a PC.
 - A sensor locked out by CSB needs a power cycle, which no I2C driver can fix.
 - There is no logic analyzer yet, so no signal captures exist.
 
