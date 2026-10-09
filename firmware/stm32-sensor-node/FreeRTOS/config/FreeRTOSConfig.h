@@ -51,7 +51,7 @@
  * so it calls two application-provided callbacks:
  *     vApplicationGetIdleTaskMemory()
  *     vApplicationGetTimerTaskMemory()   (only if configUSE_TIMERS == 1)
- * We must implement these ourselves; until we do, the link step will fail
+ * i must implement these ourselves; until i do, the link step will fail
  * with an "undefined symbol" error. That is expected, not a bug.
  */
 #define configSUPPORT_STATIC_ALLOCATION     1
@@ -65,12 +65,12 @@
  * stack sizes are derived from configMINIMAL_STACK_SIZE /
  * configTIMER_TASK_STACK_DEPTH.
  *
- * We set it to 0 so that WE write those two callbacks (in application code)
+ * i set it to 0 so that i write those two callbacks (in application code)
  * and choose the Idle/Timer task stack sizes deliberately. Reasons:
- *   - Every static buffer in the system is then declared in our own code,
+ *   - Every static buffer in the system is then declared in my own code,
  *     where it can be sized, reviewed and found in the .map file — no
  *     hidden kernel-owned RAM.
- *   - It forces us to understand what the kernel needs in order to start
+ *   - It forces me to understand what the kernel needs in order to start
  *     the scheduler (a TCB + a stack for each kernel-created task).
  *
  * 0 is also the default in FreeRTOS.h; it is defined explicitly here so the
@@ -180,7 +180,7 @@ extern uint32_t SystemCoreClock;
  *   - Today no clock-tree code exists: after reset SystemInit() leaves the
  *     chip on the internal 16 MHz HSI oscillator -> SystemCoreClock = 16 MHz
  *     -> LOAD = 15,999 -> 1 ms tick. Correct.
- *   - Later, our own clock setup will switch the CPU to 84 MHz via the PLL
+ *   - Later, my own clock setup will switch the CPU to 84 MHz via the PLL
  *     -> SystemCoreClock = 84 MHz -> LOAD = 83,999 -> 1 ms tick. Correct,
  *     with no change to this file.
  *   A constant of 84000000UL would be WRONG today: LOAD = 83,999 counted at
@@ -198,7 +198,7 @@ extern uint32_t SystemCoreClock;
  *                                             and programs SysTick LOAD
  *
  * If step 2 is skipped after changing the clock, SystemCoreClock keeps its
- * old value and we are back to the silent mismatch described above.
+ * old value and i are back to the silent mismatch described above.
  *
  * Verification (hypothesis-driven, once the first task exists): in the Keil
  * debugger, Peripherals -> Core Peripherals -> System Tick Timer should show
@@ -285,12 +285,12 @@ extern uint32_t SystemCoreClock;
 #define configTICK_TYPE_WIDTH_IN_BITS       TICK_TYPE_WIDTH_32_BITS
 
 /*
- * Deliberately NOT defined (defaults are what we want):
+ * Deliberately NOT defined (defaults are what i want):
  *
  *   configSYSTICK_CLOCK_HZ — defaults to configCPU_CLOCK_HZ (port.c), and
  *     the port then sets SysTick to count the CPU clock itself (CLKSOURCE
  *     bit = 1). Only needed to use the slower reference clock (HCLK/8 on
- *     STM32), which we have no reason to do.
+ *     STM32), which i have no reason to do.
  *
  *   configUSE_TICKLESS_IDLE — defaults to 0. Low-power feature that stops
  *     the tick while only the Idle task runs. Not needed on USB power, and
@@ -310,7 +310,7 @@ extern uint32_t SystemCoreClock;
  *     PendSV reads/writes directly; state-list and event-list items;
  *     priority; stack start for overflow checks; name; ...).
  * The TCB is NOT on the stack: they are two separate objects, both handed
- * to the kernel by us.
+ * to the kernel by me.
  */
 
 /*
@@ -330,7 +330,7 @@ extern uint32_t SystemCoreClock;
  *                out whenever IT decides, so this task's deadline is imposed
  *                from outside and it must never wait behind other work.
  *   priority 1   Sensor task (Phase 1) — reads the BMP280 over I2C1 at a
- *                period we choose. Running a few ms late changes nothing
+ *                period i choose. Running a few ms late changes nothing
  *                (temperature/pressure do not move that fast). During
  *                bring-up it also prints readings over USART2; that blocking
  *                debug output can always be preempted by priority 2.
@@ -357,7 +357,7 @@ extern uint32_t SystemCoreClock;
  *
  * The kernel uses this as the Idle task's stack size. Because
  * configKERNEL_PROVIDED_STATIC_MEMORY = 0, the Idle stack array is actually
- * declared in OUR vApplicationGetIdleTaskMemory(); that function will size
+ * declared in my vApplicationGetIdleTaskMemory(); that function will size
  * the array with this same macro, so there is a single source of truth.
  *
  * Why 128 words (a starting value, to be MEASURED and trimmed later):
@@ -391,7 +391,7 @@ extern uint32_t SystemCoreClock;
  *
  * If 1, the Idle task calls a user function vApplicationIdleHook() on every
  * loop — typically used to put the CPU to sleep (__WFI) to save power, or
- * for background housekeeping. We need neither (USB-powered), and a hook
+ * for background housekeeping. i need neither (USB-powered), and a hook
  * would add its own call depth to the Idle task's stack.
  *
  * Required: FreeRTOS.h raises #error if this is not defined.
@@ -403,7 +403,7 @@ extern uint32_t SystemCoreClock;
  *
  * If 1, a user function vApplicationTickHook() is called from INSIDE the
  * SysTick interrupt, on every tick (1000 times per second). Anything placed
- * there adds latency to every tick. We have no use for it.
+ * there adds latency to every tick. i have no use for it.
  *
  * Required: FreeRTOS.h raises #error if this is not defined.
  */
@@ -416,9 +416,9 @@ extern uint32_t SystemCoreClock;
  * ticks"), built on top of the tick. All timer callbacks run inside a
  * hidden Timer Service task, which would cost a stack, a TCB, a command
  * queue and a priority level — and, with static allocation, one more
- * callback for us to write (vApplicationGetTimerTaskMemory()).
+ * callback for me to write (vApplicationGetTimerTaskMemory()).
  *
- * Our periodic work (reading sensors at a fixed interval) fits naturally
+ * my periodic work (reading sensors at a fixed interval) fits naturally
  * inside tasks using vTaskDelayUntil(), which wakes at a fixed RATE
  * without drift. So the Timer task would be pure overhead.
  *
@@ -474,7 +474,7 @@ extern uint32_t SystemCoreClock;
  *     recover.
  *   - It does not check ISRs (they run on the MSP, not on task stacks).
  *
- * Obligation this creates: we must implement
+ * Obligation this creates: i must implement
  *     void vApplicationStackOverflowHook( TaskHandle_t xTask, char *pcTaskName );
  * otherwise the link fails. It will disable interrupts and halt where the
  * debugger can show which task overflowed.
@@ -584,7 +584,7 @@ extern uint32_t SystemCoreClock;
  *   - Every ISR currently planned (SPI/DMA transfer complete, possibly I2C
  *     events) has to wake a task, i.e. call a ...FromISR() function, so all
  *     of them must sit at level >= T. With T = 5 there are 11 such levels
- *     (5..15) — far more than the 2-4 we need.
+ *     (5..15) — far more than the 2-4 i need.
  *   - Levels 0..4 stay free for possible future ISRs that must never be
  *     delayed by the kernel (e.g. precise timer capture).
  *   - It cannot be 0: BASEPRI = 0 means "block nothing".
@@ -689,7 +689,7 @@ extern uint32_t SystemCoreClock;
  * Production note: a shipped product must not hang forever. There, the
  * handler would record the failure and reset the device (typically via a
  * watchdog). For a development board with a debugger attached, freezing is
- * exactly what we want.
+ * exactly what i want.
  */
 #define configASSERT( x )    if( ( x ) == 0 ) { portDISABLE_INTERRUPTS(); for( ;; ); }
 
@@ -755,13 +755,13 @@ extern uint32_t SystemCoreClock;
  *   cost, and no vendor file is modified.
  *
  * Alternatives considered:
- *   - Writing our own SVC_Handler / PendSV_Handler / SysTick_Handler that
+ *   - Writing my own SVC_Handler / PendSV_Handler / SysTick_Handler that
  *     jump to the port's functions ("indirect routing"): extra instructions
  *     on every tick and context switch; the SVC and PendSV wrappers would
  *     have to be hand-written assembly (the port's code expects the stack
  *     exactly as the hardware left it, which a normal C function would
  *     disturb); and the handler check would have to be turned off. Only
- *     worth it if our own code had to run inside SysTick_Handler.
+ *     worth it if my own code had to run inside SysTick_Handler.
  *   - Editing the vector table in the startup file: modifies a file managed
  *     by the Keil device pack (under RTE/), which a pack update can replace.
  *

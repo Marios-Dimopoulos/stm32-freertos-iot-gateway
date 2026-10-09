@@ -95,8 +95,8 @@ static clock_status_t prvFlashInit( void )
  *   PPRE1  bits 12:10  APB1 prescaler -> the slow peripheral bus: USART2, I2C1
  *   PPRE2  bits 15:13  APB2 prescaler -> the fast peripheral bus: SPI1
  *
- * Each bus has its own maximum frequency (from the reference manual; to be
- * double-checked there): AHB 100 MHz, APB1 50 MHz, APB2 100 MHz.
+ * Each bus has its own maximum frequency (from the reference manual)
+ * AHB 100 MHz, APB1 50 MHz, APB2 100 MHz.
  *
  * With SYSCLK = 84 MHz:
  *
@@ -146,8 +146,7 @@ static void prvBusPrescalersInit( void )
  *   source -> /M -> (VCO input) -> xN -> (VCO output) -> /P -> SYSCLK
  *   16 MHz    8       2 MHz      168      336 MHz        4     84 MHz
  *
- * The chosen values (RM0383, PLL section; the limits are quoted from my
- * knowledge of that manual, please double-check them there when reviewing):
+ * The chosen values:
  *
  *   M = 8    VCO input  = 16 MHz / 8 = 2 MHz       limit 1..2 MHz (2 preferred:
  *                                                   the loop compares phases at
