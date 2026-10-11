@@ -81,7 +81,7 @@ static uint16_t prvCrc16( const uint8_t * pucData, uint32_t ulLength )
 }
 
 void frame_build( uint8_t * pucFrame,
-                  uint8_t ucStatus,
+                  frame_status_t xStatus,
                   uint16_t usSequence,
                   int32_t lTemperatureCentiC,
                   uint32_t ulPressurePa )
@@ -94,7 +94,7 @@ void frame_build( uint8_t * pucFrame,
     uint16_t usCrc;
 
     pucFrame[ FRAME_OFFSET_MARKER ] = FRAME_MARKER;
-    pucFrame[ FRAME_OFFSET_STATUS ] = ucStatus;
+    pucFrame[ FRAME_OFFSET_STATUS ] = ( uint8_t ) xStatus;
 
     pucFrame[ FRAME_OFFSET_SEQUENCE ]     = ( uint8_t ) ( usSequence & 0xFFU );
     pucFrame[ FRAME_OFFSET_SEQUENCE + 1U ] = ( uint8_t ) ( usSequence >> 8 );

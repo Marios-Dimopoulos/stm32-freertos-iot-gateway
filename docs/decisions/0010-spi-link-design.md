@@ -159,7 +159,7 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   | Bytes | Field | Meaning |
   |---|---|---|
   | 0 | marker | `0xA5` |
-  | 1 | status | 0 = OK; 1 to 5 = the `bmp280_status_t` value of the failure; `0xFF` = no reading since reset |
+  | 1 | status | a `frame_status_t` value (named in `frame.h`): 0 = OK, 1 = no reading yet, 2 to 6 = the cause of a sensor failure (NACK, TIMEOUT, BUS, ID, NO_DATA) |
   | 2-3 | sequence | `uint16`, +1 for every frame the sensor task builds, wraps to 0 |
   | 4-7 | temperature | `int32`, hundredths of a degree Celsius |
   | 8-11 | pressure | `uint32`, pascals |
