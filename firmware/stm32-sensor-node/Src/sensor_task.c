@@ -30,6 +30,7 @@
 
 #include "sensor_task.h"
 #include "bmp280.h"
+#include "frame.h"
 #include "format.h"
 #include "uart.h"
 
@@ -93,6 +94,49 @@ static StaticTask_t xSensorTaskTCB;
 static void prvSendLine( const char * pcLine, uint32_t ulLength )
 {
     ( void ) uart_write( ( const uint8_t * ) pcLine, ulLength );
+}
+
+/*
+ * THE TWO STATUS VOCABULARIES MEET HERE. The BMP280 module reports how it went with
+ * bmp280_status_t; the frame for the gateway has its own list of codes, frame_status_t
+ * (frame.h), because those numbers are a contract with another machine and must not
+ * depend on the order of another module's enum. This function is the only place that
+ * knows both, and says explicitly which BMP280 outcome becomes which frame code.
+ *
+ * There is no `default:` on purpose. With every enumerator listed and no default, the
+ * compiler warns when a status is added to bmp280_status_t and not handled here (a
+ * `default:` would silence that warning).
+ *
+ * BMP280_OK maps to FRAME_STATUS_OK, which says the numbers are valid: the caller
+ * must pass the real reading then, and zeros for every other code (frame.h).
+ */
+static frame_status_t prvFrameStatus( bmp280_status_t xStatus )
+{
+    switch( xStatus )
+    {
+        case BMP280_OK:
+            return FRAME_STATUS_OK;
+
+        case BMP280_ERR_NACK:
+            return FRAME_STATUS_SENSOR_NACK;
+
+        case BMP280_ERR_TIMEOUT:
+            return FRAME_STATUS_SENSOR_TIMEOUT;
+
+        case BMP280_ERR_BUS:
+            return FRAME_STATUS_SENSOR_BUS;
+
+        case BMP280_ERR_ID:
+            return FRAME_STATUS_SENSOR_ID;
+
+        case BMP280_ERR_NO_DATA:
+            return FRAME_STATUS_SENSOR_NO_DATA;
+    }
+
+    /* Only a value outside the enum gets here: a programming error (or corrupted
+     * memory), not something to report on the wire. */
+    configASSERT( pdFALSE );
+    return FRAME_STATUS_SENSOR_NO_DATA;
 }
 
 /* ==========================================================================
