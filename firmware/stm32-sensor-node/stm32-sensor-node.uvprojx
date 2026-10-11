@@ -420,6 +420,11 @@
               <FilePath>.\Src\format.c</FilePath>
             </File>
             <File>
+              <FileName>frame.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\frame.c</FilePath>
+            </File>
+            <File>
               <FileName>sensor_task.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Src\sensor_task.c</FilePath>
