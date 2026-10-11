@@ -24,8 +24,7 @@
  * ==========================================================================
  *
  * The program is stored in flash, which needs a fixed amount of TIME per
- * read (roughly 30-35 ns, inferred from the reference manual's table of about
- * 30 MHz per wait state), no matter how fast the CPU clock is. At 16 MHz one
+ * read (roughly 30-35 ns), no matter how fast the CPU clock is. At 16 MHz one
  * CPU cycle is 62.5 ns, longer than that, so the flash keeps up. At 84 MHz
  * one cycle is 11.9 ns, and the flash needs three of them: the first cycle
  * plus 2 "wait states" (extra cycles spent waiting). If the CPU were switched
