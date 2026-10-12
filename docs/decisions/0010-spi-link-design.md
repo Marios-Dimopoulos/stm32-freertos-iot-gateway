@@ -1,4 +1,4 @@
-# ADR-0010: SPI link to the gateway: the Pi as master, a fixed frame with CRC, a mailbox and a re-armed DMA
+# ADR-0010: SPI link to the gateway: the Pi as master, a fixed frame with CRC, a latest-frame queue and a re-armed DMA
 
 **Status:** Accepted (design only: nothing in this ADR has been built or tested on the board yet)
 **Date:** 2026-10-11
@@ -111,14 +111,14 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
 - Pros: the lowest latency (microseconds); no extra task.
 - Cons: more logic in an ISR and a task/ISR handshake that must be written with care.
 
-#### Option C: a one-slot overwriting queue (mailbox) and a priority-2 transmit task
+#### Option C: a one-slot overwriting queue (the latest frame) and a priority-2 transmit task
 - How it works: the sensor task builds the frame in a local array and hands the finished
-  frame to the mailbox (`xQueueOverwrite`, a statically created queue of length 1). An
+  frame as the latest frame (`xQueueOverwrite`, a statically created queue of length 1). An
   interrupt wakes the transmit task, which stops the DMA, copies the latest frame
   (`xQueuePeek`) into the DMA buffer, and arms the DMA again. The DMA buffer is written
   only by that task and only while the DMA is stopped.
 - Pros: the two actors never use the same memory at the same time, by construction. The
-  mailbox is shared by two tasks, so the queue's own critical section protects it (the
+  latest-frame queue is shared by two tasks, so the queue's own critical section protects it (the
   copy in `xQueueGenericSend` and `xQueuePeek` is inside `taskENTER_CRITICAL()`,
   `queue.c` lines 971 to 985 and 1908 to 1921 of the V11.3.1 source in the repository).
   The logic lives in a task, not in an ISR.
@@ -173,7 +173,7 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   to `08` gives `0xF53F`.
 - **Collection:** Option A, polling by the Pi with the sequence number; no extra wire.
   The data-ready line stays a known upgrade path.
-- **Hand-off:** Option C, mailbox plus transmit task at priority 2. What swung it is that
+- **Hand-off:** Option C, a latest-frame queue plus a transmit task at priority 2. What swung it is that
   it is safe by construction, keeps the ISR minimal, and is the design the task table
   already assumed. Option B stays valid if the latency ever matters.
 - **DMA:** Option A, normal mode on DMA2 stream 3, channel 3 (SPI1_TX, Table 28 of
@@ -197,7 +197,7 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
 - **Forecloses:** the Pi cannot be told "measure now": the STM32 measures on its own
   1 s period and the Pi only collects.
 - **Follow-up work:**
-  - the sensor task builds the frame and fills the mailbox (the next step);
+  - the sensor task builds the frame and keeps the latest-frame queue filled (the next step);
   - `spi_slave` module: SPI1 slave, DMA2 stream 3, EXTI4, the transmit task;
   - `docs/architecture.md`, the task table (priority 2 stays), and the README list of
     ADRs need the new entry when this is built;
@@ -233,7 +233,7 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
 nothing on the bus tells either side that something went wrong. I put the safety into the
 frame: a marker, a sequence number and a CRC, because SPI has no ACK and no error flag.
 The DMA is a second bus master that reads RAM on its own, so a critical section cannot
-protect the buffer it reads: I used a one-slot mailbox between the tasks and a transmit
+protect the buffer it reads: I used a one-slot latest-frame queue between the tasks and a transmit
 task that re-arms the DMA only while it is stopped, so the two never touch the same memory
 at the same time. I re-arm on the chip-select rising edge, not on the DMA's
 transfer-complete flag, because that flag cannot tell a complete transfer from an
