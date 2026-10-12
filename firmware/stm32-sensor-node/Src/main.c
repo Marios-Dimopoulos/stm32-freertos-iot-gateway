@@ -6,8 +6,9 @@
  *   1. the CPU clock (84 MHz, clock.c)
  *   2. the USART2 debug output (uart.c)
  *   3. the I2C1 bus (i2c.c)
- *   4. the sensor task (sensor_task.c), which owns the BMP280 and the bus
- *   5. the scheduler (it never returns)
+ *   4. SPI1 as a slave towards the gateway (spi.c), configured and still disabled
+ *   5. the sensor task (sensor_task.c), which owns the BMP280 and the bus
+ *   6. the scheduler (it never returns)
  *
  * The order is not free: see the comments below.
  */
@@ -22,6 +23,7 @@
 #include "clock.h"
 #include "uart.h"
 #include "i2c.h"
+#include "spi.h"
 #include "sensor_task.h"
 
 /* ==========================================================================
@@ -79,6 +81,12 @@ int main( void )
      * (i2c_read_reg / i2c_write_reg) are made from the sensor task, after the
      * scheduler has started. */
     i2c_init();
+
+    /* SPI1 as a slave towards the gateway (see spi.c): clock, pins PA4 to PA7 and the
+     * peripheral's configuration. It is left DISABLED: it will be enabled by the code
+     * that arms the DMA, because a slave must have its data ready before the master's
+     * first clock edge. Nothing happens on those pins until then. */
+    spi_init();
 
     /* The sensor task, with static memory (see sensor_task.c). Nothing runs yet:
      * the task is only registered as READY. */
