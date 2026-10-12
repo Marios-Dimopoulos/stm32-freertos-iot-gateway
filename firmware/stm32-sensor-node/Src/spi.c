@@ -3,8 +3,8 @@
  *
  * Steps, in the order they are built and checked on the board:
  *
- *   1) clock, pins, SPI1 configured as a slave, left disabled        <- THIS FILE NOW
- *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled
+ *   1) clock, pins, SPI1 configured as a slave, left disabled        <- DONE
+ *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled       <- THIS STEP
  *   3) re-arming after every transaction (EXTI on NSS + the transmit task)
  *
  * WHY A SLAVE. The Pi's Linux SPI driver (Phase 4) sits behind a master controller, so
@@ -16,6 +16,7 @@
 
 #include "FreeRTOS.h"
 #include "spi.h"
+#include "frame.h"
 #include "stm32f4xx.h"
 
 /* ==========================================================================
@@ -104,7 +105,9 @@
 
 void spi_init( void )
 {
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    /* GPIOA for the pins, and DMA2 for step 2 (the DMA controller that serves SPI1;
+     * both are on the AHB1 bus). */
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_DMA2EN;
     ( void ) RCC->AHB1ENR;
 
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
@@ -135,4 +138,146 @@ void spi_init( void )
                                        GPIO_MODER_MODER6 | GPIO_MODER_MODER7 ) ) |
                    GPIO_MODER_MODER4_1 | GPIO_MODER_MODER5_1 |
                    GPIO_MODER_MODER6_1 | GPIO_MODER_MODER7_1;
+}
+
+/* ==========================================================================
+ * STEP 2) THE DMA FEEDS SPI1->DR; ARMED ONCE, THEN THE SPI IS ENABLED
+ * ==========================================================================
+ *
+ * THE PATH OF A BYTE. The frame to send sits in ucDmaFrame (below), a 14-byte array
+ * private to this file. SPI1 is a slave: it can only shift a byte out when the master
+ * clocks, and the byte must already be in its data register. With TXDMAEN set (step
+ * 1), every time the SPI's transmit register is empty (flag TXE) it sends a request to
+ * the DMA, and the DMA answers by taking the next byte of ucDmaFrame and writing it to
+ * SPI1->DR (RM0383 p. 571). No CPU instruction takes part, so the byte is there in
+ * time whatever the CPU is doing (a critical section, an interrupt of lower urgency):
+ * the master's clock does not wait for the slave.
+ *
+ * WHICH STREAM. Table 28 of RM0383 (DMA2 request mapping): SPI1_TX is channel 3 of
+ * stream 3 (stream 5 also serves it). Stream 3 is used. (I read that table from a text
+ * extraction of the PDF, where the columns are partly lost; the cell is to be confirmed
+ * against the PDF page.)
+ *
+ * HOW THE STREAM IS CONFIGURED (RM0383 section 9.3.17, in the manual's order):
+ *   1. if the stream is enabled, clear EN and wait until EN reads 0: the manual says
+ *      that writing 0 takes effect only when the current transfer is over
+ *   2. clear the stream's flags (LIFCR): the manual says old flags must be cleared
+ *      before the stream is enabled again
+ *   3. PAR  = the address of SPI1->DR (the peripheral side, fixed)
+ *   4. M0AR = the address of ucDmaFrame (the memory side)
+ *   5. NDTR = FRAME_SIZE, the number of items to move
+ *   6. CR   = the settings below
+ *   7. EN last (a separate write)
+ * The stream is in DIRECT mode (the reset state of FCR, DMDIS = 0): each request moves
+ * one item, no FIFO; nothing needs more.
+ *
+ * THE CR VALUE (0x06020440 before EN, 0x06020441 with EN):
+ *   CHSEL = 3        channel 3 = the SPI1_TX request line
+ *   PL    = 10       priority "high". Only this stream is active, so it makes no
+ *                    difference today; it is stated because this is the time-critical
+ *                    transfer of the system
+ *   MSIZE = 00       memory item = 1 byte
+ *   PSIZE = 00       peripheral item = 1 byte (SPI frames are 8 bits, DFF = 0)
+ *   MINC  = 1        the memory address goes up after each byte: it walks the frame
+ *   PINC  = 0        the peripheral address stays: it is always SPI1->DR
+ *   CIRC  = 0        NORMAL mode: after FRAME_SIZE items the stream stops by itself
+ *                    (and must be armed again, step 3). Circular mode was rejected in
+ *                    ADR-0010: after one transaction of a different length every later
+ *                    frame would start at the wrong byte
+ *   DIR   = 01       memory to peripheral
+ *   TCIE, HTIE, TEIE, DMEIE = 0   no interrupts. The transmit task will be woken by the
+ *                    NSS edge (step 3), not by the DMA (ADR-0010, decision 6)
+ *
+ * THE RULE FOR THE BUFFER. ucDmaFrame is written only while the stream is stopped
+ * (a critical section cannot hold back the DMA, which is another bus master). Today it
+ * is written once, before the first arming.
+ *
+ * ORDER: the stream first, THEN the SPI (SPE). The manual asks for a slave to be
+ * enabled before the master clocks and with its data register ready (p. 555). Once SPE
+ * is set the SPI raises its first request at once (TXE is 1), and the DMA must already
+ * be listening.
+ *
+ * ONE BOUNDED WAIT, FLAGGED: waiting for EN to read 0 is a busy loop, limited to a
+ * number of passes. Today the stream has just come out of reset, so EN is already 0
+ * and the loop does not run; it exists for step 3, where the stream may be in the
+ * middle of a transfer. If it ever times out the function reports it and does not
+ * touch the stream.
+ *
+ * Expected values after spi_start() (DMA2 base 0x40026400; stream 3 starts at +0x58):
+ *   RCC->AHB1ENR        (0x40023830) bit 22 (DMA2EN) set; bit 0 (GPIOA) and bit 1
+ *                       (GPIOB, the I2C driver) too -> 0x00400003
+ *   DMA2_Stream3->CR    (0x40026458) -> 0x06020441
+ *   DMA2_Stream3->NDTR  (0x4002645C) -> 13  PREDICTION, not a fact: when SPE goes on the
+ *                       SPI raises its first request and the DMA moves byte 0 into
+ *                       SPI1->DR; nothing clocks, so the second byte is not requested.
+ *                       If it reads 14 the stream is not seeing the request.
+ *   DMA2_Stream3->PAR   (0x40026460) -> 0x4001300C (SPI1 base 0x40013000 + DR at 0x0C)
+ *   DMA2_Stream3->M0AR  (0x40026464) -> the address of ucDmaFrame (see the map file).
+ *                       Note: the DMA moves M0AR forward by one per byte, so after byte
+ *                       0 it reads one more than ucDmaFrame
+ *   SPI1->CR1           (0x40013000) -> 0x0040  SPE
+ *   SPI1->SR            (0x40013008) -> TXE (bit 1) should be 0: the register holds byte 0
+ *   ucDmaFrame (14 bytes) -> A5 01 00 00 00 00 00 00 00 00 00 00 CRC_LO CRC_HI, where the
+ *                       status is 01 (FRAME_STATUS_NO_READING) and the sequence 00 00
+ */
+#define SPI_DMA_STOP_WAIT_PASSES    ( 10000U )
+
+_Static_assert( ( FRAME_SIZE > 0U ) && ( FRAME_SIZE <= 0xFFFFU ),
+                "DMA_SxNDTR is a 16-bit counter: the frame must fit in it" );
+
+static uint8_t ucDmaFrame[ FRAME_SIZE ];
+
+/* The manual's stream configuration procedure for stream 3. ucDmaFrame must already
+ * hold the frame to send. Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if the stream did
+ * not stop in time (nothing has been changed then). */
+static spi_status_t prvDmaProgramAndEnable( void )
+{
+    uint32_t ulPasses = SPI_DMA_STOP_WAIT_PASSES;
+
+    DMA2_Stream3->CR &= ~DMA_SxCR_EN;
+
+    while( ( ( DMA2_Stream3->CR & DMA_SxCR_EN ) != 0U ) && ( ulPasses > 0U ) )
+    {
+        ulPasses--;
+    }
+
+    if( ( DMA2_Stream3->CR & DMA_SxCR_EN ) != 0U )
+    {
+        return SPI_ERR_DMA_NOT_STOPPING;
+    }
+
+    DMA2->LIFCR = DMA_LIFCR_CTCIF3 | DMA_LIFCR_CHTIF3 | DMA_LIFCR_CTEIF3 |
+                  DMA_LIFCR_CDMEIF3 | DMA_LIFCR_CFEIF3;
+
+    DMA2_Stream3->PAR = ( uint32_t ) &SPI1->DR;
+    DMA2_Stream3->M0AR = ( uint32_t ) ucDmaFrame;
+    DMA2_Stream3->NDTR = FRAME_SIZE;
+
+    DMA2_Stream3->CR = DMA_SxCR_CHSEL_0 | DMA_SxCR_CHSEL_1 |    /* channel 3 */
+                       DMA_SxCR_PL_1 |                          /* priority high */
+                       DMA_SxCR_MINC |                          /* memory address increments */
+                       DMA_SxCR_DIR_0;                          /* memory to peripheral */
+
+    DMA2_Stream3->CR |= DMA_SxCR_EN;
+
+    return SPI_OK;
+}
+
+spi_status_t spi_start( void )
+{
+    spi_status_t xStatus;
+
+    /* The frame the Pi gets until a real one is handed over: "no reading yet",
+     * sequence 0 (the value kept for exactly this, see sensor_task.c). */
+    frame_build( ucDmaFrame, FRAME_STATUS_NO_READING, 0U, 0, 0U );
+
+    xStatus = prvDmaProgramAndEnable();
+
+    if( xStatus == SPI_OK )
+    {
+        /* The stream is listening; now the SPI may ask for its first byte. */
+        SPI1->CR1 |= SPI_CR1_SPE;
+    }
+
+    return xStatus;
 }

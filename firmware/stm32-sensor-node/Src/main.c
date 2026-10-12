@@ -43,6 +43,9 @@ _Static_assert( __NVIC_PRIO_BITS == configPRIO_BITS,
  * the compiler does not remove a variable that is only written. */
 static volatile clock_status_t xClockStatus;
 
+/* Same for the SPI start-up (0 = SPI_OK). */
+static volatile spi_status_t xSpiStatus;
+
 /* ==========================================================================
  * MAIN
  * ==========================================================================
@@ -91,6 +94,10 @@ int main( void )
     /* The sensor task, with static memory (see sensor_task.c). Nothing runs yet:
      * the task is only registered as READY. */
     sensor_task_create();
+
+    /* Arm the SPI's DMA with the placeholder frame and enable SPI1 (see spi.c). From
+     * here on the Pi can clock a frame out. It needs no scheduler. */
+    xSpiStatus = spi_start();
 
     /*
      * Start the scheduler. In order, inside this call:

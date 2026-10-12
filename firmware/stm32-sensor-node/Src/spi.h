@@ -9,6 +9,12 @@
 #ifndef SPI_H
 #define SPI_H
 
+typedef enum
+{
+    SPI_OK = 0,
+    SPI_ERR_DMA_NOT_STOPPING    /* the DMA stream did not stop in time: nothing was changed */
+} spi_status_t;
+
 /*
  * Configures the clock, the four pins and SPI1 as a slave in mode 0 (clock idles low,
  * data sampled on the rising edge), 8-bit frames, most significant bit first, hardware
@@ -19,5 +25,14 @@
  * code that arms the DMA. Call once from main(), before the scheduler starts.
  */
 void spi_init( void );
+
+/*
+ * Arms DMA2 stream 3 with the placeholder frame ("no reading yet", sequence 0) and then
+ * ENABLES the SPI: from here on the Pi can clock a frame out. Call once, after
+ * spi_init() and before the scheduler starts. It does not need the scheduler.
+ *
+ * Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING (the SPI is then not enabled).
+ */
+spi_status_t spi_start( void );
 
 #endif /* SPI_H */
