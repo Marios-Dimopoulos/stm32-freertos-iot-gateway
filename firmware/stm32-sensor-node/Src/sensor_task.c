@@ -9,6 +9,20 @@
  *                      go back to "not initialised": the next period runs
  *                      bmp280_init() again.
  *
+ * ONE FRAME PER PERIOD, WHATEVER HAPPENED. At the end of every period the task builds
+ * one 14-byte frame for the gateway (frame.h, ADR-0010) and stores it as the latest frame:
+ *
+ *   init just succeeded -> FRAME_STATUS_NO_READING, temperature and pressure 0
+ *   reading OK          -> FRAME_STATUS_OK, the reading
+ *   any failure         -> the matching FRAME_STATUS_SENSOR_..., temperature and
+ *                          pressure 0 (see prvStatusFromBmp280ToFrame())
+ *
+ * The sequence number goes up by one per period, also while the sensor is failing, so
+ * the gateway can use it as a heartbeat: a number that stops moving means this task is
+ * not running (a failing sensor still moves it). The first frame carries 1; 0 is kept
+ * for the placeholder that the transmit task sends before this task has produced
+ * anything.
+ *
  * WHY INITIALISE AGAIN AFTER EVERY ERROR. A sensor that stopped answering and comes
  * back (its supply was interrupted, or it was power-cycled after CSB locked it out of
  * I2C, see ADR-0007) returns with its DEFAULT settings, in sleep mode. Reading it
@@ -27,6 +41,7 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 
 #include "sensor_task.h"
 #include "bmp280.h"
@@ -71,6 +86,25 @@ static StackType_t  xSensorTaskStack[ SENSOR_TASK_STACK_WORDS ];
 static StaticTask_t xSensorTaskTCB;
 
 /*
+ * THE LATEST FRAME (ADR-0010). A queue of length 1 that holds the most recent frame.
+ * Each period the task overwrites its content with xQueueOverwrite(), so it never fills
+ * up and the task never waits. Whoever reads it (the transmit task, in a later step)
+ * gets the newest frame, or the one before if a new one is not there yet, never a mix: the
+ * kernel copies the item inside a critical section (queue.c), so a task that preempts
+ * this one sees the old frame or the new one, not a half-written one.
+ *
+ * The task builds the frame in its own local array first and hands over the finished
+ * frame with ONE call. The queue is private to this file: the readers will get an
+ * accessor function with the transmit task, not the handle.
+ *
+ * With static allocation (ADR-0001) the queue's memory is ours: the kernel's record of
+ * the queue (StaticQueue_t) and the storage for its items (length 1 x FRAME_SIZE bytes).
+ */
+static QueueHandle_t xLatestFrame;
+static StaticQueue_t xLatestFrameRecord;
+static uint8_t       ucLatestFrameStorage[ FRAME_SIZE ];
+
+/*
  * THE LINE BUFFER. Every line is built here, piece by piece with the formatter, and
  * sent with ONE uart_write(), so it is a single message (a line is never cut by the
  * UART's "whole message or nothing" rule, and two tasks' lines never interleave). The
@@ -110,7 +144,7 @@ static void prvSendLine( const char * pcLine, uint32_t ulLength )
  * BMP280_OK maps to FRAME_STATUS_OK, which says the numbers are valid: the caller
  * must pass the real reading then, and zeros for every other code (frame.h).
  */
-static frame_status_t prvFrameStatus( bmp280_status_t xStatus )
+static frame_status_t prvStatusFromBmp280ToFrame( bmp280_status_t xStatus )
 {
     switch( xStatus )
     {
@@ -172,6 +206,11 @@ static void prvSensorTask( void * pvParameters )
     bmp280_status_t xStatus;
     char acLine[ SENSOR_LINE_SIZE ];
     uint32_t ulLength;
+    uint8_t aucFrame[ FRAME_SIZE ];
+    frame_status_t xFrameStatus;
+    uint16_t usSequence = 0U;
+    int32_t lTemperatureCentiC;
+    uint32_t ulPressurePa;
 
     ( void ) pvParameters;
 
@@ -180,6 +219,11 @@ static void prvSensorTask( void * pvParameters )
 
     for( ;; )
     {
+        /* Zero unless a reading is taken below: a frame with a status other than OK
+         * carries zeros in its numbers (frame.h). */
+        lTemperatureCentiC = 0;
+        ulPressurePa = 0U;
+
         if( xSensorReady == pdFALSE )
         {
             xStatus = bmp280_init();
@@ -187,6 +231,7 @@ static void prvSensorTask( void * pvParameters )
             if( xStatus == BMP280_OK )
             {
                 xSensorReady = pdTRUE;
+                xFrameStatus = FRAME_STATUS_NO_READING;
                 ulLength = format_text( acLine, SENSOR_LINE_SIZE, "BMP280 init: OK\r\n" );
                 prvSendLine( acLine, ulLength );
             }
@@ -197,6 +242,10 @@ static void prvSensorTask( void * pvParameters )
 
             if( xStatus == BMP280_OK )
             {
+                xFrameStatus = FRAME_STATUS_OK;
+                lTemperatureCentiC = xReading.lTemperatureCentiC;
+                ulPressurePa = xReading.ulPressurePa;
+
                 ulLength = format_text( acLine, SENSOR_LINE_SIZE, "T=" );
                 ulLength += format_fixed2( &acLine[ ulLength ], SENSOR_LINE_SIZE - ulLength, xReading.lTemperatureCentiC );
                 ulLength += format_text( &acLine[ ulLength ], SENSOR_LINE_SIZE - ulLength, " C  P=" );
@@ -212,6 +261,7 @@ static void prvSensorTask( void * pvParameters )
              * a new init. */
             xSensorReady = pdFALSE;
             ulFailures++;
+            xFrameStatus = prvStatusFromBmp280ToFrame( xStatus );
 
             ulLength = format_text( acLine, SENSOR_LINE_SIZE, "BMP280 error: " );
             ulLength += format_text( &acLine[ ulLength ], SENSOR_LINE_SIZE - ulLength, bmp280_status_text( xStatus ) );
@@ -220,6 +270,16 @@ static void prvSensorTask( void * pvParameters )
             ulLength += format_text( &acLine[ ulLength ], SENSOR_LINE_SIZE - ulLength, ")\r\n" );
             prvSendLine( acLine, ulLength );
         }
+
+        /* The frame of this period, in every case (see the top of the file). The
+         * counter goes up BEFORE the frame is built, so the first frame carries 1 and 0
+         * stays free for the transmit task's placeholder; it wraps from 65535 to 0 by
+         * itself. xQueueOverwrite() cannot fail: it writes even when the queue is full,
+         * and pdPASS is its only possible result (queue.h), so the result is not
+         * checked. */
+        usSequence++;
+        frame_build( aucFrame, xFrameStatus, usSequence, lTemperatureCentiC, ulPressurePa );
+        ( void ) xQueueOverwrite( xLatestFrame, aucFrame );
 
         vTaskDelayUntil( &xLastWakeTime, pdMS_TO_TICKS( SENSOR_PERIOD_MS ) );
     }
@@ -239,6 +299,12 @@ static void prvSensorTask( void * pvParameters )
 void sensor_task_create( void )
 {
     TaskHandle_t xSensorTaskHandle;
+
+    /* The latest-frame queue first: the task uses it from its first period. Length 1,
+     * one item of FRAME_SIZE bytes. With static memory it can only fail on a NULL
+     * buffer, so it is an assert, as for the task below. */
+    xLatestFrame = xQueueCreateStatic( 1U, FRAME_SIZE, ucLatestFrameStorage, &xLatestFrameRecord );
+    configASSERT( xLatestFrame != NULL );
 
     xSensorTaskHandle = xTaskCreateStatic( prvSensorTask,
                                            "Sensor",
