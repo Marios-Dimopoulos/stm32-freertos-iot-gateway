@@ -6,6 +6,7 @@
  *   1) clock, pins, SPI1 configured as a slave, left disabled        <- DONE
  *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled       <- THIS STEP
  *   3) re-arming after every transaction (EXTI on NSS + the transmit task)
+ *        3a) the interrupt on NSS rising, only counting                <- THIS STEP
  *
  * WHY A SLAVE. The Pi's Linux SPI driver (Phase 4) sits behind a master controller, so
  * the Pi clocks and the STM32 answers (ADR-0010, decision 1). In slave mode the clock
@@ -296,6 +297,99 @@ static spi_status_t prvDmaReloadAndEnable( void )
     return SPI_OK;
 }
 
+/* ==========================================================================
+ * STEP 3a) THE END OF A TRANSACTION: AN INTERRUPT ON NSS RISING (PA4, EXTI LINE 4)
+ * ==========================================================================
+ *
+ * WHY THIS EDGE. A transaction ends when the Pi raises NSS. That is the one signal that
+ * is there whether the Pi clocked 14 bytes, fewer, or more, and it is the moment when
+ * the frame buffer may be refilled for the next transaction (ADR-0010, decision 6).
+ * The DMA's own "transfer complete" cannot be used for this: it does not fire at all if
+ * the Pi clocks fewer bytes than the count.
+ *
+ * EXTI is the chip's external interrupt controller. Its lines 0 to 15 are wired to pins
+ * BY NUMBER: line 4 listens to pin 4 of one port, chosen in SYSCFG. NSS is PA4, so line
+ * 4 with port A. The pin stays connected to SPI1 (alternate function): the manual says
+ * that in alternate-function mode the pin's input stage is active (section 8.3.11), so
+ * EXTI should see it. THAT IS NOT YET TESTED: the counter below is the test. If it
+ * stays 0 after the Pi has read, EXTI does not see the pin in this mode.
+ *
+ * WHAT IS WRITTEN, IN ORDER:
+ *   RCC->APB2ENR  SYSCFGEN   the clock of the SYSCFG block (it holds the port selector)
+ *   SYSCFG->EXTICR[1]  field EXTI4 = 0000   (EXTICR2 holds lines 4 to 7) line 4 takes
+ *                            port A. Cleared explicitly, although it is the reset value
+ *   EXTI->RTSR    TR4        rising edge triggers. Falling is NOT enabled: the start of
+ *                            a transaction is not an event we want
+ *   EXTI->PR      PR4        clear a pending bit left from before: its reset value is
+ *                            undefined, and it is cleared by WRITING 1 to it
+ *   EXTI->IMR     MR4        unmask: let the line raise an interrupt (reset: masked)
+ *   NVIC          priority 6 THEN enable, never the other way (after reset every
+ *                            interrupt is at level 0, above the FreeRTOS line, ADR-0004)
+ *
+ * PRIORITY 6. The handler will call a ...FromISR() function (the next piece), so it
+ * must be at level 5 or numerically higher (ADR-0004). 6 is just below the line: more
+ * urgent than the UART (10), because the re-arm has to finish before the Pi's next
+ * chip select. Checked at build time, as in uart.c.
+ *
+ * THE HANDLER. The name EXTI4_IRQHandler is fixed by the vector table in the startup
+ * file, where it is a weak placeholder; defining it here replaces it. It must clear the
+ * pending bit (write 1), otherwise the interrupt fires again at once, forever. For now
+ * it only counts: ulNssRisingCount is the number of transactions seen, to be watched in
+ * the debugger (it goes up by one for each read made from the Pi).
+ *
+ * BEFORE THE SCHEDULER RUNS: the interrupt is enabled while the kernel's BASEPRI is
+ * still raised (it is only lowered by the SVC handler that starts the first task, see
+ * main.c), so an edge before that is held pending, not lost.
+ *
+ * Expected values afterwards:
+ *   RCC->APB2ENR      (0x40023844) bit 14 (SYSCFGEN) and bit 12 (SPI1EN) -> 0x00005000
+ *   SYSCFG->EXTICR[1] (0x4001380C) -> 0x00000000  (port A)
+ *   EXTI->IMR         (0x40013C00) -> 0x00000010  (line 4 unmasked)
+ *   EXTI->RTSR        (0x40013C08) -> 0x00000010  (rising edge)
+ *   NVIC priority of EXTI4 (IRQ 10: 0xE000E40A, one byte) -> 0x60  (level 6 in the top 4 bits)
+ *   NVIC_ISER0        (0xE000E100) bit 10 set
+ */
+#define SPI_NSS_IRQ_PRIORITY    ( 6U )
+
+_Static_assert( SPI_NSS_IRQ_PRIORITY >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY,
+                "the NSS interrupt must be at or below the FreeRTOS line (ADR-0004): "
+                "its handler will call a FromISR function" );
+_Static_assert( SPI_NSS_IRQ_PRIORITY < ( 1U << __NVIC_PRIO_BITS ),
+                "interrupt level out of range for this chip" );
+
+/* Number of NSS rising edges seen: transactions ended. Written only by the handler. */
+static volatile uint32_t ulNssRisingCount;
+
+static void prvNssInterruptEnable( void )
+{
+    RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+    ( void ) RCC->APB2ENR;
+
+    /* Line 4 takes port A (field value 0000). */
+    SYSCFG->EXTICR[ 1 ] &= ~SYSCFG_EXTICR2_EXTI4;
+
+    EXTI->RTSR |= EXTI_RTSR_TR4;
+
+    /* A stale pending bit would fire the moment the line is unmasked. */
+    EXTI->PR = EXTI_PR_PR4;
+    EXTI->IMR |= EXTI_IMR_MR4;
+
+    /* Priority first, then enable: it can never run at the reset priority 0. */
+    NVIC_SetPriority( EXTI4_IRQn, SPI_NSS_IRQ_PRIORITY );
+    NVIC_EnableIRQ( EXTI4_IRQn );
+}
+
+void EXTI4_IRQHandler( void )
+{
+    if( ( EXTI->PR & EXTI_PR_PR4 ) != 0U )
+    {
+        /* Cleared by writing 1, not by read-modify-write. */
+        EXTI->PR = EXTI_PR_PR4;
+
+        ulNssRisingCount++;
+    }
+}
+
 spi_status_t spi_start( void )
 {
     spi_status_t xStatus;
@@ -310,6 +404,9 @@ spi_status_t spi_start( void )
 
     if( xStatus == SPI_OK )
     {
+        /* The end-of-transaction interrupt (step 3a), before the SPI goes live. */
+        prvNssInterruptEnable();
+
         /* The stream is listening; now the SPI may ask for its first byte. */
         SPI1->CR1 |= SPI_CR1_SPE;
     }
