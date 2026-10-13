@@ -164,9 +164,8 @@ void spi_init( void )
  *   -----------------------           ------------------------------------
  *   the DMA2 clock                    wait until EN reads 0 (bounded)
  *   PAR  = address of SPI1->DR        clear the stream's flags (LIFCR)
- *   CR   = the settings below         M0AR = ucDmaFrame (see the note on M0AR below)
- *                                     NDTR = FRAME_SIZE again (it counted down to 0)
- *                                     EN
+ *   M0AR = address of ucDmaFrame      NDTR = FRAME_SIZE again (it counted down to 0)
+ *   CR   = the settings below         EN
  *
  * CONFIRMED ON THE BOARD (2026-10-13, after one complete transaction with the Pi): CR
  * reads 0x06020440, i.e. only EN was cleared (by the hardware), and PAR still reads
@@ -177,9 +176,10 @@ void spi_init( void )
  * how it behaves: after the complete transaction it still read the address of
  * ucDmaFrame (0x200000B0, the same as &ucDmaFrame), not that address + 14. The DMA
  * walks through the buffer with its own running pointer; NDTR is the visible progress.
- * So writing M0AR again for every frame is redundant. It is kept because it is one
- * write and states which buffer the frame is read from; moving it into
- * prvDmaConfigure(), next to PAR, would be equally correct.
+ * So M0AR is a setting like PAR: it is written once, in prvDmaConfigure(), and not for
+ * every frame. (Checked on the board in two places: at a breakpoint right after
+ * spi_start(), with byte 0 already copied and NDTR = 13, and after a complete
+ * transaction; it read the address of ucDmaFrame both times.)
  *
  * THE CR VALUE (0x06020440 before EN, 0x06020441 with EN):
  *   CHSEL = 3        channel 3 = the SPI1_TX request line
@@ -241,7 +241,7 @@ static uint8_t ucDmaFrame[ FRAME_SIZE ];
 
 /* Everything about stream 3 that stays the same from one frame to the next. Called
  * once. It does not wait for EN to read 0: the stream has just come out of reset, so it
- * is disabled, and CR and PAR may be written. The stream is left DISABLED. */
+ * is disabled, and CR, PAR and M0AR may be written. The stream is left DISABLED. */
 static void prvDmaConfigure( void )
 {
     /* The clock of DMA2, the controller that serves SPI1 (on the AHB1 bus). It is
@@ -253,6 +253,11 @@ static void prvDmaConfigure( void )
     /* The peripheral side: always SPI1->DR (PINC = 0). */
     DMA2_Stream3->PAR = ( uint32_t ) &SPI1->DR;
 
+    /* The memory side: the start of ucDmaFrame. It is a BASE address, so it does not
+     * move while the stream runs and does not have to be written again (see the note
+     * above). The array's name already means its address, so there is no &. */
+    DMA2_Stream3->M0AR = ( uint32_t ) ucDmaFrame;
+
     DMA2_Stream3->CR = DMA_SxCR_CHSEL_0 | DMA_SxCR_CHSEL_1 |    /* channel 3 */
                        DMA_SxCR_PL_1 |                          /* priority high */
                        DMA_SxCR_MINC |                          /* memory address increments */
@@ -260,10 +265,11 @@ static void prvDmaConfigure( void )
 }
 
 /* What has to be done again for every frame (RM0383 section 9.3.17): make sure the
- * stream is stopped, clear its old flags, point it at the start of ucDmaFrame again,
- * reload the count, and enable it. ucDmaFrame must already hold the frame to send, and
- * must not be written again until the stream has stopped. Returns SPI_OK, or
- * SPI_ERR_DMA_NOT_STOPPING if the stream did not stop in time (nothing was changed). */
+ * stream is stopped, clear its old flags, reload the count, and enable it. The
+ * addresses and the settings were written once, by prvDmaConfigure(). ucDmaFrame must
+ * already hold the frame to send, and must not be written again until the stream has
+ * stopped. Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if the stream did not stop in
+ * time (nothing was changed). */
 static spi_status_t prvDmaReloadAndEnable( void )
 {
     uint32_t ulPasses = SPI_DMA_STOP_WAIT_PASSES;
@@ -283,7 +289,6 @@ static spi_status_t prvDmaReloadAndEnable( void )
     DMA2->LIFCR = DMA_LIFCR_CTCIF3 | DMA_LIFCR_CHTIF3 | DMA_LIFCR_CTEIF3 |
                   DMA_LIFCR_CDMEIF3 | DMA_LIFCR_CFEIF3;
 
-    DMA2_Stream3->M0AR = ( uint32_t ) ucDmaFrame;
     DMA2_Stream3->NDTR = FRAME_SIZE;
 
     DMA2_Stream3->CR |= DMA_SxCR_EN;

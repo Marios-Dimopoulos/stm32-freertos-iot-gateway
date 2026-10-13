@@ -188,8 +188,8 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   the task from the DMA's transfer-complete interrupt.
 - **The stream is stopped and checked before EVERY reload (a robustness rule).** The
   code that reloads the stream first clears `EN` and waits, with a bounded loop, until
-  `EN` reads 0; only then does it clear the flags, rewrite `M0AR` and `NDTR`, and enable
-  the stream. It never assumes that the master clocked exactly 14 bytes.
+  `EN` reads 0; only then does it clear the flags, reload `NDTR`, and enable the stream.
+  It never assumes that the master clocked exactly 14 bytes.
   - *Why.* The master is not ours. NSS rising means "the Pi ended the transaction", not
     "14 bytes were clocked". After a short transaction (a script aborted, a glitch, a
     bug) the stream is still enabled with `NDTR > 0`, and `NDTR`, `PAR` and `M0AR` are
@@ -205,15 +205,15 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
     error being reported.
   - *By-product.* `NDTR` read at the NSS edge says how many bytes were clocked, so short
     transactions can be counted.
-- **Order, and what is set once.** Once, in `prvDmaConfigure()`: the DMA2 clock, `PAR`
-  and the `CR` fields (channel, priority, memory increment, direction), with `EN` left
-  off. For every frame, in `prvDmaReloadAndEnable()`: stop and wait, clear the stream's
-  flags, `M0AR`, `NDTR`, `EN`. The frame buffer (`ucDmaFrame`) is written only after the
+- **Order, and what is set once.** Once, in `prvDmaConfigure()`: the DMA2 clock, `PAR`,
+  `M0AR` and the `CR` fields (channel, priority, memory increment, direction), with `EN`
+  left off. For every frame, in `prvDmaReloadAndEnable()`: stop and wait, clear the
+  stream's flags, `NDTR`, `EN`. The frame buffer (`ucDmaFrame`) is written only after the
   stop and before the reload: stop, copy, reload. `M0AR` is a **base address**: it keeps
   its value during and after the transfer (it read back `0x200000B0`, the address of
-  `ucDmaFrame`, after a complete transaction; the DMA walks through the buffer with its
-  own pointer), so writing it for every frame is redundant but harmless. It could move
-  into `prvDmaConfigure()` next to `PAR`.
+  `ucDmaFrame`, with byte 0 already copied and after a complete transaction; the DMA
+  walks through the buffer with its own pointer), so it is a setting like `PAR` and is
+  written once.
 
 ## Consequences
 
