@@ -39,16 +39,14 @@
  *                    random; the pull-up makes it a defined "not selected".
  *   PA5 SCK   input  PULL-DOWN. The manual (p. 554) says the idle state of SCK must
  *                    match the polarity selected in CR1: pulling it down if CPOL = 0.
- *                    (PA5 is also wired to the Nucleo's user LED LD2, as far as I
- *                    remember; once SCK is driven by the Pi the LED will flicker,
+ *                    (PA5 is also wired to the Nucleo's user LED LD2, 
+ *                    once SCK is driven by the Pi the LED will flicker,
  *                    which is harmless.)
  *   PA6 MISO  OUTPUT push-pull, no pull, FAST speed. The only pin we drive. The speed
  *                    setting limits how fast the output edges can be. The low setting
  *                    is meant for slow signals (such as the 115200 baud UART), so for
  *                    a clock of several MHz a faster setting is needed; "fast" is
  *                    enough for 4 to 6 MHz, and radiates less than the "high" setting.
- *                    (The frequencies behind each setting are in the datasheet, which
- *                    is not on this PC: not verified.)
  *   PA7 MOSI  input  no pull. The master always drives it while we are selected.
  *
  * Output type and speed only matter for an OUTPUT, so they are set for PA6 only. The
@@ -105,9 +103,7 @@
 
 void spi_init( void )
 {
-    /* GPIOA for the pins, and DMA2 for step 2 (the DMA controller that serves SPI1;
-     * both are on the AHB1 bus). */
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_DMA2EN;
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
     ( void ) RCC->AHB1ENR;
 
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
@@ -141,7 +137,7 @@ void spi_init( void )
 }
 
 /* ==========================================================================
- * STEP 2) THE DMA FEEDS SPI1->DR; ARMED ONCE, THEN THE SPI IS ENABLED
+ * STEP 2) THE DMA FEEDS SPI1->DR: CONFIGURED ONCE, RELOADED FOR EVERY FRAME
  * ==========================================================================
  *
  * THE PATH OF A BYTE. The frame to send sits in ucDmaFrame (below), a 14-byte array
@@ -158,18 +154,25 @@ void spi_init( void )
  * extraction of the PDF, where the columns are partly lost; the cell is to be confirmed
  * against the PDF page.)
  *
- * HOW THE STREAM IS CONFIGURED (RM0383 section 9.3.17, in the manual's order):
- *   1. if the stream is enabled, clear EN and wait until EN reads 0: the manual says
- *      that writing 0 takes effect only when the current transfer is over
- *   2. clear the stream's flags (LIFCR): the manual says old flags must be cleared
- *      before the stream is enabled again
- *   3. PAR  = the address of SPI1->DR (the peripheral side, fixed)
- *   4. M0AR = the address of ucDmaFrame (the memory side)
- *   5. NDTR = FRAME_SIZE, the number of items to move
- *   6. CR   = the settings below
- *   7. EN last (a separate write)
- * The stream is in DIRECT mode (the reset state of FCR, DMDIS = 0): each request moves
- * one item, no FIFO; nothing needs more.
+ * TWO FUNCTIONS, BECAUSE THE STREAM STOPS BY ITSELF. The stream runs in NORMAL mode:
+ * after FRAME_SIZE items the count is 0 and the HARDWARE clears EN (RM0383 p. 178), so
+ * for the next frame the stream has to be started again. Circular mode would avoid
+ * that, and was rejected in ADR-0010: after one transaction of a different length every
+ * later frame would start at the wrong byte. What is set once and what is set again:
+ *
+ *   ONCE, prvDmaConfigure()           EVERY FRAME, prvDmaReloadAndEnable()
+ *   -----------------------           ------------------------------------
+ *   the DMA2 clock                    wait until EN reads 0 (bounded)
+ *   PAR  = address of SPI1->DR        clear the stream's flags (LIFCR)
+ *   CR   = the settings below         M0AR = ucDmaFrame again (the hardware moved it)
+ *                                     NDTR = FRAME_SIZE again (it counted down to 0)
+ *                                     EN
+ *
+ * ASSUMPTION, NOT YET SEEN ON THE BOARD: that CR and PAR keep their values when the
+ * stream stops. The manual's wording ("reprograms the stream") suggests only the
+ * counter and the memory address change. Step 3 tests it: after a complete
+ * transaction CR should still read 0x06020440 and PAR the same address. If not,
+ * prvDmaReloadAndEnable() has to write them too.
  *
  * THE CR VALUE (0x06020440 before EN, 0x06020441 with EN):
  *   CHSEL = 3        channel 3 = the SPI1_TX request line
@@ -180,37 +183,38 @@ void spi_init( void )
  *   PSIZE = 00       peripheral item = 1 byte (SPI frames are 8 bits, DFF = 0)
  *   MINC  = 1        the memory address goes up after each byte: it walks the frame
  *   PINC  = 0        the peripheral address stays: it is always SPI1->DR
- *   CIRC  = 0        NORMAL mode: after FRAME_SIZE items the stream stops by itself
- *                    (and must be armed again, step 3). Circular mode was rejected in
- *                    ADR-0010: after one transaction of a different length every later
- *                    frame would start at the wrong byte
+ *   CIRC  = 0        NORMAL mode (see above)
  *   DIR   = 01       memory to peripheral
  *   TCIE, HTIE, TEIE, DMEIE = 0   no interrupts. The transmit task will be woken by the
  *                    NSS edge (step 3), not by the DMA (ADR-0010, decision 6)
+ * The stream is in DIRECT mode (the reset state of FCR, DMDIS = 0): each request moves
+ * one item, no FIFO; nothing needs more.
  *
  * THE RULE FOR THE BUFFER. ucDmaFrame is written only while the stream is stopped
- * (a critical section cannot hold back the DMA, which is another bus master). Today it
- * is written once, before the first arming.
+ * (a critical section cannot hold back the DMA, which is another bus master).
  *
- * ORDER: the stream first, THEN the SPI (SPE). The manual asks for a slave to be
- * enabled before the master clocks and with its data register ready (p. 555). Once SPE
- * is set the SPI raises its first request at once (TXE is 1), and the DMA must already
- * be listening.
+ * ORDER IN spi_start(): configure, fill the buffer, load and enable the stream, and
+ * only then the SPI (SPE). The manual asks for a slave to be enabled before the master
+ * clocks and with its data register ready (p. 555). The rule kept here is "SPI enabled
+ * means the data register is loaded": once SPE is set the SPI raises its first request
+ * at once (TXE is 1), and the DMA is already enabled. (That a request raised before
+ * the stream is enabled would be lost is not something I found in the manual; this is
+ * the order that cannot go wrong.)
  *
  * ONE BOUNDED WAIT, FLAGGED: waiting for EN to read 0 is a busy loop, limited to a
  * number of passes. Today the stream has just come out of reset, so EN is already 0
- * and the loop does not run; it exists for step 3, where the stream may be in the
- * middle of a transfer. If it ever times out the function reports it and does not
- * touch the stream.
+ * and the loop does not run; it matters for step 3, where the stream may be in the
+ * middle of a transfer. If it ever times out the function reports it and changes
+ * nothing.
  *
  * Expected values after spi_start() (DMA2 base 0x40026400; stream 3 starts at +0x58):
  *   RCC->AHB1ENR        (0x40023830) bit 22 (DMA2EN) set; bit 0 (GPIOA) and bit 1
  *                       (GPIOB, the I2C driver) too -> 0x00400003
  *   DMA2_Stream3->CR    (0x40026458) -> 0x06020441
- *   DMA2_Stream3->NDTR  (0x4002645C) -> 13  PREDICTION, not a fact: when SPE goes on the
- *                       SPI raises its first request and the DMA moves byte 0 into
- *                       SPI1->DR; nothing clocks, so the second byte is not requested.
- *                       If it reads 14 the stream is not seeing the request.
+ *   DMA2_Stream3->NDTR  (0x4002645C) -> 13  PREDICTION, confirmed on the board: when SPE
+ *                       goes on the SPI raises its first request and the DMA moves byte
+ *                       0 into SPI1->DR; nothing clocks, so the second byte is not
+ *                       requested
  *   DMA2_Stream3->PAR   (0x40026460) -> 0x4001300C (SPI1 base 0x40013000 + DR at 0x0C)
  *   DMA2_Stream3->M0AR  (0x40026464) -> the address of ucDmaFrame (see the map file).
  *                       Note: the DMA moves M0AR forward by one per byte, so after byte
@@ -227,10 +231,32 @@ _Static_assert( ( FRAME_SIZE > 0U ) && ( FRAME_SIZE <= 0xFFFFU ),
 
 static uint8_t ucDmaFrame[ FRAME_SIZE ];
 
-/* The manual's stream configuration procedure for stream 3. ucDmaFrame must already
- * hold the frame to send. Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if the stream did
- * not stop in time (nothing has been changed then). */
-static spi_status_t prvDmaProgramAndEnable( void )
+/* Everything about stream 3 that stays the same from one frame to the next. Called
+ * once. It does not wait for EN to read 0: the stream has just come out of reset, so it
+ * is disabled, and CR and PAR may be written. The stream is left DISABLED. */
+static void prvDmaConfigure( void )
+{
+    /* The clock of DMA2, the controller that serves SPI1 (on the AHB1 bus). It is
+     * enabled here, next to the only code that uses the DMA. The dummy read gives the
+     * clock time to arrive, as for the other enables. */
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;
+    ( void ) RCC->AHB1ENR;
+
+    /* The peripheral side: always SPI1->DR (PINC = 0). */
+    DMA2_Stream3->PAR = ( uint32_t ) &SPI1->DR;
+
+    DMA2_Stream3->CR = DMA_SxCR_CHSEL_0 | DMA_SxCR_CHSEL_1 |    /* channel 3 */
+                       DMA_SxCR_PL_1 |                          /* priority high */
+                       DMA_SxCR_MINC |                          /* memory address increments */
+                       DMA_SxCR_DIR_0;                          /* memory to peripheral */
+}
+
+/* What has to be done again for every frame (RM0383 section 9.3.17): make sure the
+ * stream is stopped, clear its old flags, point it at the start of ucDmaFrame again,
+ * reload the count, and enable it. ucDmaFrame must already hold the frame to send, and
+ * must not be written again until the stream has stopped. Returns SPI_OK, or
+ * SPI_ERR_DMA_NOT_STOPPING if the stream did not stop in time (nothing was changed). */
+static spi_status_t prvDmaReloadAndEnable( void )
 {
     uint32_t ulPasses = SPI_DMA_STOP_WAIT_PASSES;
 
@@ -249,14 +275,8 @@ static spi_status_t prvDmaProgramAndEnable( void )
     DMA2->LIFCR = DMA_LIFCR_CTCIF3 | DMA_LIFCR_CHTIF3 | DMA_LIFCR_CTEIF3 |
                   DMA_LIFCR_CDMEIF3 | DMA_LIFCR_CFEIF3;
 
-    DMA2_Stream3->PAR = ( uint32_t ) &SPI1->DR;
     DMA2_Stream3->M0AR = ( uint32_t ) ucDmaFrame;
     DMA2_Stream3->NDTR = FRAME_SIZE;
-
-    DMA2_Stream3->CR = DMA_SxCR_CHSEL_0 | DMA_SxCR_CHSEL_1 |    /* channel 3 */
-                       DMA_SxCR_PL_1 |                          /* priority high */
-                       DMA_SxCR_MINC |                          /* memory address increments */
-                       DMA_SxCR_DIR_0;                          /* memory to peripheral */
 
     DMA2_Stream3->CR |= DMA_SxCR_EN;
 
@@ -267,11 +287,13 @@ spi_status_t spi_start( void )
 {
     spi_status_t xStatus;
 
+    prvDmaConfigure();
+
     /* The frame the Pi gets until a real one is handed over: "no reading yet",
      * sequence 0 (the value kept for exactly this, see sensor_task.c). */
     frame_build( ucDmaFrame, FRAME_STATUS_NO_READING, 0U, 0, 0U );
 
-    xStatus = prvDmaProgramAndEnable();
+    xStatus = prvDmaReloadAndEnable();
 
     if( xStatus == SPI_OK )
     {
