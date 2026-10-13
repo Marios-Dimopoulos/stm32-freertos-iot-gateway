@@ -1,9 +1,9 @@
 # ADR-0010: SPI link to the gateway: the Pi as master, a fixed frame with CRC, a latest-frame queue and a re-armed DMA
 
-**Status:** Accepted. Built and checked on the board so far: the frame and its CRC, the
-latest-frame queue, the SPI1 slave configuration and the first DMA arming (registers
-only). Not built yet: the NSS interrupt, the transmit task, the re-arm after each
-transaction, and any real transaction with the Pi.
+**Status:** Accepted. Built and checked on the board: the frame and its CRC, the
+latest-frame queue, the SPI1 slave configuration, the DMA arming, and one real
+transaction with the Pi (2026-10-13, see "Verified on the board"). Not built yet: the NSS
+interrupt, the transmit task, and the re-arm after each transaction.
 **Date:** 2026-10-11
 **Phase:** 2
 
@@ -169,11 +169,14 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   | 12-13 | CRC | CRC-16 over bytes 0 to 11, low byte first |
 
   The CRC is CRC-16/CCITT-FALSE: polynomial `0x1021`, start value `0xFFFF`, bits not
-  reflected, no final XOR, computed in software. **Test vector** (computed with a
-  Python script, not yet run on the STM32): the body
-  `A5 00 01 00 3C 09 00 00 51 8E 01 00` (status OK, sequence 1, 23.64 C, 101969 Pa)
-  gives `0x4D5E`, sent as `5E 4D`. The same body with the temperature byte `09` changed
-  to `08` gives `0xF53F`.
+  reflected, no final XOR, computed in software. **Test vectors**, computed with a
+  Python script: the body `A5 00 01 00 3C 09 00 00 51 8E 01 00` (status OK, sequence 1,
+  23.64 C, 101969 Pa) gives `0x4D5E`, sent as `5E 4D`; the same body with the temperature
+  byte `09` changed to `08` gives `0xF53F`; the placeholder body
+  `A5 01 00 00 00 00 00 00 00 00 00 00` gives `0x9610`, sent as `10 96`. The STM32's C
+  code produced exactly what the script predicted: a frame with a real reading and
+  sequence 2 (`A5 00 02 00 DC 07 00 00 C3 8A 01 00 17 49`, checked in the debugger) and
+  the placeholder, which the Pi also read over the wire.
 - **Collection:** Option A, polling by the Pi with the sequence number; no extra wire.
   The data-ready line stays a known upgrade path.
 - **Hand-off:** Option C, a latest-frame queue plus a transmit task at priority 2. What swung it is that
@@ -206,7 +209,11 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   and the `CR` fields (channel, priority, memory increment, direction), with `EN` left
   off. For every frame, in `prvDmaReloadAndEnable()`: stop and wait, clear the stream's
   flags, `M0AR`, `NDTR`, `EN`. The frame buffer (`ucDmaFrame`) is written only after the
-  stop and before the reload: stop, copy, reload.
+  stop and before the reload: stop, copy, reload. `M0AR` is a **base address**: it keeps
+  its value during and after the transfer (it read back `0x200000B0`, the address of
+  `ucDmaFrame`, after a complete transaction; the DMA walks through the buffer with its
+  own pointer), so writing it for every frame is redundant but harmless. It could move
+  into `prvDmaConfigure()` next to `PAR`.
 
 ## Consequences
 
@@ -229,12 +236,37 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   the latest-frame queue. The sequence number still moves normally. Accepted: refreshing
   the buffer between transactions would need a safe way to know that no transaction is
   running, and nothing has shown that it is needed.
+- **A read with nothing loaded returns the last byte again (observed).** After the
+  stream has finished, or beyond the 14th byte, the slave repeats the last byte it was
+  given: the CRC high byte (`0x96` for the placeholder). A Pi that polls before the
+  re-arm therefore reads 14 times the same byte, and the marker rejects it (`0xA5`
+  expected). The marker is not enough on its own, since the last byte could be `0xA5`
+  for some frame; the CRC covers that case.
 - **Follow-up work:**
   - the sensor task builds the frame and keeps the latest-frame queue filled (the next step);
   - `spi_slave` module: SPI1 slave, DMA2 stream 3, EXTI4, the transmit task;
   - `docs/architecture.md`, the task table (priority 2 stays), and the README list of
     ADRs need the new entry when this is built;
   - buy the logic analyzer; nothing about the signals can be called verified without it.
+
+### Verified on the board (2026-10-13)
+
+Setup: the Pi Zero 2 W with Raspberry Pi OS Lite (64-bit) and Python `spidev`, mode 0,
+1 MHz. Wires: Pi header pins 24 (CE0), 23 (SCLK), 21 (MISO), 19 (MOSI), 25 (GND) to
+PA4, PA5, PA6, PA7 and GND. The Pi's own loopback (MOSI to MISO) was tested first and
+returned what was sent.
+
+| What | Result |
+|---|---|
+| First 14-byte read | `A5 01 00 00 00 00 00 00 00 00 00 00 10 96`: the placeholder, CRC `0x9610` as computed by the script |
+| Alternate function 5 for PA4 to PA7, wiring, mode 0 | work |
+| DMA2 stream 3, channel 3 (Table 28) | works: the bytes came out in order |
+| After the transaction: `CR` | `0x06020440`: only `EN` was cleared (by the hardware); the settings stay |
+| After the transaction: `PAR`, `NDTR`, `M0AR` | unchanged, `0`, unchanged (a base address) |
+| After the transaction: `DMA2->LISR` | `0x0C400000`: `TCIF3` (complete), `HTIF3` (half) and `FEIF3` (FIFO error). The cause of `FEIF3` is not understood; the manual says it does not stop the stream and loses no data; the reload clears it |
+| Second read, with no re-arm | 14 times `0x96` (the last byte repeated) |
+| 16-byte read right after a reset | the frame, then `96 96` |
+| Firmware | the sensor line kept printing on the terminal during all of it |
 
 ### Not verified (from memory, or open until tested on the board)
 
@@ -243,17 +275,11 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   read and nothing was tested.
 - **`OVR` handling.** In transmit-only DMA use the received bytes are never read, so
   `OVR` is set (p. 571); whether it must be cleared before re-arming (read `DR`, then
-  `SR`, p. 573) is not known.
-- **What the slave sends if clocked past the 14th byte**, and **what a byte shifted
-  halfway does when NSS rises early**: not found in the manual; it decides whether the
-  SPI must be disabled and enabled again on every re-arm.
-- **That `CR` and `PAR` keep their values when the stream stops by itself.** The split
-  into "configure once" and "reload for every frame" depends on it (the manual's wording
-  suggests only the count and the memory address change). To be read after the first
-  complete transaction: `CR` should still read `0x06020440` and `PAR` `0x4001300C`.
-- **SPI1 alternate function number for PA4 to PA7** (AF5, from memory of the datasheet).
-- **Table 28 was read from a text extraction of the PDF**, whose columns are lost; the
-  stream and channel numbers must be checked against the PDF page at the DMA step.
+  `SR`, p. 573) is not known. The `SR` value read after the first transaction (`0x0002`)
+  is not reliable: the debugger's Memory window reads a block that includes `SPI1->DR`,
+  and reading `DR` clears `RXNE`. A single-address read (a Watch cast) is needed.
+- **What a byte shifted halfway does when NSS rises early**: not found in the manual;
+  it decides whether the SPI must be disabled and enabled again on every re-arm.
 - **The timing estimates** (re-arm in tens of microseconds, torn-frame probability) are
   mine, not measured.
 - **That the I2C driver survives being preempted** for tens of microseconds by the
