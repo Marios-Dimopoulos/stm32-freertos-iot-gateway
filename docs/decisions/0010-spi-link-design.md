@@ -2,8 +2,9 @@
 
 **Status:** Accepted. Built and checked on the board: the frame and its CRC, the
 latest-frame queue, the SPI1 slave configuration, the DMA arming, and one real
-transaction with the Pi (2026-10-13, see "Verified on the board"). Not built yet: the NSS
-interrupt, the transmit task, and the re-arm after each transaction.
+transaction with the Pi (2026-10-13, see "Verified on the board"), and the NSS interrupt,
+which for now only counts the ended transactions. Not built yet: the transmit task and
+the re-arm after each transaction.
 **Date:** 2026-10-11
 **Phase:** 2
 
@@ -267,12 +268,11 @@ returned what was sent.
 | Second read, with no re-arm | 14 times `0x96` (the last byte repeated) |
 | 16-byte read right after a reset | the frame, then `96 96` |
 | Firmware | the sensor line kept printing on the terminal during all of it |
+| `M0AR` | a base address: `0x200000B0` (= `&ucDmaFrame`) with byte 0 already copied (`NDTR` 13), and again after a full transaction (`NDTR` 0); it is written once, with `PAR` |
+| **EXTI line 4 on PA4 while PA4 is the SPI's NSS** (rising edge, NVIC level 6) | **works**: `ulNssRisingCount` went from 0 to 1 for one read made from the Pi. The CPU was halted by the debugger during the read: the DMA and the SPI still moved the 14 bytes, and the interrupt was served as soon as the CPU ran again |
 
 ### Not verified (from memory, or open until tested on the board)
 
-- **EXTI on PA4 while it is SPI NSS.** The manual says the pin's input stage is active in
-  alternate-function mode (section 8.3.11), which suggests it works; EXTI itself was not
-  read and nothing was tested.
 - **`OVR` handling.** In transmit-only DMA use the received bytes are never read, so
   `OVR` is set (p. 571); whether it must be cleared before re-arming (read `DR`, then
   `SR`, p. 573) is not known. The `SR` value read after the first transaction (`0x0002`)
