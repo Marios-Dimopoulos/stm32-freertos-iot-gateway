@@ -164,15 +164,22 @@ void spi_init( void )
  *   -----------------------           ------------------------------------
  *   the DMA2 clock                    wait until EN reads 0 (bounded)
  *   PAR  = address of SPI1->DR        clear the stream's flags (LIFCR)
- *   CR   = the settings below         M0AR = ucDmaFrame again (the hardware moved it)
+ *   CR   = the settings below         M0AR = ucDmaFrame (see the note on M0AR below)
  *                                     NDTR = FRAME_SIZE again (it counted down to 0)
  *                                     EN
  *
- * ASSUMPTION, NOT YET SEEN ON THE BOARD: that CR and PAR keep their values when the
- * stream stops. The manual's wording ("reprograms the stream") suggests only the
- * counter and the memory address change. Step 3 tests it: after a complete
- * transaction CR should still read 0x06020440 and PAR the same address. If not,
- * prvDmaReloadAndEnable() has to write them too.
+ * CONFIRMED ON THE BOARD (2026-10-13, after one complete transaction with the Pi): CR
+ * reads 0x06020440, i.e. only EN was cleared (by the hardware), and PAR still reads
+ * 0x4001300C. So the settings written once stay, and only the counter has to be
+ * reloaded. NDTR read 0.
+ *
+ * NOTE ON M0AR. The manual calls it the BASE address of the memory area, and that is
+ * how it behaves: after the complete transaction it still read the address of
+ * ucDmaFrame (0x200000B0, the same as &ucDmaFrame), not that address + 14. The DMA
+ * walks through the buffer with its own running pointer; NDTR is the visible progress.
+ * So writing M0AR again for every frame is redundant. It is kept because it is one
+ * write and states which buffer the frame is read from; moving it into
+ * prvDmaConfigure(), next to PAR, would be equally correct.
  *
  * THE CR VALUE (0x06020440 before EN, 0x06020441 with EN):
  *   CHSEL = 3        channel 3 = the SPI1_TX request line
@@ -216,13 +223,14 @@ void spi_init( void )
  *                       0 into SPI1->DR; nothing clocks, so the second byte is not
  *                       requested
  *   DMA2_Stream3->PAR   (0x40026460) -> 0x4001300C (SPI1 base 0x40013000 + DR at 0x0C)
- *   DMA2_Stream3->M0AR  (0x40026464) -> the address of ucDmaFrame (see the map file).
- *                       Note: the DMA moves M0AR forward by one per byte, so after byte
- *                       0 it reads one more than ucDmaFrame
+ *   DMA2_Stream3->M0AR  (0x40026464) -> the address of ucDmaFrame (0x200000B0 in the
+ *                       build that was checked; see the map file). It keeps that value
+ *                       during and after the transfer (a base address, see the note)
  *   SPI1->CR1           (0x40013000) -> 0x0040  SPE
  *   SPI1->SR            (0x40013008) -> TXE (bit 1) should be 0: the register holds byte 0
- *   ucDmaFrame (14 bytes) -> A5 01 00 00 00 00 00 00 00 00 00 00 CRC_LO CRC_HI, where the
- *                       status is 01 (FRAME_STATUS_NO_READING) and the sequence 00 00
+ *   ucDmaFrame (14 bytes) -> A5 01 00 00 00 00 00 00 00 00 00 00 10 96, where the status
+ *                       is 01 (FRAME_STATUS_NO_READING), the sequence 00 00 and the CRC
+ *                       0x9610 (read by the Pi over the wire and matched)
  */
 #define SPI_DMA_STOP_WAIT_PASSES    ( 10000U )
 
