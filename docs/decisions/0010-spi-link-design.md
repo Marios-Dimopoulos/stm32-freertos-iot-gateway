@@ -2,9 +2,10 @@
 
 **Status:** Accepted. Built and checked on the board: the frame and its CRC, the
 latest-frame queue, the SPI1 slave configuration, the DMA arming, and one real
-transaction with the Pi (2026-10-13, see "Verified on the board"), and the NSS interrupt,
-which for now only counts the ended transactions. Not built yet: the transmit task and
-the re-arm after each transaction.
+transaction with the Pi (2026-10-13, see "Verified on the board"), the NSS interrupt, and
+the transmit task, which it wakes with a task notification. The task does not re-arm
+anything yet. Not built yet: the re-arm after each transaction (so a second read still
+returns the last byte repeated).
 **Date:** 2026-10-11
 **Phase:** 2
 
@@ -244,10 +245,14 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   expected). The marker is not enough on its own, since the last byte could be `0xA5`
   for some frame; the CRC covers that case.
 - **Follow-up work:**
-  - the sensor task builds the frame and keeps the latest-frame queue filled (the next step);
-  - `spi_slave` module: SPI1 slave, DMA2 stream 3, EXTI4, the transmit task;
+  - done: the sensor task builds the frame and keeps the latest-frame queue filled;
+    `spi.c` (SPI1 slave, DMA2 stream 3, EXTI line 4); the transmit task, woken by the
+    NSS interrupt;
+  - to do: a public function in `spi.c` that stops the stream, copies a frame into
+    `ucDmaFrame` and reloads it; `sensor_task_latest_frame()`; the transmit task calling
+    both after each wake-up; its stack size measured (ADR-0005);
   - `docs/architecture.md`, the task table (priority 2 stays), and the README list of
-    ADRs need the new entry when this is built;
+    ADRs need the new entry when this is finished;
   - buy the logic analyzer; nothing about the signals can be called verified without it.
 
 ### Verified on the board (2026-10-13)
@@ -270,6 +275,8 @@ returned what was sent.
 | Firmware | the sensor line kept printing on the terminal during all of it |
 | `M0AR` | a base address: `0x200000B0` (= `&ucDmaFrame`) with byte 0 already copied (`NDTR` 13), and again after a full transaction (`NDTR` 0); it is written once, with `PAR` |
 | **EXTI line 4 on PA4 while PA4 is the SPI's NSS** (rising edge, NVIC level 6) | **works**: `ulNssRisingCount` went from 0 to 1 for one read made from the Pi. The CPU was halted by the debugger during the read: the DMA and the SPI still moved the 14 bytes, and the interrupt was served as soon as the CPU ran again |
+| **Transmit task woken by the NSS interrupt** (task notification, priority 2) | **works**: `ulWakeUps` followed `ulNssRisingCount` one for one |
+| **The priority-2 transmit task preempting the sensor task, and the I2C driver under preemption** | **soak test**: 3000 reads from the Pi, 10 ms apart, about 35 s, with the node running freely. Both counters ended equal (3003 in total since reset, the 3 being earlier single reads), no `BMP280 error` line on the terminal, the Pi's script finished. By my estimate (not measured) about a hundred of those interrupts fell inside an I2C transfer of the sensor task, so this is real evidence, not a proof that a rare overlap cannot hurt |
 
 ### Not verified (from memory, or open until tested on the board)
 
@@ -282,9 +289,6 @@ returned what was sent.
   it decides whether the SPI must be disabled and enabled again on every re-arm.
 - **The timing estimates** (re-arm in tens of microseconds, torn-frame probability) are
   mine, not measured.
-- **That the I2C driver survives being preempted** for tens of microseconds by the
-  transmit task. ADR-0007 was designed for preemption, but nothing has preempted it for
-  real yet.
 - **`crc_ccitt()` in the Linux kernel** (helpful for Phase 4): from memory.
 - **The claim that mainline Linux cannot be an SPI slave on the Pi's controller**
   (Option B of Decision 1): from memory.
