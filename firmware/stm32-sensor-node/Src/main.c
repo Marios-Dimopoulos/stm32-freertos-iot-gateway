@@ -25,6 +25,7 @@
 #include "i2c.h"
 #include "spi.h"
 #include "sensor_task.h"
+#include "transmit_task.h"
 
 /* ==========================================================================
  * COMPILE-TIME CONSISTENCY CHECK
@@ -94,6 +95,11 @@ int main( void )
     /* The sensor task, with static memory (see sensor_task.c). Nothing runs yet:
      * the task is only registered as READY. */
     sensor_task_create();
+
+    /* The transmit task (see transmit_task.c): it re-arms the DMA after every
+     * transaction. It must exist BEFORE spi_start(), because that enables the interrupt
+     * that notifies it. */
+    transmit_task_create();
 
     /* Arm the SPI's DMA with the placeholder frame and enable SPI1 (see spi.c). From
      * here on the Pi can clock a frame out. It needs no scheduler. */

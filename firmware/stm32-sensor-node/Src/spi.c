@@ -6,7 +6,9 @@
  *   1) clock, pins, SPI1 configured as a slave, left disabled        <- DONE
  *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled       <- THIS STEP
  *   3) re-arming after every transaction (EXTI on NSS + the transmit task)
- *        3a) the interrupt on NSS rising, only counting                <- THIS STEP
+ *        3a) the interrupt on NSS rising, counting                     <- DONE
+ *        3b) the handler wakes the transmit task                       <- THIS STEP
+ *        3c) the public re-arm function and the task's real work
  *
  * WHY A SLAVE. The Pi's Linux SPI driver (Phase 4) sits behind a master controller, so
  * the Pi clocks and the STM32 answers (ADR-0010, decision 1). In slave mode the clock
@@ -18,6 +20,7 @@
 #include "FreeRTOS.h"
 #include "spi.h"
 #include "frame.h"
+#include "transmit_task.h"
 #include "stm32f4xx.h"
 
 /* ==========================================================================
@@ -333,9 +336,10 @@ static spi_status_t prvDmaReloadAndEnable( void )
  *
  * THE HANDLER. The name EXTI4_IRQHandler is fixed by the vector table in the startup
  * file, where it is a weak placeholder; defining it here replaces it. It must clear the
- * pending bit (write 1), otherwise the interrupt fires again at once, forever. For now
- * it only counts: ulNssRisingCount is the number of transactions seen, to be watched in
- * the debugger (it goes up by one for each read made from the Pi).
+ * pending bit (write 1), otherwise the interrupt fires again at once, forever. It
+ * counts the transactions seen (ulNssRisingCount, to be watched in the debugger: it
+ * goes up by one for each read made from the Pi) and notifies the transmit task, which
+ * does the real work (transmit_task.c).
  *
  * BEFORE THE SCHEDULER RUNS: the interrupt is enabled while the kernel's BASEPRI is
  * still raised (it is only lowered by the SVC handler that starts the first task, see
@@ -381,13 +385,24 @@ static void prvNssInterruptEnable( void )
 
 void EXTI4_IRQHandler( void )
 {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
     if( ( EXTI->PR & EXTI_PR_PR4 ) != 0U )
     {
         /* Cleared by writing 1, not by read-modify-write. */
         EXTI->PR = EXTI_PR_PR4;
 
         ulNssRisingCount++;
+
+        /* The end of a transaction: tell the transmit task, which does the work. The
+         * handler itself stays this short. */
+        transmit_task_end_of_transaction_from_isr( &xHigherPriorityTaskWoken );
     }
+
+    /* If the notification woke a task more urgent than the one that was running (the
+     * transmit task is at priority 2, the sensor task at 1), switch to it as soon as
+     * this handler returns, not at the next tick. */
+    portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
 }
 
 spi_status_t spi_start( void )
