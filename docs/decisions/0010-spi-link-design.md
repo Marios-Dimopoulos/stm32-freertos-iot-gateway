@@ -1,6 +1,9 @@
 # ADR-0010: SPI link to the gateway: the Pi as master, a fixed frame with CRC, a latest-frame queue and a re-armed DMA
 
-**Status:** Accepted (design only: nothing in this ADR has been built or tested on the board yet)
+**Status:** Accepted. Built and checked on the board so far: the frame and its CRC, the
+latest-frame queue, the SPI1 slave configuration and the first DMA arming (registers
+only). Not built yet: the NSS interrupt, the transmit task, the re-arm after each
+transaction, and any real transaction with the Pi.
 **Date:** 2026-10-11
 **Phase:** 2
 
@@ -180,6 +183,30 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   RM0383), re-armed by the transmit task after the EXTI line 4 interrupt (NSS rising).
   There is no DMA interrupt. This is a deliberate deviation from `plan.md`, which wakes
   the task from the DMA's transfer-complete interrupt.
+- **The stream is stopped and checked before EVERY reload (a robustness rule).** The
+  code that reloads the stream first clears `EN` and waits, with a bounded loop, until
+  `EN` reads 0; only then does it clear the flags, rewrite `M0AR` and `NDTR`, and enable
+  the stream. It never assumes that the master clocked exactly 14 bytes.
+  - *Why.* The master is not ours. NSS rising means "the Pi ended the transaction", not
+    "14 bytes were clocked". After a short transaction (a script aborted, a glitch, a
+    bug) the stream is still enabled with `NDTR > 0`, and `NDTR`, `PAR` and `M0AR` are
+    write-protected while `EN = 1` (RM0383, section 9.5, and p. 172 for `M0AR`). A reload
+    without the stop would be silently ignored: the next transaction would start in the
+    middle of the buffer, and since nothing clears `EN` the system would stay wrong until
+    reset.
+  - *Cost.* In the normal case the stream has already stopped by itself (it copies the
+    14th byte into `DR` about one byte time before the transaction ends), so the loop
+    does not run: two register accesses.
+  - *Rejected.* Checking only at start-up, or trusting `NDTR` to be 0 at NSS rising: one
+    misbehaving transaction would break every later one, permanently and without any
+    error being reported.
+  - *By-product.* `NDTR` read at the NSS edge says how many bytes were clocked, so short
+    transactions can be counted.
+- **Order, and what is set once.** Once, in `prvDmaConfigure()`: the DMA2 clock, `PAR`
+  and the `CR` fields (channel, priority, memory increment, direction), with `EN` left
+  off. For every frame, in `prvDmaReloadAndEnable()`: stop and wait, clear the stream's
+  flags, `M0AR`, `NDTR`, `EN`. The frame buffer (`ucDmaFrame`) is written only after the
+  stop and before the reload: stop, copy, reload.
 
 ## Consequences
 
@@ -196,6 +223,12 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
     because the handler calls a `FromISR` function.
 - **Forecloses:** the Pi cannot be told "measure now": the STM32 measures on its own
   1 s period and the Pi only collects.
+- **The Pi gets the frame prepared after the previous transaction.** The DMA buffer is
+  refilled right after each transaction and nothing refreshes it in between, so with the
+  Pi polling at 1 Hz a frame can be up to about one period older than the newest one in
+  the latest-frame queue. The sequence number still moves normally. Accepted: refreshing
+  the buffer between transactions would need a safe way to know that no transaction is
+  running, and nothing has shown that it is needed.
 - **Follow-up work:**
   - the sensor task builds the frame and keeps the latest-frame queue filled (the next step);
   - `spi_slave` module: SPI1 slave, DMA2 stream 3, EXTI4, the transmit task;
@@ -214,6 +247,10 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
 - **What the slave sends if clocked past the 14th byte**, and **what a byte shifted
   halfway does when NSS rises early**: not found in the manual; it decides whether the
   SPI must be disabled and enabled again on every re-arm.
+- **That `CR` and `PAR` keep their values when the stream stops by itself.** The split
+  into "configure once" and "reload for every frame" depends on it (the manual's wording
+  suggests only the count and the memory address change). To be read after the first
+  complete transaction: `CR` should still read `0x06020440` and `PAR` `0x4001300C`.
 - **SPI1 alternate function number for PA4 to PA7** (AF5, from memory of the datasheet).
 - **Table 28 was read from a text extraction of the PDF**, whose columns are lost; the
   stream and channel numbers must be checked against the PDF page at the DMA step.
@@ -237,4 +274,6 @@ protect the buffer it reads: I used a one-slot latest-frame queue between the ta
 task that re-arms the DMA only while it is stopped, so the two never touch the same memory
 at the same time. I re-arm on the chip-select rising edge, not on the DMA's
 transfer-complete flag, because that flag cannot tell a complete transfer from an
-interrupted one."
+interrupted one. And I stop and check the stream before every reload, because the master
+is not mine: a short transaction would leave the stream enabled, its registers are
+write-protected while it runs, and the reload would be silently ignored."
