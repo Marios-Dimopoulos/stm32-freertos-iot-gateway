@@ -1,11 +1,12 @@
 # ADR-0010: SPI link to the gateway: the Pi as master, a fixed frame with CRC, a latest-frame queue and a re-armed DMA
 
-**Status:** Accepted. Built and checked on the board: the frame and its CRC, the
-latest-frame queue, the SPI1 slave configuration, the DMA arming, and one real
-transaction with the Pi (2026-10-13, see "Verified on the board"), the NSS interrupt, and
-the transmit task, which it wakes with a task notification. The task does not re-arm
-anything yet. Not built yet: the re-arm after each transaction (so a second read still
-returns the last byte repeated).
+**Status:** Accepted, and working end to end on the board (2026-10-14): the sensor task
+builds a frame every second, the NSS interrupt wakes the transmit task, which loads the
+newest frame and re-arms the DMA, and the Pi reads real frames with a valid CRC, one
+transaction after another (see "Verified on the board" and "Found on the board"). Still
+open: what produces the occasional extra NSS edges (a loose wire is suspected, never
+measured), the staleness of the first read after an idle time, and everything about the
+real signals (no logic analyzer yet).
 **Date:** 2026-10-11
 **Phase:** 2
 
@@ -151,6 +152,64 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   complete transaction from an interrupted one, and it does not fire at all if the Pi
   clocks fewer bytes than the count.
 
+### Decision 7: what the SPI data register holds when the stream is re-armed
+
+*Added 2026-10-14, after a failure found on the board that the first version of
+Decision 6 did not foresee.*
+
+**The rule that causes it.** `DR` is always one byte ahead: `TXE` goes to 1 when a byte
+moves from `DR` into the shifter (the start of that byte) and the DMA then loads the
+next one. With n bytes clocked, bytes 0 to n have been loaded, so `DR` ends up **empty
+only if n is exactly 14**. After a short transaction, an aborted one, or one that was
+restarted in the middle, `DR` still holds an unsent byte and `TXE = 0`.
+
+**The failure.** The first version of the re-arm only enabled the stream and relied on
+the SPI raising a request (`TXE = 1`) to have byte 0 loaded. With a leftover byte there
+is no request: the leftover goes out first, the frame follows one byte late, the last
+byte (the CRC high byte) is loaded but never shifted and becomes the next leftover. The
+node stays shifted until reset. Measured in a 50-read test (reads 1.1 s apart): reads 1
+to 19 correct; read 20 hit by a re-arm 3 bytes into the transaction (an NSS rising edge
+in the middle of it); reads 21 to 49 all shifted by one byte, and in every one the junk
+first byte was the CRC high byte of the frame before (checked for four frames).
+
+#### Option A: the CPU writes byte 0 into `DR` at every re-arm; the DMA sends bytes 1 to 13
+- How it works: stop the stream, copy the frame, `SPI1->DR = frame[ 0 ]`, then enable
+  the stream with `M0AR = &frame[ 1 ]` and `NDTR = FRAME_SIZE - 1`.
+- Pros: the state after a re-arm is the same whatever happened before (byte 0 in `DR`,
+  `TXE = 0`, the stream waiting for byte 1). It matches the manual's rule that the
+  data register must be ready before the master's first clock edge (p. 555). One
+  register write.
+- Cons: it relies on a write to `DR` replacing a byte that is still there; that is how
+  the manual reads (one transmit buffer). **Seen on the board** (2026-10-14): after a
+  deliberate short read, the next full read was a correct frame.
+
+#### Option B: toggle `TXDMAEN` after enabling the stream, to force a request
+- Cons: helps only when `DR` is empty. With a leftover byte there it would still go out
+  first. Does not solve the problem.
+
+#### Option C: disable and enable the SPI (`SPE`) at every re-arm
+- Cons: I do not know that it empties the transmit buffer, and it opens a window in
+  which the Pi may clock a disabled slave.
+
+#### Option D: detect the situation and live with it (count the shifted frames)
+- Cons: the node would stay wrong until reset. A robustness gap, not a fix.
+
+**Chosen: Option A.** What swung it is that it removes the dependence on a hidden state
+instead of trying to predict it. Whatever disturbance leaves a byte in `DR` (a short
+read, a glitch, a restart), the next re-arm replaces it. A disturbed transaction is
+still corrupted (its bytes had already left the chip), but the next one is correct; the
+CRC and the sequence number are how the Pi finds the damaged one.
+
+**The order matters:** stop, copy, write `DR`, then enable the stream. Enabled earlier,
+with `TXE = 1`, the stream would serve a request at once, load byte 1 into `DR`, and
+the CPU's byte 0 would be written over it.
+
+**What this does not explain.** What produced the extra NSS rising edge in read 20 (and
+the earlier episode of 28 edges for one read) is not known; I cannot see NSS. A check of
+the NSS level in the handler (a rising edge with NSS still low is a glitch: count it and
+do not wake the task) is the next cheap instrument, and the logic analyzer is the right
+tool.
+
 ## Decision
 
 - **Roles:** Option A, the Pi is the master and the STM32 is the slave. What swung it is
@@ -208,14 +267,18 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   - *By-product.* `NDTR` read at the NSS edge says how many bytes were clocked, so short
     transactions can be counted.
 - **Order, and what is set once.** Once, in `prvDmaConfigure()`: the DMA2 clock, `PAR`,
-  `M0AR` and the `CR` fields (channel, priority, memory increment, direction), with `EN`
-  left off. For every frame, in `prvDmaReloadAndEnable()`: stop and wait, clear the
-  stream's flags, `NDTR`, `EN`. The frame buffer (`ucDmaFrame`) is written only after the
-  stop and before the reload: stop, copy, reload. `M0AR` is a **base address**: it keeps
-  its value during and after the transfer (it read back `0x200000B0`, the address of
-  `ucDmaFrame`, with byte 0 already copied and after a complete transaction; the DMA
-  walks through the buffer with its own pointer), so it is a setting like `PAR` and is
-  written once.
+  `M0AR` (= `&ucDmaFrame[ 1 ]`, see Decision 7) and the `CR` fields (channel, priority,
+  memory increment, direction), with `EN` left off. For every frame, in
+  `prvDmaReloadAndEnable()`: stop and wait, copy the frame into `ucDmaFrame`, **write
+  byte 0 into `SPI1->DR`**, clear the stream's flags, `NDTR = FRAME_SIZE - 1`, `EN`. The
+  frame buffer is written only after the stop and before the enable. `M0AR` is a **base
+  address**: it keeps its value during and after the transfer (it read back the address
+  it had been given, with one byte already copied and after a complete transaction; the
+  DMA walks through the buffer with its own pointer), so it is a setting like `PAR` and
+  is written once.
+- **The CPU sends byte 0 of every frame itself (Decision 7).** Option A of Decision 7:
+  the re-arm no longer depends on what `DR` held, so a short, aborted or restarted
+  transaction cannot leave the node shifted by one byte.
 
 ## Consequences
 
@@ -232,12 +295,16 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
     because the handler calls a `FromISR` function.
 - **Forecloses:** the Pi cannot be told "measure now": the STM32 measures on its own
   1 s period and the Pi only collects.
-- **The Pi gets the frame prepared after the previous transaction.** The DMA buffer is
-  refilled right after each transaction and nothing refreshes it in between, so with the
-  Pi polling at 1 Hz a frame can be up to about one period older than the newest one in
-  the latest-frame queue. The sequence number still moves normally. Accepted: refreshing
-  the buffer between transactions would need a safe way to know that no transaction is
-  running, and nothing has shown that it is needed.
+- **The Pi gets the frame prepared after the previous transaction, however long ago
+  that was.** The DMA buffer is refilled right after each transaction and nothing
+  refreshes it in between. With the Pi polling at 1 Hz the frame is about one period
+  older than the newest one in the queue; **after an idle time it is as old as the idle
+  time**: in the burst test the first read of a run returned a frame about a minute old
+  (sequence 272, then 331 on the next read). The sequence number shows it, nothing else
+  does. Accepted for now, because a poller that reads every period never sees it. What
+  would remove it: the Pi discards the first frame of a run (read twice), or the node
+  refreshes the buffer between transactions, which needs a safe way to know that no
+  transaction is running. To decide when the Phase 4 driver is written.
 - **A read with nothing loaded returns the last byte again (observed).** After the
   stream has finished, or beyond the 14th byte, the slave repeats the last byte it was
   given: the CRC high byte (`0x96` for the placeholder). A Pi that polls before the
@@ -278,7 +345,51 @@ returned what was sent.
 | **Transmit task woken by the NSS interrupt** (task notification, priority 2) | **works**: `ulWakeUps` followed `ulNssRisingCount` one for one |
 | **The priority-2 transmit task preempting the sensor task, and the I2C driver under preemption** | **soak test**: 3000 reads from the Pi, 10 ms apart, about 35 s, with the node running freely. Both counters ended equal (3003 in total since reset, the 3 being earlier single reads), no `BMP280 error` line on the terminal, the Pi's script finished. By my estimate (not measured) about a hundred of those interrupts fell inside an I2C transfer of the sensor task, so this is real evidence, not a proof that a rare overlap cannot hurt |
 
+### Found on the board (2026-10-14): the re-arm without priming `DR`
+
+| What | Result |
+|---|---|
+| after a reset, one 14-byte read, then `NDTR` | 13: the first re-arm served its request |
+| second read | a correct real frame (seq 10, 21.15 C, 1017.16 hPa, CRC valid) |
+| 50 reads, 1.1 s apart, no reset | reads 0 to 19 correct (the sequence `+1`, and `+2` when a sensor period fell between two reads); read 20 corrupted; reads 21 to 49 **all shifted by one byte** with the last byte missing: the failure of Decision 7 |
+| a single read, after a reset, in the same run of tests | **28** rising edges on NSS counted for one 14-byte read, and a frame with its first 4 bytes right and the rest wrong. The next tries (reads of 2, 7 and 14 bytes, reset between) counted exactly 1. Cause not known: a contact, or noise on the NSS wire, suspected; not shown |
+
+Option A of Decision 7 was written after these results. Its verification follows.
+
+### Verified on the board (2026-10-14): Option A of Decision 7, the CPU writes byte 0
+
+| What | Result |
+|---|---|
+| after a reset: `NDTR`, `M0AR` | 13, and the address of `ucDmaFrame` plus 1 |
+| first read | the placeholder: so `DR` may be written while `SPE` is 0 |
+| `NDTR` after the first read | 13 |
+| a deliberate **short read** (7 bytes) | `A5 00 3D 00 58 08 00`: the first 7 bytes of a real frame (seq 61) |
+| the next full 14-byte read | a **correct frame** (seq 116, CRC valid): the short read did not leave the node shifted. This is exactly the case that used to flip it |
+| `NDTR` after each read | 13 |
+| 50 reads, 1.1 s apart | **47 good, 0 shifted, 3 bad.** The 3 bad ones (reads 35, 40 and 47) happened while the NSS wire was being **moved by hand on purpose**. In every case the next read was good again: the node recovered by itself |
+| `NDTR` at the end | 13 |
+
+Two things follow from the burst:
+
+- **Moving the NSS wire corrupted frames** (3 of 50 reads, and only while it was being
+  touched). That supports the suspicion that the earlier extra NSS edges were a contact
+  or noise problem on that wire, not firmware. It is still a suspicion: nothing was
+  measured on the pin. The bad frames were not shifted, they were mixes of bits (for
+  example `A5 00 80 1E 20 0A 50 0A 50 07 80 07 80 15`), as a wire that connects and
+  disconnects would give.
+- **The first read after an idle time is stale.** In that burst, read 0 had sequence 272
+  and read 1 had 331: the first one was the frame loaded at the end of the **previous**
+  transaction, about a minute earlier. The sequence number shows it, but nothing else
+  does. See the consequences.
+
 ### Not verified (from memory, or open until tested on the board)
+
+- **What produces extra rising edges on NSS** during a transaction (read 20 of the first
+  50-read test, and the episode of 28 edges). Moving the wire by hand reproduces
+  corrupted frames, which points at the contact or at noise, but nothing was measured on
+  the pin; the logic analyzer would show it. A check of the NSS level in the handler (a
+  rising edge with NSS still low is a glitch: count it and do not wake the task) is
+  written down as a possible next step, not built.
 
 - **`OVR` handling.** In transmit-only DMA use the received bytes are never read, so
   `OVR` is set (p. 571); whether it must be cleared before re-arming (read `DR`, then
