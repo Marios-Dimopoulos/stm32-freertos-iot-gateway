@@ -4,11 +4,11 @@
  * Steps, in the order they are built and checked on the board:
  *
  *   1) clock, pins, SPI1 configured as a slave, left disabled        <- DONE
- *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled       <- THIS STEP
+ *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled       <- DONE
  *   3) re-arming after every transaction (EXTI on NSS + the transmit task)
  *        3a) the interrupt on NSS rising, counting                     <- DONE
- *        3b) the handler wakes the transmit task                       <- THIS STEP
- *        3c) the public re-arm function and the task's real work
+ *        3b) the handler wakes the transmit task                       <- DONE
+ *        3c) spi_load_frame(), and the task's real work                <- THIS STEP
  *
  * WHY A SLAVE. The Pi's Linux SPI driver (Phase 4) sits behind a master controller, so
  * the Pi clocks and the STM32 answers (ADR-0010, decision 1). In slave mode the clock
@@ -167,9 +167,11 @@ void spi_init( void )
  *   ONCE, prvDmaConfigure()           EVERY FRAME, prvDmaReloadAndEnable()
  *   -----------------------           ------------------------------------
  *   the DMA2 clock                    wait until EN reads 0 (bounded)
- *   PAR  = address of SPI1->DR        clear the stream's flags (LIFCR)
- *   M0AR = address of ucDmaFrame      NDTR = FRAME_SIZE again (it counted down to 0)
- *   CR   = the settings below         EN
+ *   PAR  = address of SPI1->DR        copy the new frame into ucDmaFrame
+ *   M0AR = &ucDmaFrame[ 1 ]           write BYTE 0 into SPI1->DR (see below)
+ *   CR   = the settings below         clear the stream's flags (LIFCR)
+ *                                     NDTR = FRAME_SIZE - 1 again (it counted down to 0)
+ *                                     EN
  *
  * CONFIRMED ON THE BOARD (2026-10-13, after one complete transaction with the Pi): CR
  * reads 0x06020440, i.e. only EN was cleared (by the hardware), and PAR still reads
@@ -177,13 +179,51 @@ void spi_init( void )
  * reloaded. NDTR read 0.
  *
  * NOTE ON M0AR. The manual calls it the BASE address of the memory area, and that is
- * how it behaves: after the complete transaction it still read the address of
- * ucDmaFrame (0x200000B0, the same as &ucDmaFrame), not that address + 14. The DMA
- * walks through the buffer with its own running pointer; NDTR is the visible progress.
- * So M0AR is a setting like PAR: it is written once, in prvDmaConfigure(), and not for
- * every frame. (Checked on the board in two places: at a breakpoint right after
- * spi_start(), with byte 0 already copied and NDTR = 13, and after a complete
- * transaction; it read the address of ucDmaFrame both times.)
+ * how it behaves: after a complete transaction it still read the address it had been
+ * given, not that address + 14. The DMA walks through the buffer with its own running
+ * pointer; NDTR is the visible progress. So M0AR is a setting like PAR: it is written
+ * once, in prvDmaConfigure(), and not for every frame. (Checked on the board in two
+ * places, before byte 0 was written by the CPU: with NDTR = 13 right after spi_start(),
+ * and after a complete transaction.) It now holds the address of ucDmaFrame[ 1 ]
+ * because the CPU sends byte 0 itself, see the next section.
+ *
+ * WHY THE CPU WRITES BYTE 0 INTO DR, AND THE DMA ONLY SENDS BYTES 1 TO 13
+ * (found on the board on 2026-10-14; ADR-0010, decision 7).
+ *
+ * THE RULE. DR is always ONE BYTE AHEAD. TXE goes to 1 when a byte moves from DR into
+ * the shifter, which is at the START of that byte, and then the DMA loads the next
+ * one. So while byte k shifts out, DR already holds byte k + 1. With n bytes clocked
+ * the DMA has loaded bytes 0 to n, and DR ends up empty ONLY IF n = 14 (there is no
+ * byte 14 to load). After a transaction of fewer than 14 bytes, or one that was
+ * restarted in the middle, DR still holds an unsent byte and TXE = 0.
+ *
+ * THE FAILURE. The first version only enabled the stream at the re-arm and relied on
+ * the SPI raising a request (TXE = 1) so that the DMA loaded byte 0. With a leftover
+ * byte in DR there is no request: the leftover goes out FIRST, the frame follows one
+ * byte late, the last byte (the CRC high byte) is loaded but the transaction ends
+ * before it can be shifted, and it becomes the next leftover: the node stays shifted
+ * for ever. Seen in a 50-read test: reads 1 to 19 correct; read 20 hit by a re-arm
+ * three bytes into the transaction (an NSS rising edge in the middle of it); reads 21
+ * to 49 all shifted by one byte, each junk first byte equal to the CRC high byte of
+ * the frame before it (checked for four frames).
+ *
+ * THE FIX. At every re-arm the CPU writes byte 0 into DR ITSELF, which replaces
+ * whatever was there, and the stream is configured for bytes 1 to 13 only (M0AR =
+ * &ucDmaFrame[ 1 ], NDTR = FRAME_SIZE - 1). After a re-arm the state is always "byte 0
+ * in DR, TXE = 0, the stream waiting for byte 1", whatever the previous transaction
+ * was. A transaction that is hit by a disturbance is still corrupted (its bytes have
+ * already gone out: the Pi finds it with the CRC), but the NEXT one is correct.
+ *
+ * ORDER, WHICH MATTERS: stop the stream, copy the frame, write DR, and only then enable
+ * the stream. If the stream were enabled while TXE = 1 it would serve a request at
+ * once and load byte 1 into DR, and the CPU's byte 0 would then be written over it.
+ *
+ * CHECKED ON THE BOARD (2026-10-14): the first read after a reset is the placeholder, so
+ * DR may be written while SPE is still 0 (the first arming does that); and after a
+ * deliberate short read (7 bytes) the next full read was a correct frame, so a write
+ * to DR does replace a byte that is still there. In a burst of 50 reads, 47 were good,
+ * none was shifted, and the 3 bad ones were taken while the NSS wire was being moved
+ * by hand; each was followed by a good one.
  *
  * THE CR VALUE (0x06020440 before EN, 0x06020441 with EN):
  *   CHSEL = 3        channel 3 = the SPI1_TX request line
@@ -204,13 +244,11 @@ void spi_init( void )
  * THE RULE FOR THE BUFFER. ucDmaFrame is written only while the stream is stopped
  * (a critical section cannot hold back the DMA, which is another bus master).
  *
- * ORDER IN spi_start(): configure, fill the buffer, load and enable the stream, and
- * only then the SPI (SPE). The manual asks for a slave to be enabled before the master
- * clocks and with its data register ready (p. 555). The rule kept here is "SPI enabled
- * means the data register is loaded": once SPE is set the SPI raises its first request
- * at once (TXE is 1), and the DMA is already enabled. (That a request raised before
- * the stream is enabled would be lost is not something I found in the manual; this is
- * the order that cannot go wrong.)
+ * ORDER IN spi_start(): configure, build the placeholder, load DR and enable the
+ * stream, and only then the SPI (SPE). The manual asks for a slave to be enabled before
+ * the master clocks and with its data register ready (p. 555). The rule kept here is
+ * "SPI enabled means the data register is loaded": byte 0 is already in DR when SPE is
+ * set, and the stream is already enabled for bytes 1 to 13.
  *
  * ONE BOUNDED WAIT, FLAGGED: waiting for EN to read 0 is a busy loop, limited to a
  * number of passes. Today the stream has just come out of reset, so EN is already 0
@@ -222,14 +260,14 @@ void spi_init( void )
  *   RCC->AHB1ENR        (0x40023830) bit 22 (DMA2EN) set; bit 0 (GPIOA) and bit 1
  *                       (GPIOB, the I2C driver) too -> 0x00400003
  *   DMA2_Stream3->CR    (0x40026458) -> 0x06020441
- *   DMA2_Stream3->NDTR  (0x4002645C) -> 13  PREDICTION, confirmed on the board: when SPE
- *                       goes on the SPI raises its first request and the DMA moves byte
- *                       0 into SPI1->DR; nothing clocks, so the second byte is not
- *                       requested
+ *   DMA2_Stream3->NDTR  (0x4002645C) -> 13  = FRAME_SIZE - 1, the count that was loaded.
+ *                       Since the CPU wrote byte 0 and TXE = 0, no request has been
+ *                       served yet. (It read 13 before the CPU wrote byte 0 as well, for
+ *                       another reason: then the DMA had loaded byte 0 itself.)
  *   DMA2_Stream3->PAR   (0x40026460) -> 0x4001300C (SPI1 base 0x40013000 + DR at 0x0C)
- *   DMA2_Stream3->M0AR  (0x40026464) -> the address of ucDmaFrame (0x200000B0 in the
- *                       build that was checked; see the map file). It keeps that value
- *                       during and after the transfer (a base address, see the note)
+ *   DMA2_Stream3->M0AR  (0x40026464) -> the address of ucDmaFrame PLUS ONE (see the map
+ *                       file). It keeps that value during and after the transfer (a base
+ *                       address, see the note)
  *   SPI1->CR1           (0x40013000) -> 0x0040  SPE
  *   SPI1->SR            (0x40013008) -> TXE (bit 1) should be 0: the register holds byte 0
  *   ucDmaFrame (14 bytes) -> A5 01 00 00 00 00 00 00 00 00 00 00 10 96, where the status
@@ -238,8 +276,9 @@ void spi_init( void )
  */
 #define SPI_DMA_STOP_WAIT_PASSES    ( 10000U )
 
-_Static_assert( ( FRAME_SIZE > 0U ) && ( FRAME_SIZE <= 0xFFFFU ),
-                "DMA_SxNDTR is a 16-bit counter: the frame must fit in it" );
+_Static_assert( ( FRAME_SIZE > 1U ) && ( FRAME_SIZE <= 0xFFFFU ),
+                "DMA_SxNDTR is a 16-bit counter: the frame must fit in it, "
+                "and the CPU sends byte 0, so at least one byte is left for the DMA" );
 
 static uint8_t ucDmaFrame[ FRAME_SIZE ];
 
@@ -257,10 +296,10 @@ static void prvDmaConfigure( void )
     /* The peripheral side: always SPI1->DR (PINC = 0). */
     DMA2_Stream3->PAR = ( uint32_t ) &SPI1->DR;
 
-    /* The memory side: the start of ucDmaFrame. It is a BASE address, so it does not
-     * move while the stream runs and does not have to be written again (see the note
-     * above). The array's name already means its address, so there is no &. */
-    DMA2_Stream3->M0AR = ( uint32_t ) ucDmaFrame;
+    /* The memory side: ucDmaFrame[ 1 ], because byte 0 is written into DR by the CPU
+     * (see "WHY THE CPU WRITES BYTE 0" above). It is a BASE address, so it does not move
+     * while the stream runs and does not have to be written again. */
+    DMA2_Stream3->M0AR = ( uint32_t ) &ucDmaFrame[ 1 ];
 
     DMA2_Stream3->CR = DMA_SxCR_CHSEL_0 | DMA_SxCR_CHSEL_1 |    /* channel 3 */
                        DMA_SxCR_PL_1 |                          /* priority high */
@@ -269,14 +308,21 @@ static void prvDmaConfigure( void )
 }
 
 /* What has to be done again for every frame (RM0383 section 9.3.17): make sure the
- * stream is stopped, clear its old flags, reload the count, and enable it. The
- * addresses and the settings were written once, by prvDmaConfigure(). ucDmaFrame must
- * already hold the frame to send, and must not be written again until the stream has
- * stopped. Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if the stream did not stop in
- * time (nothing was changed). */
-static spi_status_t prvDmaReloadAndEnable( void )
+ * stream is stopped, put the new frame into ucDmaFrame, write its byte 0 into DR, clear
+ * the stream's old flags, reload the count, and enable it. The addresses and the
+ * settings were written once, by prvDmaConfigure().
+ *
+ * THIS IS THE ONLY PLACE THAT WRITES ucDmaFrame, and it does so after the stop and
+ * before the enable (stop, copy, reload): the DMA is another bus master that reads that
+ * array on its own, and a critical section could not hold it back. Both the first
+ * arming (spi_start) and every re-arm (spi_load_frame) come through here.
+ *
+ * pucFrame points to FRAME_SIZE bytes. Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if
+ * the stream did not stop in time (nothing was changed then). */
+static spi_status_t prvDmaReloadAndEnable( const uint8_t * pucFrame )
 {
     uint32_t ulPasses = SPI_DMA_STOP_WAIT_PASSES;
+    uint32_t ulIndex;
 
     DMA2_Stream3->CR &= ~DMA_SxCR_EN;
 
@@ -290,10 +336,24 @@ static spi_status_t prvDmaReloadAndEnable( void )
         return SPI_ERR_DMA_NOT_STOPPING;
     }
 
+    /* The stream is stopped: the DMA is not reading ucDmaFrame now. */
+    for( ulIndex = 0U; ulIndex < FRAME_SIZE; ulIndex++ )
+    {
+        ucDmaFrame[ ulIndex ] = pucFrame[ ulIndex ];
+    }
+
+    /* Byte 0 goes into DR from the CPU, replacing whatever is there (a byte left over
+     * from a short or interrupted transaction, for instance). From here on DR holds
+     * byte 0 and TXE = 0, whatever happened before. It is done BEFORE the stream is
+     * enabled: with TXE = 1 the stream would serve a request at once and load byte 1
+     * into DR, and this write would then replace it. */
+    SPI1->DR = ucDmaFrame[ 0 ];
+
     DMA2->LIFCR = DMA_LIFCR_CTCIF3 | DMA_LIFCR_CHTIF3 | DMA_LIFCR_CTEIF3 |
                   DMA_LIFCR_CDMEIF3 | DMA_LIFCR_CFEIF3;
 
-    DMA2_Stream3->NDTR = FRAME_SIZE;
+    /* The DMA sends bytes 1 to FRAME_SIZE - 1. */
+    DMA2_Stream3->NDTR = FRAME_SIZE - 1U;
 
     DMA2_Stream3->CR |= DMA_SxCR_EN;
 
@@ -408,14 +468,16 @@ void EXTI4_IRQHandler( void )
 spi_status_t spi_start( void )
 {
     spi_status_t xStatus;
+    uint8_t aucPlaceholder[ FRAME_SIZE ];
 
     prvDmaConfigure();
 
     /* The frame the Pi gets until a real one is handed over: "no reading yet",
-     * sequence 0 (the value kept for exactly this, see sensor_task.c). */
-    frame_build( ucDmaFrame, FRAME_STATUS_NO_READING, 0U, 0, 0U );
+     * sequence 0 (the value kept for exactly this, see sensor_task.c). It is built in a
+     * local array and given to prvDmaReloadAndEnable(), like every later frame. */
+    frame_build( aucPlaceholder, FRAME_STATUS_NO_READING, 0U, 0, 0U );
 
-    xStatus = prvDmaReloadAndEnable();
+    xStatus = prvDmaReloadAndEnable( aucPlaceholder );
 
     if( xStatus == SPI_OK )
     {
@@ -427,4 +489,46 @@ spi_status_t spi_start( void )
     }
 
     return xStatus;
+}
+
+/* ==========================================================================
+ * STEP 3c) THE FRAME FOR THE NEXT TRANSACTION
+ * ==========================================================================
+ *
+ * Called by the transmit task after every transaction, with the newest frame. It stops
+ * the stream (waiting, bounded, until EN reads 0), copies the frame into ucDmaFrame and
+ * starts the stream again, all in prvDmaReloadAndEnable(). It never assumes that the
+ * master clocked exactly 14 bytes: after a short transaction the stream is still
+ * enabled, and prvDmaReloadAndEnable() stops it first (ADR-0010, "stopped and checked
+ * before every reload").
+ *
+ * IF THE STREAM DOES NOT STOP IN TIME the frame is NOT loaded, the failure is counted in
+ * ulReloadFailures, and the status is returned. Nothing else is done: the next
+ * transaction will try again. (An assertion was rejected: the node would stop for
+ * something the Pi can cause.)
+ *
+ * It is for a TASK, not for an interrupt (the loop is bounded but is a busy wait), and
+ * it must not be called at the same time from two tasks: only the transmit task calls
+ * it.
+ *
+ * It takes the frame from the CALLER, so this module knows nothing about queues or tasks
+ * (the transmit task fetches the frame; the application layer stays above the driver).
+ */
+static volatile uint32_t ulReloadFailures;
+
+spi_status_t spi_load_frame( const uint8_t * pucFrame )
+{
+    spi_status_t xStatus = prvDmaReloadAndEnable( pucFrame );
+
+    if( xStatus != SPI_OK )
+    {
+        ulReloadFailures++;
+    }
+
+    return xStatus;
+}
+
+uint32_t spi_reload_failures( void )
+{
+    return ulReloadFailures;
 }

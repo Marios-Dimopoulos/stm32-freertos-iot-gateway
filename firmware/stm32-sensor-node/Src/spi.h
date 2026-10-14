@@ -35,4 +35,26 @@ void spi_init( void );
  */
 spi_status_t spi_start( void );
 
+/*
+ * Makes pucFrame (FRAME_SIZE bytes, see frame.h) the frame the Pi will read in its NEXT
+ * transaction: it stops the DMA stream, waiting until it is really stopped, copies the
+ * frame into the DMA buffer, writes the frame's byte 0 into the SPI data register
+ * itself (replacing any byte left there by a short or interrupted transaction), and
+ * starts the stream for the remaining bytes. The state after the call is therefore the
+ * same whatever the previous transaction was (see spi.c).
+ *
+ * It is meant to be called by the transmit task, once after every transaction (the NSS
+ * rising edge wakes it). Call it from a task only, and from one task only. It must be
+ * done before the Pi's next chip select, so the Pi has to leave a gap between
+ * transactions (ADR-0010: a minimum gap, 1 ms in the test script).
+ *
+ * Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if the stream did not stop in time: the
+ * frame was NOT loaded, and the failure was counted.
+ */
+spi_status_t spi_load_frame( const uint8_t * pucFrame );
+
+/* How many times spi_load_frame() failed because the stream did not stop in time.
+ * Normally 0. For diagnostics. */
+uint32_t spi_reload_failures( void );
+
 #endif /* SPI_H */

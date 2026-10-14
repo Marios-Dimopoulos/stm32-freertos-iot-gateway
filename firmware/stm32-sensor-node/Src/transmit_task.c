@@ -36,6 +36,9 @@
 #include "task.h"
 
 #include "transmit_task.h"
+#include "sensor_task.h"
+#include "frame.h"
+#include "spi.h"
 
 /* ==========================================================================
  * MEMORY AND PARAMETERS
@@ -58,10 +61,10 @@ static StaticTask_t xTransmitTaskTCB;
  * interrupt gets only the function declared in the header. */
 static TaskHandle_t xTransmitTaskHandle;
 
-/* How many times the task has woken up. For this step only, to be watched in the
- * debugger next to ulNssRisingCount in spi.c: after each read made by the Pi both go up
- * by one. It can be lower than the number of ends if two ended before the task ran
- * (the count is coalesced, see above). */
+/* How many times the task has woken up: a statistic, to be watched in the debugger next
+ * to ulNssRisingCount in spi.c (after each read made by the Pi both go up by one). It
+ * can be lower than the number of ends if two ended before the task ran (the count is
+ * coalesced, see above). */
 static volatile uint32_t ulWakeUps;
 
 /* ==========================================================================
@@ -69,6 +72,10 @@ static volatile uint32_t ulWakeUps;
  * ========================================================================== */
 static void prvTransmitTask( void * pvParameters )
 {
+    /* The frame is fetched into this local array and then handed to spi_load_frame(),
+     * which copies it into the DMA buffer: each module only sees its own memory. */
+    uint8_t aucFrame[ FRAME_SIZE ];
+
     ( void ) pvParameters;
 
     for( ;; )
@@ -79,7 +86,19 @@ static void prvTransmitTask( void * pvParameters )
 
         ulWakeUps++;
 
-        /* The re-arm goes here (the next piece). */
+        /* The newest frame of the sensor task. If it has produced none yet (a
+         * transaction ended in the first ~20 ms after start-up), send the placeholder
+         * again: "no reading yet", sequence 0. */
+        if( sensor_task_latest_frame( aucFrame ) == pdFALSE )
+        {
+            frame_build( aucFrame, FRAME_STATUS_NO_READING, 0U, 0, 0U );
+        }
+
+        /* Stop the stream, copy the frame into the DMA buffer, start the stream again.
+         * The result is not used here: a failure (the stream did not stop in time) is
+         * counted inside spi.c (spi_reload_failures()) and nothing else can be done; the
+         * next transaction tries again. */
+        ( void ) spi_load_frame( aucFrame );
     }
 }
 

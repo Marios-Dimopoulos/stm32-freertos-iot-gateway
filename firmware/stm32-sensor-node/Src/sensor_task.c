@@ -286,6 +286,18 @@ static void prvSensorTask( void * pvParameters )
 }
 
 /*
+ * The newest frame, for the transmit task (the queue handle stays private to this
+ * file). xQueuePeek() copies the item out and leaves it in the queue; the wait of 0
+ * ticks means "do not block": if the queue is empty it returns at once with pdFALSE
+ * (errQUEUE_EMPTY). The copy happens inside the kernel's critical section (queue.c), so
+ * it cannot interleave with xQueueOverwrite() of the sensor task.
+ */
+BaseType_t sensor_task_latest_frame( uint8_t * pucDestination )
+{
+    return xQueuePeek( xLatestFrame, pucDestination, 0 );
+}
+
+/*
  * Creating the task. Arguments of xTaskCreateStatic(), in order: the task function, a
  * name (debugging only), the stack size in words, a parameter for the task (R0 on its
  * first run, unused here), the priority, the stack array and the TCB. It returns the
