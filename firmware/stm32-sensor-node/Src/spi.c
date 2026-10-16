@@ -153,11 +153,6 @@ void spi_init( void )
  * time whatever the CPU is doing (a critical section, an interrupt of lower urgency):
  * the master's clock does not wait for the slave.
  *
- * WHICH STREAM. Table 28 of RM0383 (DMA2 request mapping): SPI1_TX is channel 3 of
- * stream 3 (stream 5 also serves it). Stream 3 is used. (I read that table from a text
- * extraction of the PDF, where the columns are partly lost; the cell is to be confirmed
- * against the PDF page.)
- *
  * TWO FUNCTIONS, BECAUSE THE STREAM STOPS BY ITSELF. The stream runs in NORMAL mode:
  * after FRAME_SIZE items the count is 0 and the HARDWARE clears EN (RM0383 p. 178), so
  * for the next frame the stream has to be started again. Circular mode would avoid
@@ -374,9 +369,8 @@ static spi_status_t prvDmaReloadAndEnable( const uint8_t * pucFrame )
  * BY NUMBER: line 4 listens to pin 4 of one port, chosen in SYSCFG. NSS is PA4, so line
  * 4 with port A. The pin stays connected to SPI1 (alternate function): the manual says
  * that in alternate-function mode the pin's input stage is active (section 8.3.11), so
- * EXTI should see it. THAT IS NOT YET TESTED: the counter below is the test. If it
- * stays 0 after the Pi has read, EXTI does not see the pin in this mode.
- *
+ * EXTI should see it. 
+ * 
  * WHAT IS WRITTEN, IN ORDER:
  *   RCC->APB2ENR  SYSCFGEN   the clock of the SYSCFG block (it holds the port selector)
  *   SYSCFG->EXTICR[1]  field EXTI4 = 0000   (EXTICR2 holds lines 4 to 7) line 4 takes
@@ -401,6 +395,29 @@ static spi_status_t prvDmaReloadAndEnable( const uint8_t * pucFrame )
  * goes up by one for each read made from the Pi) and notifies the transmit task, which
  * does the real work (transmit_task.c).
  *
+ * WHY THE HANDLER LOOKS AT THE PIN BEFORE IT BELIEVES THE EDGE (ADR-0010, decision 8).
+ * EXTI has no filter: a very short spike on NSS in the middle of a transaction is a
+ * rising edge like any other, and the wake-up it caused re-armed the DMA in the middle
+ * of the frame: the transaction restarted from byte 0 (seen on the board, for example
+ * a frame that was its first 7 bytes twice). A real end of transaction and a spike
+ * differ in one thing that can be read: the LEVEL OF THE PIN a few microseconds later.
+ * After a real end NSS is high, and stays high until the Pi starts the next
+ * transaction (tens of microseconds at least). After a spike the Pi is still holding
+ * NSS low, so it is low again by the time the handler runs. GPIOA->IDR gives the
+ * level of PA4 at that moment (the pin's input stage is active in alternate-function
+ * mode, the same fact that lets EXTI see it).
+ *
+ * So: NSS high = a transaction ended (counted in ulNssRisingCount, task woken);
+ * NSS low = a glitch (counted in ulNssGlitchCount, nothing else is done). The interrupt
+ * itself still happens: only its consequence is avoided. The pending bit is cleared
+ * BEFORE the pin is read, so that an edge arriving in between is not lost.
+ *
+ * What it does not do: it does not remove the noise, and it does not help against a
+ * spike that is still there when the handler looks, nor against a real loss of the
+ * contact (then the SPI peripheral itself loses the frame, and the CRC finds it).
+ * ulNssGlitchCount is also the instrument that tells how often it happens without a
+ * logic analyzer.
+ *
  * BEFORE THE SCHEDULER RUNS: the interrupt is enabled while the kernel's BASEPRI is
  * still raised (it is only lowered by the SVC handler that starts the first task, see
  * main.c), so an edge before that is held pending, not lost.
@@ -421,8 +438,16 @@ _Static_assert( SPI_NSS_IRQ_PRIORITY >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIO
 _Static_assert( SPI_NSS_IRQ_PRIORITY < ( 1U << __NVIC_PRIO_BITS ),
                 "interrupt level out of range for this chip" );
 
-/* Number of NSS rising edges seen: transactions ended. Written only by the handler. */
+/* Number of NSS rising edges that were REAL ends of a transaction (NSS was high when the
+ * handler looked). Written only by the handler. */
 static volatile uint32_t ulNssRisingCount;
+
+/* Number of rising edges that were NOT: NSS was low again when the handler looked, so
+ * they were spikes in the middle of a transaction. Written only by the handler. */
+static volatile uint32_t ulNssGlitchCount;
+
+/* Bit 4 of GPIOA->IDR is PA4, the NSS pin (GPIO_IDR_ID4 in the device header). */
+#define SPI_NSS_IDR_BIT    ( 1UL << 4 )
 
 static void prvNssInterruptEnable( void )
 {
@@ -449,14 +474,23 @@ void EXTI4_IRQHandler( void )
 
     if( ( EXTI->PR & EXTI_PR_PR4 ) != 0U )
     {
-        /* Cleared by writing 1, not by read-modify-write. */
+        /* Cleared by writing 1, not by read-modify-write. Before the pin is read, so
+         * that an edge arriving in between sets the bit again and is not lost. */
         EXTI->PR = EXTI_PR_PR4;
 
-        ulNssRisingCount++;
-
-        /* The end of a transaction: tell the transmit task, which does the work. The
-         * handler itself stays this short. */
-        transmit_task_end_of_transaction_from_isr( &xHigherPriorityTaskWoken );
+        if( ( GPIOA->IDR & SPI_NSS_IDR_BIT ) != 0UL )
+        {
+            /* NSS is high: the Pi ended the transaction. Tell the transmit task, which
+             * does the work. The handler itself stays this short. */
+            ulNssRisingCount++;
+            transmit_task_end_of_transaction_from_isr( &xHigherPriorityTaskWoken );
+        }
+        else
+        {
+            /* NSS is low again: a spike in the middle of a transaction. Do not re-arm,
+             * the frame in progress must not be restarted. */
+            ulNssGlitchCount++;
+        }
     }
 
     /* If the notification woke a task more urgent than the one that was running (the
