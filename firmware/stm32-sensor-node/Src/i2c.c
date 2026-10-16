@@ -1,22 +1,6 @@
 /*
  * i2c.c — I2C1 master driver (BMP280 on PB8 = SCL, PB9 = SDA).
  *
- * Design decisions (to be recorded in an ADR once the driver exists):
- *   - register-oriented API (read/write N bytes starting at a register of a
- *     device), so the repeated START and the time-critical receive
- *     sequence live in ONE place;
- *   - the caller passes the 7-bit device address (0x76); the driver adds the R/W bit;
- *   - distinct error codes (no answer, timeout, bus error);
- *   - polling with BOUNDED waits, in the calling task, using the RTOS tick for
- *     real-time limits (the driver is task-only, after the scheduler starts);
- *     a blocking loop, therefore flagged as such;
- *   - the few register operations that must meet the byte window are protected
- *     by a short critical section;
- *   - ONE task owns the bus (the sensor task): no mutex;
- *   - after an error the driver cleans up by itself (STOP, flags, reset of the
- *     peripheral) so the next call starts from a clean state;
- *   - 100 kHz standard mode.
- *
  * Steps, in the order they are built and checked on the board:
  *
  *   1) clocks, peripheral reset, pins (PB8/PB9 = AF4, open-drain)      <- DONE

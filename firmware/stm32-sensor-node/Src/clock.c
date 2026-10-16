@@ -112,13 +112,6 @@ static clock_status_t prvFlashInit( void )
  * ones after the switch); that is only needed when the final dividers could
  * be out of spec in the old state, which is not our case.
  *
- * What the bus clocks mean for later code:
- *   - SystemCoreClock (CMSIS) reports HCLK ONLY. It does not include the APB
- *     prescalers, so USART2's baud-rate divisor and I2C1's timing must use
- *     42 MHz, not SystemCoreClock.
- *   - SPI1 is on APB2 (84 MHz). The 6 MHz limit from CLAUDE.md then needs an
- *     SPI prescaler of /16 (84 / 16 = 5.25 MHz); /8 would give 10.5 MHz.
- *
  * All three fields are written explicitly (not only APB1) so the result does
  * not depend on the reset state. HPRE and PPRE2 /1 are the reset values, so
  * for those two this is a statement of intent. The register is changed with a

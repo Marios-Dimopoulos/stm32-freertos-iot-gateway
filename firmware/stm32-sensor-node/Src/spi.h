@@ -46,7 +46,7 @@ spi_status_t spi_start( void );
  * It is meant to be called by the transmit task, once after every transaction (the NSS
  * rising edge wakes it). Call it from a task only, and from one task only. It must be
  * done before the Pi's next chip select, so the Pi has to leave a gap between
- * transactions (ADR-0010: a minimum gap, 1 ms in the test script).
+ * transactions.
  *
  * Returns SPI_OK, or SPI_ERR_DMA_NOT_STOPPING if the stream did not stop in time: the
  * frame was NOT loaded, and the failure was counted.
