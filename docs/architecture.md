@@ -112,12 +112,13 @@ firmware/stm32-sensor-node/FreeRTOS/
   inside one FreeRTOS critical section and sets `TXEIE`; `USART2_IRQHandler`
   (level 10, i.e. at or below the FreeRTOS line, checked with
   `_Static_assert`) sends one byte per interrupt and clears `TXEIE` when the
-  buffer is empty. The critical section protects task against task (several
-  tasks may print), the free-space check and the copy as one unit, and the
-  shared `CR1` register (a benign race, kept anyway). **All or nothing:** if
-  the message does not fit, nothing is stored, the drop counter
-  (`uart_dropped_messages()`) is incremented and `UART_ERR_FULL` is returned, so
-  a line is never cut and tasks' messages never interleave. Never waits. Tasks
+  buffer is empty. Only the sensor task calls it today. The critical section
+  protects the shared `CR1` register (a benign race, kept anyway) and, for any
+  future second caller, task against task and the free-space check with the
+  copy as one unit. **All or nothing:** if the message does not fit, nothing is
+  stored and `UART_ERR_FULL` is returned, so a line is never cut and tasks'
+  messages never interleave. There is no drop counter (removed 2026-10-16: a
+  drop cannot happen with one short line per second). Never waits. Tasks
   only, after the scheduler has started (not asserted, unlike the I2C driver).
   Verified in Tera Term, including the drop behaviour with a temporary burst
   test (removed): two 102-byte lines arrived complete and the third was
@@ -214,8 +215,8 @@ register-level drivers instead of using a vendor library is ADR-0008.
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
 - No HardFault handler that exposes the stacked PC and fault registers.
-- Nothing prints the UART drop counter, and `uart_write()` does not assert that
-  the scheduler has started (the I2C driver does).
+- `uart_write()` does not assert that the scheduler has started (the I2C driver
+  does).
 - The I2C driver has no bus clear (a sensor holding SDA low is not freed), its
   3-or-more-byte receive sequence has not been compared with the manual's
   figure, and nothing reads `i2c_recovery_count()`.

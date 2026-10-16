@@ -11,7 +11,7 @@
 typedef enum
 {
     UART_OK = 0,
-    UART_ERR_FULL       /* not enough room in the transmit buffer: NOTHING was stored (counted as a drop) */
+    UART_ERR_FULL       /* not enough room in the transmit buffer: NOTHING was stored (the message is dropped) */
 } uart_status_t;
 
 /* Call once from main(), before the scheduler starts and AFTER
@@ -25,9 +25,9 @@ void uart_init( void );
  * background.
  *
  * ALL OR NOTHING. If the whole message fits it is stored completely; if it does
- * not, NOTHING is stored, the drop counter is incremented and UART_ERR_FULL is
- * returned. A message is never cut in the middle, and messages from different
- * tasks never interleave inside the buffer. A message longer than the whole
+ * not, NOTHING is stored and UART_ERR_FULL is returned. A message is never cut in
+ * the middle, and messages from different tasks never interleave inside the buffer.
+ * A message longer than the whole
  * buffer (256 bytes) can never fit and is always dropped. A length of 0 does
  * nothing.
  *
@@ -36,8 +36,5 @@ void uart_init( void );
  * and is not valid before vTaskStartScheduler(). It never waits.
  */
 uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength );
-
-/* Number of messages dropped so far because the buffer had no room. */
-uint32_t uart_dropped_messages( void );
 
 #endif /* UART_H */

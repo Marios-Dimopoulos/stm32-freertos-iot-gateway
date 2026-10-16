@@ -26,7 +26,7 @@ removed now, so the node prints only the init line and the readings.*
 |---|---|
 | **Static allocation only.** No `heap_x.c` is compiled, and `configSUPPORT_DYNAMIC_ALLOCATION` is 0. | The link map contains no `malloc` (the only match is the library function `_get_argv_nomalloc`). ADR-0001 |
 | **84 MHz from the internal oscillator through the PLL**, in its own module with bounded waits and build-time checks of the PLL limits. | Register values and the SysTick reload (83999) checked in the debugger. ADR-0006 |
-| **Interrupt-driven UART** with a ring buffer. A message is stored whole or dropped whole, and drops are counted. | Verified in Tera Term, including a burst test of the drop behaviour. |
+| **Interrupt-driven UART** with a ring buffer. A message is stored whole or dropped whole. | Verified in Tera Term, including a burst test of the drop behaviour. |
 | **I2C1 master driver at register level.** Waits bounded in RTOS ticks, one error code per cause, a critical section only around the few operations with a deadline, and self-recovery after a bus error. | Chip ID, 6-byte and 24-byte reads on the real sensor. ADR-0007 |
 | **BMP280 module** with Bosch's integer compensation (no floats, no `printf`). | Stable, plausible readings (see the screenshot). ADR-0009 |
 | **Self-healing sensor task.** After any error the task initialises the sensor again on the next period. | Disconnected the sensor completely while it ran: `NACK` lines, then `OK` and readings again, with no reset. |

@@ -3,9 +3,7 @@
  *
  * The USART2 peripheral shares the ST-LINK's virtual COM port: PA2 (TX) goes
  * to the ST-LINK chip, which forwards it over the USB cable to the PC, where
- * Tera Term shows it. (On the Nucleo-64 the connection PA2/PA3 <-> ST-LINK is
- * made by solder bridges, closed by default as far as I know. If no text ever
- * appears, check that first.)
+ * Tera Term shows it.
  *
  * Steps, in the order they are built and checked on the board:
  *
@@ -83,10 +81,6 @@
  * interface, with their own pull-up/pull-down and speed settings, which must not be
  * disturbed). As with any configuration register, pin set-up belongs in one-time
  * initialisation, not in running tasks.
- *
- * (Between this step and the USART being enabled in step 2 the level of the pin is
- * not guaranteed by anything I have checked, so a stray character may reach the
- * terminal at start-up; it would be harmless.)
  *
  * Expected values afterwards (the reset values are quoted from memory of the
  * manual; only the bits of PA2 are ours):
@@ -241,35 +235,46 @@ static void prvUartConfigure( void )
  * SHARED STATE AND HOW IT IS PROTECTED (ADR-0004). The task side of the buffer
  * runs inside a critical section (taskENTER_CRITICAL: BASEPRI is raised to the
  * FreeRTOS line, level 5). Interrupts at level 5 or numerically higher are held
- * back for the few instructions of the section. There are three reasons, in
- * order of importance:
+ * back for the few instructions of the section.
  *
- *   1) TASK AGAINST TASK (the strongest reason). Several tasks may call
- *      uart_write(), and a higher-priority task can preempt a lower one at any
- *      instruction. Without the section: task A reads ulTxHead, task B preempts it,
- *      reads the SAME ulTxHead, copies its message to the same slots and moves the
- *      head; when A resumes it overwrites B's bytes and moves the head from its old
- *      value, so one message is lost and the other is corrupted. Today only one
- *      task prints, but the planned SPI transmit task (priority 2) will be able to
- *      preempt the sensor task, so the protection is needed by design.
- *   2) CHECK AND COPY AS ONE UNIT. The free-space check and the copy must not be
- *      separated: if another task could take the space between them, two tasks
- *      would both pass the check and together overflow the buffer. This is also
- *      what makes the "whole message or nothing" rule hold.
- *   3) THE SHARED CR1 REGISTER. The task sets TXEIE in USART2->CR1 and the ISR
- *      clears it; each is a read-modify-write, and CR1 is a register that both
- *      sides change, so an interrupt could in principle split the task's update.
- *      My own analysis (not proven formally) is that this race is BENIGN here: the
- *      ISR only ever changes TXEIE, and a stale write can at worst leave TXEIE set
- *      once more than needed, which causes one extra interrupt that finds the
- *      buffer empty and turns it off again. The protection costs a few
- *      microseconds, so it is kept anyway: a shared register is easier to defend
- *      when its updates are never split.
+ * WHO CALLS uart_write() TODAY: ONLY THE SENSOR TASK (sensor_task.c). The transmit task
+ * never prints. (An earlier version of this comment said that the transmit task would
+ * be a second caller; it is not.) That decides which of the reasons below is active:
+ *
+ *   1) THE SHARED CR1 REGISTER (the only race that exists with a single caller). The
+ *      task sets TXEIE in USART2->CR1 and the ISR clears it; each is a
+ *      read-modify-write, and CR1 is a register that both sides change, so an
+ *      interrupt could split the task's update. My own analysis (not proven
+ *      formally) is that this race is BENIGN here: the ISR only ever changes TXEIE,
+ *      and a stale write can at worst leave TXEIE set once more than needed, which
+ *      causes one extra interrupt that finds the buffer empty and turns it off
+ *      again. The protection costs a few microseconds, so it is kept: a shared
+ *      register is easier to defend when its updates are never split.
+ *   2) TASK AGAINST TASK (does NOT happen today; the rule for any future second
+ *      caller). If a second task ever called uart_write(), a higher-priority task
+ *      could preempt a lower one at any instruction. Without the section: task A
+ *      reads ulTxHead, task B preempts it, reads the SAME ulTxHead, copies its
+ *      message to the same slots and moves the head; when A resumes it overwrites B's
+ *      bytes and moves the head from its old value, so one message is lost and the
+ *      other is corrupted.
+ *   3) CHECK AND COPY AS ONE UNIT (the same: only with a second caller). The
+ *      free-space check and the copy must not be separated: if another task could
+ *      take the space between them, two tasks would both pass the check and together
+ *      overflow the buffer. This is also what makes the "whole message or nothing"
+ *      rule hold.
+ *
+ * WHAT IT COSTS. While the section runs, every interrupt at level 5 or numerically
+ * higher is held back: SysTick, and the NSS interrupt of the SPI link (level 6). The
+ * copy takes about 10 cycles per byte (an estimate, not measured): a line of 38 to 52
+ * bytes about 5 to 6 microseconds, the longest possible message (256 bytes) about 30.
+ * So the NSS handler can be late by that much. That is small next to the Pi's gap
+ * between transactions, but it is delay added to a time-critical handler, and it is
+ * the reason to keep the printed lines short.
  *
  * For the section to hold the ISR back, the USART2 interrupt MUST sit at level
  * >= 5: it is set to level 10 (checked at build time), deliberately less urgent
- * than the future SPI/DMA interrupt. The reverse case cannot happen: a task never
- * runs while an ISR is in progress. The ISR itself calls no FreeRTOS function.
+ * than the NSS interrupt of the SPI link (level 6). The reverse case cannot happen: a
+ * task never runs while an ISR is in progress. The ISR itself calls no FreeRTOS function.
  * The section also contains a compiler memory barrier, so the byte is really in
  * the array before the head counter moves.
  *
@@ -321,9 +326,13 @@ static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the I
  * full length, and only then is anything copied. The check and the copy sit in
  * ONE critical section, so no other task can take the space in between, and the
  * ISR (which only frees space) cannot make the check wrong in a dangerous
- * direction. Every drop is counted (ulTxDroppedMessages), so the loss is visible
- * instead of silent, and uart_dropped_messages() makes the number available to be
- * printed later.
+ * direction. A drop is reported to the caller by the return value, UART_ERR_FULL.
+ *
+ * (There was a drop counter, uart_dropped_messages(); it was removed on 2026-10-16.
+ * The only caller prints one line of at most 52 bytes per second into a 256-byte buffer
+ * that the UART empties in under 5 ms, so a drop cannot happen with this load, and
+ * nothing read the counter. The drop path itself was verified earlier with a temporary
+ * burst test. If more tasks print, a counter is the first thing to add back.)
  *
  * The section lasts as long as the copy loop. The compiled loop is about 6 to 7
  * instructions per byte, so roughly 10 cycles per byte once loads and stores are
@@ -336,8 +345,6 @@ static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the I
  * after they overflow: unsigned subtraction wraps correctly. Inside the critical
  * section the ISR cannot run, so tail cannot move during the calculation.
  */
-static volatile uint32_t ulTxDroppedMessages;
-
 uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength )
 {
     uart_status_t xStatus = UART_OK;
@@ -350,7 +357,6 @@ uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength )
 
         if( ulLength > ( UART_TX_BUFFER_SIZE - ( ulHead - ulTxTail ) ) )
         {
-            ulTxDroppedMessages++;
             xStatus = UART_ERR_FULL;
         }
         else if( ulLength > 0U )
@@ -371,11 +377,6 @@ uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength )
     taskEXIT_CRITICAL();
 
     return xStatus;
-}
-
-uint32_t uart_dropped_messages( void )
-{
-    return ulTxDroppedMessages;
 }
 
 void USART2_IRQHandler( void )

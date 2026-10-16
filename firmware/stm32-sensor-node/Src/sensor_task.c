@@ -123,8 +123,8 @@ static uint8_t       ucLatestFrameStorage[ FRAME_SIZE ];
 /* Sends a finished line as ONE message. While a line is being built, each formatter
  * function returns the number of characters it wrote, and that moves the end of the
  * line: ulLength += format_...( &acLine[ ulLength ], SENSOR_LINE_SIZE - ulLength, ... ).
- * A message that does not fit in the UART's buffer is dropped whole and counted
- * there (uart_dropped_messages()). */
+ * A message that does not fit in the UART's ring buffer is dropped whole (the result is
+ * not used here: with one short line per second the buffer is always empty). */
 static void prvSendLine( const char * pcLine, uint32_t ulLength )
 {
     ( void ) uart_write( ( const uint8_t * ) pcLine, ulLength );
