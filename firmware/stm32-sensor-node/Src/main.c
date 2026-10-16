@@ -6,11 +6,19 @@
  *   1. the CPU clock (84 MHz, clock.c)
  *   2. the USART2 debug output (uart.c)
  *   3. the I2C1 bus (i2c.c)
- *   4. SPI1 as a slave towards the gateway (spi.c), configured and still disabled
- *   5. the sensor task (sensor_task.c), which owns the BMP280 and the bus
- *   6. the scheduler (it never returns)
+ *   4. SPI1 as a slave towards the gateway (spi.c): clock, pins and configuration,
+ *      still DISABLED
+ *   5. the sensor task (sensor_task.c), which owns the BMP280 and the I2C bus, builds
+ *      a frame every second and keeps the newest one in the latest-frame queue
+ *   6. the transmit task (transmit_task.c), which after every SPI transaction loads
+ *      the newest frame for the next one
+ *   7. the start of the SPI link (spi_start() in spi.c): the DMA is armed with a
+ *      placeholder frame, the NSS interrupt is enabled, and SPI1 is enabled
+ *   8. the scheduler (it never returns)
  *
- * The order is not free: see the comments below.
+ * The order is not free: the clocks come before the peripherals that derive their
+ * timing from them, and the transmit task must exist before spi_start() enables the
+ * interrupt that notifies it. See the comments below.
  */
 
 #include "FreeRTOS.h"
@@ -112,9 +120,10 @@ int main( void )
      *   - the port checks the interrupt-priority and vector-table setup (the
      *     asserts), sets PendSV and SysTick to the least urgent level,
      *     starts SysTick, and executes `svc 0`;
-     *   - the SVC handler starts the highest-priority ready task (the sensor
-     *     task) by "returning" into the fake exception frame prepared when it
-     *     was created.
+     *   - the SVC handler starts the highest-priority ready task by "returning"
+     *     into the fake exception frame prepared when it was created. That is the
+     *     transmit task (priority 2): it runs first and at once blocks, waiting for
+     *     its notification, so the sensor task (priority 1) runs next.
      * This call does not return.
      */
     vTaskStartScheduler();
