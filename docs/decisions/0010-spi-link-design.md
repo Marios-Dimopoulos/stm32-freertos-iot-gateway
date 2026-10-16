@@ -210,6 +210,69 @@ the NSS level in the handler (a rising edge with NSS still low is a glitch: coun
 do not wake the task) is the next cheap instrument, and the logic analyzer is the right
 tool.
 
+### Decision 8: a rising edge on NSS counts only if NSS is high when the handler looks
+
+*Added 2026-10-15, after the gap, clock and sensor-unplug tests.*
+
+**The problem.** EXTI has no glitch filter. A spike on NSS in the middle of a transaction
+is a rising edge like any other: it woke the transmit task, which re-armed the DMA and
+restarted the frame from byte 0. Seen on the board more than once. The cleanest example:
+a bad frame at 1 MHz that was its **first 7 bytes twice** (`A5 00 56 01 D6 08 00 A5 00
+56 01 D6 08 00`), perfectly aligned, which suggests that the SPI peripheral kept its
+place and only the re-arm broke the frame. Rate: about 2 bad frames in about 2000 reads
+with the wires still, and more when the wiring is touched (the whole set-up is a
+breadboard and long jumpers).
+
+#### Option A: read the NSS level in the handler (`GPIOA->IDR` bit 4)
+- How it works: clear the pending bit, then read the pin. High: a real end of a
+  transaction, count it and wake the task. Low: a spike, count it in `ulNssGlitchCount`
+  and do nothing else.
+- Pros: one `if`; no new task or object; the new counter is an instrument that tells how
+  often the line spikes without a logic analyzer.
+- Cons: a spike still there when the handler looks (a few microseconds after the edge) is
+  not caught. A real end could be ignored only if the Pi started the next transaction
+  within those microseconds; the Pi's gap is at least tens of microseconds even back to
+  back from Python (gap test).
+
+#### Option B: read NSS in the transmit task
+- Cons: the task runs tens of microseconds later, when a spike is long gone and a real
+  end may already be followed by the next start. Worse than A on both sides.
+
+#### Option C: leave the firmware, fix the wiring only
+- Pros: free; it is the real cure for the noise.
+- Cons: tells nothing about how often it happens, and the firmware stays exposed to any
+  spike.
+
+**Chosen: Option A**, and the wiring improvements in parallel. It does not remove the
+noise and does not help against a real loss of contact (the SPI peripheral loses the
+frame, and the CRC finds it); it stops the firmware from turning a spike into a restart
+of a good frame.
+
+**Verified on the board (2026-10-15).**
+
+| Run | Result |
+|---|---|
+| one read after a reset | rising 1, glitch 0 |
+| 3000 reads, 10 ms apart, **wires still** | **3000 good**; rising +3000 (3001 in all), glitch **7**: seven spikes on NSS in 3000 transactions (about 0.2%), all ignored, **no damaged frame** |
+| 3000 reads, 10 ms apart, **the NSS wire touched by hand** | good 2792, shifted 0, **bad 208**; rising +3046 (**46 above the 3000 real ends**), glitch +3017 |
+| `gap` (down to back to back) and `speed` (up to 6 MHz) | 100% good: the check never ignored a real end of a transaction |
+
+Reading of it:
+
+- The filter does what it was written for: of about 3060 spikes while the wire was
+  being touched, **3017 were ignored** and 46 got through (NSS was still high when the
+  handler looked: the contact had really opened for longer).
+- With the wires still, 7 spikes in 3000 transactions would each have restarted a frame
+  before this change (the earlier rate was about 2 bad in 2000, the same order of
+  magnitude): **zero** bad frames now. This is consistent, not proven: the same run was
+  not made on the old firmware.
+- The 208 bad frames of the touched run are mostly **not** restarts (46 at most). The
+  rest is corruption of the bits themselves by a contact that opens and closes while the
+  frame is clocked: nothing in the firmware can recover that frame (the SPI peripheral
+  loses it too), and the CRC finds it. Each bad frame was followed by good ones.
+- Still open: what the spike is. A few hundred nanoseconds on a long jumper over a
+  breadboard is the suspect; it needs the logic analyzer to be shown.
+
 ## Decision
 
 - **Roles:** Option A, the Pi is the master and the STM32 is the slave. What swung it is
@@ -276,6 +339,9 @@ tool.
   it had been given, with one byte already copied and after a complete transaction; the
   DMA walks through the buffer with its own pointer), so it is a setting like `PAR` and
   is written once.
+- **A rising edge on NSS counts only if NSS is high when the handler looks (Decision 8).**
+  The handler clears the pending bit, reads `GPIOA->IDR` bit 4, and wakes the transmit
+  task only when the pin is high; otherwise it counts a glitch and returns.
 - **The CPU sends byte 0 of every frame itself (Decision 7).** Option A of Decision 7:
   the re-arm no longer depends on what `DR` held, so a short, aborted or restarted
   transaction cannot leave the node shifted by one byte.
@@ -344,6 +410,20 @@ returned what was sent.
 | **EXTI line 4 on PA4 while PA4 is the SPI's NSS** (rising edge, NVIC level 6) | **works**: `ulNssRisingCount` went from 0 to 1 for one read made from the Pi. The CPU was halted by the debugger during the read: the DMA and the SPI still moved the 14 bytes, and the interrupt was served as soon as the CPU ran again |
 | **Transmit task woken by the NSS interrupt** (task notification, priority 2) | **works**: `ulWakeUps` followed `ulNssRisingCount` one for one |
 | **The priority-2 transmit task preempting the sensor task, and the I2C driver under preemption** | **soak test**: 3000 reads from the Pi, 10 ms apart, about 35 s, with the node running freely. Both counters ended equal (3003 in total since reset, the 3 being earlier single reads), no `BMP280 error` line on the terminal, the Pi's script finished. By my estimate (not measured) about a hundred of those interrupts fell inside an I2C transfer of the sensor task, so this is real evidence, not a proof that a rare overlap cannot hurt |
+
+### Measured on the board (2026-10-15): gap, clock, sensor unplugged, reset
+
+Tests run with `spi_frame_test.py` on the Pi (200 reads per line), with the firmware
+before Decision 8:
+
+| Test | Result |
+|---|---|
+| **minimum gap**: pause between reads 100, 10, 5, 2, 1, 0.5, 0.2, 0 ms | 200 good in every line but one: 1 ms had 1 bad (a bit-mix, `80 09 A9 40 ...`). No failure down to back-to-back reads. So the re-arm finishes within the time Python needs between two `xfer2` calls (probably 100 to 300 µs, **not measured**: the real minimum needs the analyzer). The "1 ms" of this ADR is a safe upper bound |
+| **SPI clock**: 100 kHz, 500 kHz, 1, 2, 4, 6 MHz | all 200 good, apart from 1 bad at 1 MHz (the frame that was its first 7 bytes twice: a restart by a spike, see Decision 8). The slave keeps up to the 6 MHz limit (the controller rounds the requested clock) |
+| **first read of each run** | stale: sequence 111 then 269, 294 then 340 (the frame loaded at the end of the previous run). The staleness consequence, seen again |
+| **sensor unplugged** (SDA only) during polling | `status=NACK` with T=0 P=0, then `NO_READING`, then `OK` again; the sequence kept moving. Touching the wires while doing it produced bad SPI frames that recovered by themselves |
+| **reset of the STM32** during polling | as expected: the sequence restarts and the first frame is the placeholder |
+| overall | about 2 bad frames in about 2000 reads with the wires still, each followed by good ones |
 
 ### Found on the board (2026-10-14): the re-arm without priming `DR`
 
