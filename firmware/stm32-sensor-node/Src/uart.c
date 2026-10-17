@@ -283,7 +283,8 @@ static void prvUartConfigure( void )
  *     uart_write() is for tasks only;
  *   - before the scheduler starts, the port's nesting counter holds a dummy
  *     value (0xAAAAAAAA), so a section entered then would never lower BASEPRI
- *     again until the scheduler starts. Call it from tasks, after the start.
+ *     again until the scheduler starts. Call it from tasks, after the start;
+ *     uart_write() ASSERTS that the scheduler has started.
  *
  * Why the ISR must turn TXEIE off when the buffer is empty: TXE stays 1 as long
  * as nothing is being sent, so with TXEIE still set the interrupt would fire
@@ -350,6 +351,12 @@ uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength )
     uart_status_t xStatus = UART_OK;
     uint32_t ulIndex;
     uint32_t ulHead;
+
+    /* Before the scheduler starts, the port's nesting counter holds a dummy value, so
+     * the critical section below would never lower BASEPRI again (see the note above).
+     * The assertion stops the system at the offending call instead. Same check as in
+     * the I2C driver (xTaskGetSchedulerState needs INCLUDE_xTaskGetSchedulerState). */
+    configASSERT( xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED );
 
     taskENTER_CRITICAL();
     {

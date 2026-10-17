@@ -31,8 +31,8 @@ void uart_init( void );
  * buffer (256 bytes) can never fit and is always dropped. A length of 0 does
  * nothing.
  *
- * Call it from TASKS only, and only after the scheduler has started: it uses a
- * FreeRTOS critical section, which must not be used from an interrupt handler
+ * Call it from TASKS only, and only after the scheduler has started (asserted): it
+ * uses a FreeRTOS critical section, which must not be used from an interrupt handler
  * and is not valid before vTaskStartScheduler(). It never waits.
  */
 uart_status_t uart_write( const uint8_t * pucData, uint32_t ulLength );
