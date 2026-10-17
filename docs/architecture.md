@@ -4,30 +4,55 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phase 1 complete and working on the board; Phase 2 not started
+## Current status: Phases 1 and 2 (firmware) work end to end on the board; Phases 3 and 4 not started
 
-FreeRTOS builds, links and runs on the Nucleo at **84 MHz** (HSI + PLL). One
-task, the sensor task, reads the BMP280 over I2C1 once a second and prints
+FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
+**sensor task** reads the BMP280 over I2C1 once a second, prints
 `T=24.08 C  P=1017.61 hPa` over USART2 (115200 baud, ST-LINK virtual COM port,
-Tera Term; a screenshot is in `docs/captures/phase1-terminal-output.png`). The
-readings are stable and plausible for the room. Register values and SysTick
-`LOAD = 83999` were checked in the debugger; the true clock frequency has not
-been measured with an instrument (no logic analyzer yet). If the sensor stops
-answering the task prints the cause and initialises it again on the next
-period. **Verified on the board:** disconnecting the sensor (or its lines)
-gives `NACK`, and everything comes back by itself when it is reconnected; a
-falling edge on CSB locks the sensor out of I2C until its power is cycled (see
-ADR-0007).
+Tera Term; a screenshot is in `docs/captures/phase1-terminal-output.png`), and
+builds one 14-byte **frame** per period (marker, status, sequence, temperature,
+pressure, CRC-16) that it keeps in a one-slot "latest frame" queue. SPI1 is a
+**slave**; the master is a Raspberry Pi Zero 2 W running the stock Raspberry Pi OS
+Lite with Python `spidev`, used as a **temporary test jig** (the custom image is
+Phase 3). The **transmit task** (priority 2) is woken by an interrupt on the rising
+edge of NSS (the end of a transaction) and loads the newest frame for the next
+one; DMA2 stream 3 moves its bytes into the SPI data register, with no CPU
+instruction in the transfer. All the reasoning, the failures found on the board
+and the numbers are in **ADR-0010**.
+
+**Verified on the board:**
+- Phase 1: register values and SysTick `LOAD = 83999` checked in the debugger;
+  disconnecting the BMP280 gives `NACK` and everything comes back by itself; a
+  falling edge on its CSB pin locks it out of I2C until its power is cycled
+  (ADR-0007).
+- The Pi reads a real frame every second with a valid CRC, at SPI clocks from
+  100 kHz to 6 MHz, and back to back from Python (no pause between reads).
+- 3000 reads in about 35 s with the node running freely: every interrupt and
+  wake-up counted, no I2C error on the sensor task (the transmit task preempts it).
+- A short or interrupted transaction does not leave the node shifted by one byte:
+  at every re-arm the CPU writes byte 0 into the SPI data register itself
+  (ADR-0010, decision 7).
+- Noise on NSS: spikes on that line are ignored by the interrupt handler
+  (decision 8). With the wires still, 7 spikes were seen in 3000 transactions and
+  none damaged a frame; moving the wires by hand corrupts frames, which the Pi
+  detects with the CRC, and the next frame is good.
+- The sensor failing travels in the frame: with SDA unplugged the Pi gets frames
+  with status `NACK` and zeros, then `NO_READING`, then `OK` when it is back.
+
+**What is not verified:** nothing about the real signals (no logic analyzer in use
+yet: the cause of the NSS spikes, the real minimum gap between transactions and
+the true clock frequency are not measured); the transmit task's stack is the
+default 128 words, never measured; the first read after an idle time returns a
+stale frame (see the known gaps).
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
-FreeRTOS kernel and seven application modules (clock, uart, i2c, bmp280,
-format, sensor task, main), nine ADRs (`docs/decisions/`), the README, and this
-document. Everything is committed and pushed. **What does not exist:** anything
-for Phase 2 (SPI, DMA, the transmit task), the logic analyzer (not purchased),
+FreeRTOS kernel and ten application modules (clock, uart, i2c, bmp280, format,
+frame, spi, sensor task, transmit task, main), ten ADRs (`docs/decisions/`), the
+test script `tools/spi_frame_test.py`, the README, and this document.
+**What does not exist:** the logic analyzer captures (an analyzer is on order),
 and the whole Linux side (Phases 3 and 4).
 
-**Where to continue:** see "Where to continue" below. The first real work is
-Phase 2, and its first step is a design decision (the SPI roles), not code.
+**Where to continue:** see "Where to continue" below.
 
 ### Toolchain / project setup (done)
 
@@ -71,9 +96,13 @@ firmware/stm32-sensor-node/FreeRTOS/
 ### Application code (`firmware/stm32-sensor-node/Src/`)
 
 - `main.c`: start-up only, in a fixed order: `clock_init_84mhz()`,
-  `SystemCoreClockUpdate()`, `uart_init()`, `i2c_init()`, `sensor_task_create()`,
-  `vTaskStartScheduler()` (ADR-0003). The temporary blink task and the LED code
-  are gone (PA5 is SPI1_SCK in the Phase 2 design); they are in the git history.
+  `SystemCoreClockUpdate()`, `uart_init()`, `i2c_init()`, `spi_init()`,
+  `sensor_task_create()`, `transmit_task_create()`, `spi_start()`,
+  `vTaskStartScheduler()` (ADR-0003). The transmit task must exist before
+  `spi_start()`, which enables the interrupt that notifies it. At the scheduler start
+  the transmit task (priority 2) runs first and blocks at once, then the sensor task
+  runs. The temporary blink task and the LED code are gone (PA5 is SPI1_SCK); they
+  are in the git history.
 - `sensor_task.c` / `sensor_task.h`: the sensor task, which owns the BMP280 and
   the I2C bus (priority 1, static 256-word stack + TCB, `vTaskDelayUntil` with a
   1 s period). Each period: if the sensor is not initialised it calls
@@ -81,8 +110,17 @@ firmware/stm32-sensor-node/FreeRTOS/
   is counted, printed as `BMP280 error: <cause> (failures: n)`, and the next
   period initialises the sensor again, so a sensor that was power-cycled
   recovers without resetting the MCU. Every line is built in a 64-byte buffer
-  (sized for the worst case) and sent with one `uart_write()`. The stack was
-  measured: 89 words peak (167 free), kept at 256 on purpose (ADR-0005).
+  (sized for the worst case) and sent with one `uart_write()`. **Every period, in
+  every case**, it also builds one frame (status `NO_READING` after a successful
+  init, `OK` with the reading, or the matching failure cause with zeros; a private
+  `switch` translates `bmp280_status_t` into `frame_status_t`), numbers it (the
+  counter goes up before the build, so the first frame is 1 and 0 is kept for the
+  placeholder), and hands it to a one-slot queue (`xLatestFrame`, private to the
+  file, `xQueueOverwrite`). The sequence therefore keeps moving while the sensor
+  fails: it is a heartbeat. `sensor_task_latest_frame()` copies the newest frame
+  out with `xQueuePeek` and never waits. The stack was measured in Phase 1 at 89
+  words peak (167 free) and kept at 256 (ADR-0005), **before** the frame code was
+  added: to be measured again.
 - `format.c` / `format.h`: three tiny text functions with no `printf` and no
   `malloc`: `format_text`, `format_u32` and `format_fixed2` (a number in
   hundredths with two decimals: 2364 gives `23.64`, -5 gives `-0.05`). They write
@@ -177,13 +215,47 @@ firmware/stm32-sensor-node/FreeRTOS/
   after CSB goes back to 3.3 V (reproduced twice): CSB must be wired firmly to
   3.3 V. The register layouts and codes are from memory of the datasheet and
   have not been checked against its text. Decisions: ADR-0009.
-- Footprint, from the Keil build of 2026-10-09 12:19
-  (`Listings/stm32-sensor-node.map`, built after the last source change): Code
-  12,452 B, RO data 604 B (13,064 B = 12.8 KB of flash in total), RAM 3,816 B
-  of 128 KB (RW 8 B + ZI 3,808 B, including the 1 KB main stack, the 512 B
-  C-library heap reserved by the startup file, the two task stacks and the UART
-  buffer). **No `malloc` is linked** (the only matches in the map are the
-  library function `_get_argv_nomalloc`). The 64-bit division comes from the C
+- `frame.c` / `frame.h`: the contract with the Pi. `frame_build()` writes a 14-byte
+  frame byte by byte (little-endian, no struct): marker `0xA5`; status
+  (`frame_status_t`: `OK`, `NO_READING`, `SENSOR_NACK`, `SENSOR_TIMEOUT`,
+  `SENSOR_BUS`, `SENSOR_ID`, `SENSOR_NO_DATA`, with fixed numbers because they go
+  on the wire); sequence (`uint16`); temperature (`int32`, hundredths of a degree);
+  pressure (`uint32`, pascals); CRC-16/CCITT-FALSE (polynomial `0x1021`, start
+  value `0xFFFF`) over the first 12 bytes, low byte first. A pure function with no
+  state. The bytes the C code produces match a Python replica, in the debugger and
+  over the wire (test vectors in ADR-0010).
+- `spi.c` / `spi.h`: SPI1 as a **slave** (mode 0, 8-bit, MSB first, hardware NSS;
+  PA4 NSS with pull-up, PA5 SCK with pull-down, PA6 MISO push-pull, PA7 MOSI; all
+  AF5). `spi_init()` enables the clocks, sets the pins and configures SPI1, and
+  leaves it **disabled**. `spi_start()` configures DMA2 stream 3 once (channel 3 =
+  SPI1_TX, normal mode, memory increment; `PAR` = `SPI1->DR`, `M0AR` = the buffer,
+  both base addresses written once), loads a placeholder frame, enables the NSS
+  interrupt and only then enables the SPI. `spi_load_frame()`, called by the
+  transmit task, stops the stream with a bounded wait, copies the frame into the
+  DMA buffer (`ucDmaFrame`, written nowhere else), **writes byte 0 into `DR`
+  itself**, sets `NDTR` for the remaining 13 bytes and enables the stream: the
+  state after it is the same whatever the previous transaction was. The EXTI line 4
+  handler (NVIC level 6) clears the pending bit and reads PA4: high means a real
+  end of a transaction (counted in `ulNssRisingCount`, the transmit task is woken),
+  low means a spike (counted in `ulNssGlitchCount`, nothing else). Counters for the
+  debugger: `ulNssRisingCount`, `ulNssGlitchCount`, `ulReloadFailures`. Decisions
+  and failures: ADR-0010.
+- `transmit_task.c` / `transmit_task.h`: priority 2, static 128-word stack (not
+  measured). It waits without limit for a task notification (`ulTaskNotifyTake( pdTRUE,
+  portMAX_DELAY )`: the count is cleared, so ends that merge cost one wake-up), then
+  fetches the newest frame with `sensor_task_latest_frame()` (the placeholder if the
+  queue is still empty) and calls `spi_load_frame()`. `ulWakeUps` counts its
+  wake-ups. The NSS handler gives it the notification through
+  `transmit_task_end_of_transaction_from_isr()`; the handle stays private.
+- Footprint, from the Keil build of 2026-10-15 19:43
+  (`Listings/stm32-sensor-node.map`; the UART drop counter was removed after it): Code
+  18,160 B, RO data 612 B (18,772 B = 18.3 KB of flash in total), RAM 4,536 B of
+  128 KB (RW 8 B + ZI 4,528 B, including the 1 KB main stack, the 512 B C-library
+  heap reserved by the startup file, the stacks of the sensor task (1 KB) and the
+  transmit task (512 B), and the UART buffer). The growth since Phase 1 (12.8 KB of
+  flash, 3.8 KB of RAM) is the frame, SPI, DMA, EXTI and transmit-task code, plus the
+  queue code of the kernel. **No `malloc` is linked** (the only matches in the map are
+  the library function `_get_argv_nomalloc`). The 64-bit division comes from the C
   library (`__aeabi_ldivmod`). Keil's static stack report gave 324 B for the
   start-up call chain on the main stack in an earlier build (interrupts not
   included).
@@ -193,24 +265,43 @@ firmware/stm32-sensor-node/FreeRTOS/
 The course/teacher drivers (ARM University Program, ST Standard Peripheral
 Library, teacher-written I2C) are kept **locally only** in
 `firmware/**/reference/` (git-ignored, outside the Keil project) as reading
-material. The clock, USART2 and I2C1 drivers were written from scratch at
+material. The clock, USART2, I2C1 and SPI1/DMA drivers were written from scratch at
 register level, and the BMP280 module is built on them (the compensation
 formulas are Bosch's, as in the `functions.c`). The decision to write own
 register-level drivers instead of using a vendor library is ADR-0008.
 
 ### Known gaps (real current state, not bugs)
 
-- **Clock accuracy is that of the HSI (about 1%)**, and the true frequency has
-  not been measured outside the chip. The timeout/error paths of
-  `clock_init_84mhz()` have never been triggered. `SystemCoreClock` reports
-  HCLK only: USART2 and I2C1 must use the 42 MHz APB1 clock.
+- **Nothing about the real signals has been measured.** No logic analyzer has been
+  used yet (one is on order), so these are open: the true clock frequency (the
+  HSI is about 1% accurate); the real **minimum gap** between two SPI transactions
+  (no failure was seen down to back-to-back reads from Python, whose own overhead is
+  probably 100 to 300 microseconds, not measured; a kernel driver or a C program may
+  be much faster, so the Phase 4 driver has to enforce a delay); the re-arm time;
+  the 1 s sensor period (only checked by the lines in Tera Term).
+- **Spikes on NSS** (ADR-0010, decision 8): about 7 in 3000 transactions with the
+  wires still (0.2%), many when the wires are moved. They are ignored by the
+  interrupt handler, but their cause is only suspected (long jumpers and a
+  breadboard in the path), not measured. Frames hit by a real loss of contact are
+  corrupted, and the CRC finds them; the next one is good.
+- **The first read after an idle time is stale.** The buffer is refilled right
+  after each transaction and nothing refreshes it, so a Pi that has not read for a
+  minute gets a frame about a minute old (the sequence number shows it). Harmless
+  for a poller that reads every period; to be decided with the Phase 4 driver
+  (read twice, or refresh the buffer between transactions).
+- The test master is the stock Raspberry Pi OS with Python `spidev`: a temporary
+  jig (ADR-0010), not the final image.
+- The SPI `OVR` flag (received bytes are never read) has not been examined,
+  because nothing has gone wrong that it would explain.
+- **Stacks.** The sensor task was measured at 89 words (167 of its 256 free) in
+  Phase 1, **before** the frame code was added: to be measured again. The transmit
+  task has the default 128 words and was never measured. Idle: at least 21 words
+  actually written (the `0xA5` pattern said 14, but R4-R11 were saved with the fill
+  value, so the pattern was forged by data), 128 words allocated (ADR-0005).
+- **Clock accuracy is that of the HSI (about 1%).** The timeout/error paths of
+  `clock_init_84mhz()` have never been triggered. `SystemCoreClock` reports HCLK
+  only: USART2 and I2C1 must use the 42 MHz APB1 clock.
 - `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
-- No timing has been measured with an instrument (no logic analyzer): the
-  1 s sensor period is only checked by the lines in Tera Term.
-- Measured stack peaks (ADR-0005): the sensor task 89 words (167 of its 256
-  free); Idle at least 21 words actually written (the `0xA5` pattern said 14,
-  but R4-R11 were saved with the fill value, so the pattern was forged by data).
-  The Idle array is 128 words (`configMINIMAL_STACK_SIZE`).
 - The startup file reserves a 512-byte C-library heap that nothing uses;
   setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
   fail loudly.
@@ -223,8 +314,8 @@ register-level drivers instead of using a vendor library is ADR-0008.
 - The BMP280 can be locked out of I2C by a glitch on CSB until its power is
   cycled; the sensor task reports it and keeps trying, but only a power cycle
   fixes it.
-- No logic analyzer yet, so `docs/captures/` has only a terminal screenshot.
-  `docs/budget.md` still lists the BMP280 as not purchased.
+- `docs/captures/` has only a terminal screenshot. `docs/budget.md` still lists
+  the BMP280 as not purchased and has no figures for the new purchases.
 - There is no LICENSE file (a decision, not an oversight).
 
 ### Architecture decisions so far
@@ -242,55 +333,111 @@ register-level drivers instead of using a vendor library is ADR-0008.
   2026-10-02, recorded 2026-10-08).
 - ADR-0009: BMP280 module: normal mode, integer results, initialise again after
   every error.
+- ADR-0010: the SPI link: the Pi as master and the STM32 as slave, a fixed 14-byte
+  frame with CRC-16, a one-slot latest-frame queue, a transmit task that re-arms a
+  normal-mode DMA on the NSS rising edge; the CPU primes the data register
+  (decision 7); NSS spikes are ignored (decision 8).
 
-## Phase 1 design (implemented: this is what runs)
+## System design (implemented: this is what runs)
 
 ```
-┌─────────────────────────────┐
-│  STM32F411RE (Nucleo)       │
-│                             │
-│  FreeRTOS, static allocation│
-│                             │
-│  ┌────────────┐             │
-│  │ SensorTask │──I2C1──►BMP280
-│  └────────────┘             │
-│        │  └──USART2──►ST-LINK VCP (debug text, Tera Term)
-│        ▼                    │
-│  (Phase 2: SPI+DMA out)     │
-└─────────────────────────────┘
+ BMP280 ──I2C1 (PB8 SCL, PB9 SDA)──┐
+                                    ▼
+        ┌─────────────────────────────────────────────────────────────┐
+        │ STM32F411RE (Nucleo, 84 MHz), FreeRTOS, static allocation   │
+        │                                                             │
+        │  Sensor task (prio 1, 1 s) ──frame──► latest-frame queue    │
+        │       │                                    │ xQueuePeek     │
+        │       └─ lines ─► USART2 (PA2) ─► ST-LINK  │                │
+        │                   virtual COM, Tera Term   ▼                │
+        │  Transmit task (prio 2) ◄─ notify ◄─ EXTI4 ISR (NSS rising) │
+        │       │ spi_load_frame()                                    │
+        │       ▼                                                     │
+        │  ucDmaFrame ──DMA2 stream 3──► SPI1->DR  (SPI1 slave)       │
+        └───────────────────────────────────────────┬─────────────────┘
+                              PA4 NSS, PA5 SCK, PA6 MISO, PA7 MOSI │
+                                                                    ▼
+                                       Raspberry Pi Zero 2 W (SPI master, test jig)
 ```
 
-- One FreeRTOS task reads the BMP280 over I2C1 (PB8/PB9) once a second.
+- One task reads the BMP280 over I2C1 (PB8/PB9) once a second and builds a frame.
 - **Sensor: Bosch BMP280** (temperature + pressure; no humidity, unlike the
   BME280). Chip ID register `0xD0` reads `0x58`. I2C address `0x76` or
   `0x77` depending on the SDO pin.
 - **Debug logging:** the sensor task prints readings directly over USART2
   (PA2 = TX; PA3 = RX is not used), which the Nucleo's ST-LINK exposes as a
   virtual COM port, by interrupt through a ring buffer, whole messages or
-  nothing. This
-  is a debug-only aid, not part of the data path (that is SPI + DMA). No
-  dedicated logging task.
+  nothing. This is a debug-only aid, not part of the data path (that is SPI +
+  DMA). No dedicated logging task.
 - No MPU-6050 IMU: it was dropped from the design.
-- All RTOS objects (the task itself, any queue used to hand data off) are
-  statically allocated.
-- No SPI/DMA/gateway work yet — that's Phase 2.
+- All RTOS objects (the tasks, the latest-frame queue) are statically allocated.
 
-### Task set and priorities (decided)
+### The frame (the contract with the Pi, `frame.h`, ADR-0010)
+
+| Bytes | Field |
+|---|---|
+| 0 | marker `0xA5` |
+| 1 | status (`frame_status_t`: 0 OK, 1 no reading yet, 2 to 6 the sensor failure causes) |
+| 2-3 | sequence (`uint16`, +1 per frame built, the first is 1; 0 is the placeholder) |
+| 4-7 | temperature (`int32`, hundredths of a degree Celsius) |
+| 8-11 | pressure (`uint32`, pascals) |
+| 12-13 | CRC-16/CCITT-FALSE over bytes 0 to 11, low byte first |
+
+All multi-byte fields are little-endian. The Pi decides when to read (it polls); the
+node always keeps the newest frame loaded. A dead node reads as `0xFF` or `0x00`,
+never `0xA5`; a repeated sequence means "nothing new"; a jump means frames were
+skipped; a wrong CRC means damage.
+
+### Task set and priorities (implemented)
 
 Task priority: higher number = more urgent. `configMAX_PRIORITIES = 3`.
 
-| Priority | Task | Phase | Why this level |
-|---|---|---|---|
-| 2 | Transmit task (SPI + DMA to the Pi) | 2 (not written) | The Pi is the SPI master and clocks data out when it decides, so the deadline is imposed from outside. |
-| 1 | Sensor task (BMP280 over I2C1, plus debug prints) | 1 (written) | Period chosen by me; a few ms of lateness is harmless. |
-| 0 | Idle | kernel | Runs when nothing else is ready. |
+| Priority | Task | Why this level |
+|---|---|---|
+| 2 | Transmit task (re-arms the SPI DMA after every transaction) | The Pi is the SPI master and clocks data out when it decides, so the deadline is imposed from outside; when the interrupt wakes it, it must run at once, even in the middle of an I2C transfer of the sensor task. |
+| 1 | Sensor task (BMP280 over I2C1, frames, debug prints) | Period chosen by me; a few ms of lateness is harmless. |
+| 0 | Idle | Runs when nothing else is ready. |
 
-Interrupt levels are a separate system (lower number = more urgent): ISRs
-that call `...FromISR()` functions must be at level 5 or a larger number.
+At start-up the transmit task runs first (it is the highest priority), blocks at once,
+and the sensor task runs next.
+
+### Interrupt levels (lower number = more urgent)
+
+ISRs that call `...FromISR()` functions must be at level 5 or a larger number
+(ADR-0004).
+
+| Level | Interrupt | Note |
+|---|---|---|
+| 6 | EXTI line 4 (NSS rising edge) | calls `vTaskNotifyGiveFromISR`; more urgent than the UART because the re-arm must finish before the next chip select |
+| 10 | USART2 (transmit) | calls no FreeRTOS function |
+| 15 | PendSV, SysTick | set by the kernel port |
+
+No DMA interrupt is used: the stream stops by itself after its count, and the end of a
+transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 ## Where to continue
 
-### Small Phase 1 leftovers (optional; none blocks Phase 2)
+### Phase 2: what is left
+
+1. **The remaining tests of the plan**, with `tools/spi_frame_test.py`: the Pi
+   aborting a run at random moments (the Decision 7 property), a 30-minute run,
+   and the **stack measurement** of the transmit task and again of the sensor
+   task (the `0xA5` fill pattern), to be recorded in ADR-0005.
+2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware is on
+   order; PulseView on the PC). Capture NSS, SCK, MISO, MOSI, SCL, SDA and the
+   USART2 TX in one trace, triggered on NSS falling, to: see the spikes on NSS and
+   find their cause; measure the re-arm time and so the real minimum gap; check the
+   SPI clock; check the UART bit time against the HSI clock error. The captures
+   go in `docs/captures/`; that is what Phase 2 promised.
+3. **Wiring**: shorter jumpers, the SPI wires direct between the Pi header and the
+   Nucleo (no breadboard in the path), a firm ground next to SCK. The counter
+   `ulNssGlitchCount` is the way to measure the improvement.
+4. **A quiz** on the SPI, DMA and re-arm material (the project rules ask for one
+   after a milestone).
+5. Update `docs/budget.md` with the real purchases (BMP280, the Pico, the USB-UART
+   adapter, the resistor kit).
+
+### Small leftovers (optional; none blocks Phase 3)
 
 - A HardFault handler that records the stacked PC and the fault registers.
 - `Heap_Size` 0 in the start-up file: it reclaims 512 B, and any accidental
@@ -300,46 +447,25 @@ that call `...FromISR()` functions must be at level 5 or a larger number.
 - Compare the I2C 3-or-more-byte receive sequence with the RM0383 figure, and
   check the BMP280 register descriptions in the code against the datasheet text
   (the follow-ups of ADR-0007 and ADR-0009).
-- Update `docs/budget.md` with the real purchases (the BMP280).
 - Learning checkpoints: quizzes done for the clock module, the UART and the I2C
   driver (questions 1 to 7); not done yet for the formatter, the BMP280 module,
-  the sensor task and the FreeRTOS configuration.
-
-### Phase 2: the next real work (candidate first steps; nothing here is decided)
-
-1. **Get the logic analyzer** (about 8.50 to 30.80 EUR in `docs/budget.md`). It
-   also lets me measure the true clock frequency (on the MCO pin) and capture the
-   I2C transaction for `docs/captures/`.
-2. **Settle the SPI roles first, in an ADR.** The task table and the Linux plan
-   (a kernel `spi_driver` on the Pi) imply that the Pi is the SPI **master** and
-   the STM32 a **slave**. If that holds, the "SPI1 prescaler /16 = 5.25 MHz" note in
-   ADR-0006 does not apply (as I understand it, in slave mode the clock comes from
-   the master), and the 6 MHz limit has to be enforced on the Pi's side (its
-   configured maximum SPI frequency). This is my reading, not a verified fact:
-   check RM0383 before deciding.
-3. **The frame format** of one reading: fixed size, temperature as `int32_t`
-   hundredths of a degree, pressure as `uint32_t` pascals; whether to add a
-   sequence number and a checksum.
-4. **The hand-off** from the sensor task to the transmit task (a statically
-   created queue, see the open questions) and the **DMA mode** (normal mode fits
-   fixed-size messages; circular mode has the overwrite risk described in
-   `docs/plan.md`).
-5. **Pins:** SPI1 is PA4 (NSS), PA5 (SCK), PA6 (MISO), PA7 (MOSI); PA5 is free
-   now that the LED code is gone. DMA interrupts must be at level 5 or
-   numerically higher (ADR-0004).
-6. **Working style:** as for the drivers (ADR-0008): one step at a time,
-   explained before it is written, bounded waits, a status code for every
-   failure, and an ADR for the SPI and DMA decisions.
+  the sensor task, the FreeRTOS configuration, and the SPI link.
 
 ### Phases 3 and 4
 
-Not started. No decisions yet beyond the plan (Yocto or Buildroot is undecided).
+Not started. No decisions yet beyond the plan (Yocto or Buildroot is undecided). For
+Phase 3 a USB-to-UART adapter (3.3 V) is on order: the serial console is how a custom
+image that does not boot is debugged. Phase 4 has two requirements that come from
+Phase 2: the kernel driver must leave a minimum delay between SPI transfers, and it
+must decide what to do about the stale first read (read twice, or refresh the buffer
+on the node).
 
 ## Open questions / not yet decided
 
-- How the sensor task hands its readings to the Phase 2 transmit task: a
-  queue, or a shared static buffer protected some other way. Today the reading
-  is only printed and nothing else uses it.
+- What produces the spikes on NSS (wiring is suspected; to be shown with the
+  analyzer).
+- How to deal with the stale first read after an idle time (ADR-0010, consequences).
+- The real minimum gap between SPI transactions (to be measured).
 - Whether the HSI accuracy (about 1%) stays good enough, or the clock moves to
   the ST-LINK's 8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). To be
   decided after the real frequency has been measured (logic analyzer and the
@@ -433,3 +559,25 @@ Not started. No decisions yet beyond the plan (Yocto or Buildroot is undecided).
   2026-10-09 map (Code 12,452 B, RO data 604 B, RAM 3,816 B), a "Where to
   continue" section added (Phase 1 leftovers, Phase 2 candidate steps, including
   the open question of the SPI roles).
+- 2026-10-11: ADR-0010 written (the SPI link): the Pi is the master, the frame format,
+  the latest-frame queue and transmit task, normal-mode DMA re-armed on NSS rising.
+  `frame.c` added: the 14-byte frame and its CRC-16; the C bytes were checked against
+  a Python replica in the debugger.
+- 2026-10-12: the sensor task builds one frame per period into a one-slot queue; the
+  status codes got their own enum (`frame_status_t`) instead of a sentinel value.
+  `spi_init()` added: SPI1 as a slave, pins and registers checked in the debugger.
+- 2026-10-13: DMA2 stream 3 feeds `SPI1->DR` (configure once, reload per frame).
+  First real transaction with the Raspberry Pi (stock OS, `spidev`): the placeholder
+  frame, CRC valid. EXTI line 4 on NSS rising (works with the pin in alternate-function
+  mode), transmit task woken by a task notification; 3000 reads without an I2C error.
+- 2026-10-14: the transmit task re-arms the DMA with the newest frame. A 50-read test
+  found the node staying shifted by one byte after a disturbed transaction; fixed by
+  writing byte 0 into `DR` from the CPU at every re-arm (ADR-0010, decision 7).
+- 2026-10-15: gap, clock, sensor-unplug and reset tests on the Pi. The interrupt
+  handler ignores a rising edge on NSS when NSS is low again (decision 8); 7 spikes in
+  3000 transactions with the wires still, none damaged a frame.
+- 2026-10-16: the UART drop counter removed (nothing could fill the buffer, nothing
+  read it); comments of `main.c` and `uart.c` brought up to date.
+- 2026-10-17: this document and the README brought up to date with Phase 2;
+  `tools/spi_frame_test.py` added. Footprint from the 2026-10-15 map: Code 18,160 B,
+  RO data 612 B, RAM 4,536 B.
