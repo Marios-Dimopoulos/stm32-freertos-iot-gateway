@@ -390,6 +390,11 @@
               <FilePath>.\Src\freertos_callbacks.c</FilePath>
             </File>
             <File>
+              <FileName>hardfault.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Src\hardfault.c</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Src\main.c</FilePath>
