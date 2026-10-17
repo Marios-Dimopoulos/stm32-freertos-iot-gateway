@@ -40,7 +40,11 @@ __initial_sp
 ;   <o>  Heap Size (in Bytes) <0x0-0xFFFFFFFF:8>
 ; </h>
 
-Heap_Size       EQU     0x00000200
+; I set the heap to 0 (the default of the device pack is 0x200 = 512 bytes). Nothing in
+; this project allocates (ADR-0001: static allocation only), so those 512 bytes were
+; RAM that nothing could use, and with no heap an accidental malloc() returns NULL
+; instead of silently working. The C library's start-up does not need a heap.
+Heap_Size       EQU     0x00000000
 
                 AREA    HEAP, NOINIT, READWRITE, ALIGN=3
 __heap_base
