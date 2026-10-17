@@ -35,6 +35,7 @@ removed now, so the node prints only the init line and the readings.*
 | **BMP280 module** with Bosch's integer compensation (no floats, no `printf`). | Stable, plausible readings (see the screenshot). ADR-0009 |
 | **Self-healing sensor task.** After any error the task initialises the sensor again on the next period. | Disconnected the sensor completely while it ran: `NACK` lines, then `OK` and readings again, with no reset. |
 | **A real failure found and documented.** A falling edge on the sensor's CSB pin locks it out of I2C until its power is cycled. | Reproduced twice on the board. ADR-0007 |
+| **A HardFault handler** that records the stacked registers (the PC of the faulting instruction) and the fault status registers where the debugger can read them, and **no heap** (the start-up heap is 0 bytes; nothing allocates). | A deliberate bus fault gave the expected record; the map shows RAM down by 512 B. |
 
 ### Phase 2: the SPI link to the gateway (ADR-0010)
 
@@ -48,7 +49,7 @@ removed now, so the node prints only the init line and the readings.*
 | **Range.** | SPI clock from 100 kHz to 6 MHz, and reads back to back from Python: all good, apart from the rare noise-damaged frame, always followed by good ones. |
 | **A sensor failure reaches the Pi.** | With SDA unplugged: frames with status `NACK` and zeros, then `NO_READING`, then `OK`; the sequence kept counting. |
 
-Size from the last build map (2026-10-15): about 18 KB of flash and 4.4 KB of RAM (of
+Size from the last build map (2026-10-17): about 18.5 KB of flash and 4.0 KB of RAM (of
 128 KB), FreeRTOS included.
 
 ### What is not verified, or not done
@@ -218,7 +219,7 @@ achievements, until they exist.
 ```
 firmware/stm32-sensor-node/   Keil project
   Src/                        main, clock, uart, i2c, bmp280, format, frame, spi,
-                              sensor_task, transmit_task
+                              sensor_task, transmit_task, hardfault
   FreeRTOS/                   kernel V11.3.1 (unmodified) and the project's config
 docs/
   architecture.md             the current state of the system (living document)

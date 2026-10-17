@@ -46,8 +46,8 @@ default 128 words, never measured; the first read after an idle time returns a
 stale frame (see the known gaps).
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
-FreeRTOS kernel and ten application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, main), ten ADRs (`docs/decisions/`), the
+FreeRTOS kernel and eleven application modules (clock, uart, i2c, bmp280, format,
+frame, spi, sensor task, transmit task, hardfault, main), ten ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, and this document.
 **What does not exist:** the logic analyzer captures (an analyzer is on order),
 and the whole Linux side (Phases 3 and 4).
@@ -131,6 +131,18 @@ firmware/stm32-sensor-node/FreeRTOS/
 - `freertos_callbacks.c`: `vApplicationGetIdleTaskMemory()` (static Idle TCB +
   stack sized with `configMINIMAL_STACK_SIZE`) and
   `vApplicationStackOverflowHook()` (raise BASEPRI and loop forever).
+- `hardfault.c`: the HardFault handler. The start-up file's weak handler is only a
+  branch to itself; this one replaces it. A small naked function picks the stack
+  that was in use (bit 2 of `EXC_RETURN`: MSP for start-up code and interrupts, PSP
+  for a task) and passes its pointer to a C function, which copies the eight
+  registers the CPU pushed (R0-R3, R12, LR, **PC**, xPSR), the stack pointer,
+  `EXC_RETURN` and the fault status registers (`CFSR`, `HFSR`, `MMFAR`, `BFAR`) into
+  a static record, `xFaultRecord`, and stops. The stacked PC is the address of the
+  faulting instruction. BusFault, MemManage and UsageFault are not enabled, so they
+  all arrive here; the kind is in `CFSR`. It cannot help if the stack pointer itself
+  is bad. **Tested on the board** (2026-10-17) with a deliberate read of an unmapped
+  address, removed afterwards: the record in the debugger was what the comment at the
+  top of the file predicts. How to repeat the test is in that comment.
 - `clock.c` / `clock.h`: `clock_init_84mhz()` takes the CPU from the 16 MHz HSI
   to 84 MHz through the PLL (ADR-0006). Five steps in order: flash wait
   states (2) + prefetch + caches, bus prescalers (AHB /1, **APB1 /2 = 42 MHz**,
@@ -157,7 +169,8 @@ firmware/stm32-sensor-node/FreeRTOS/
   stored and `UART_ERR_FULL` is returned, so a line is never cut and tasks'
   messages never interleave. There is no drop counter (removed 2026-10-16: a
   drop cannot happen with one short line per second). Never waits. Tasks
-  only, after the scheduler has started (not asserted, unlike the I2C driver).
+  only, after the scheduler has started (asserted at the start of `uart_write()`,
+  like the I2C driver's calls).
   Verified in Tera Term, including the drop behaviour with a temporary burst
   test (removed): two 102-byte lines arrived complete and the third was
   dropped whole.
@@ -247,18 +260,19 @@ firmware/stm32-sensor-node/FreeRTOS/
   queue is still empty) and calls `spi_load_frame()`. `ulWakeUps` counts its
   wake-ups. The NSS handler gives it the notification through
   `transmit_task_end_of_transaction_from_isr()`; the handle stays private.
-- Footprint, from the Keil build of 2026-10-15 19:43
-  (`Listings/stm32-sensor-node.map`; the UART drop counter was removed after it): Code
-  18,160 B, RO data 612 B (18,772 B = 18.3 KB of flash in total), RAM 4,536 B of
-  128 KB (RW 8 B + ZI 4,528 B, including the 1 KB main stack, the 512 B C-library
-  heap reserved by the startup file, the stacks of the sensor task (1 KB) and the
-  transmit task (512 B), and the UART buffer). The growth since Phase 1 (12.8 KB of
-  flash, 3.8 KB of RAM) is the frame, SPI, DMA, EXTI and transmit-task code, plus the
-  queue code of the kernel. **No `malloc` is linked** (the only matches in the map are
-  the library function `_get_argv_nomalloc`). The 64-bit division comes from the C
-  library (`__aeabi_ldivmod`). Keil's static stack report gave 324 B for the
-  start-up call chain on the main stack in an earlier build (interrupts not
-  included).
+- Footprint, from the Keil build of 2026-10-17 10:52
+  (`Listings/stm32-sensor-node.map`): Code 18,316 B, RO data 612 B (18,928 B = 18.5 KB
+  of flash in total), RAM 4,072 B of 128 KB (RW 8 B + ZI 4,064 B, including the 1 KB
+  main stack, the stacks of the sensor task (1 KB) and the transmit task (512 B), the
+  UART buffer, and the 56-byte fault record). The start-up heap is 0 bytes since
+  2026-10-17: the 512-byte C-library heap that nothing used is gone (RAM was 4,536 B
+  in the map of 2026-10-15, before it and before the record were added). The growth
+  since Phase 1 (12.8 KB of flash, 3.8 KB of RAM) is the frame, SPI, DMA, EXTI,
+  transmit-task and fault-handler code, plus the queue code of the kernel. **No
+  `malloc` is linked** (the only matches in the map are the library function
+  `_get_argv_nomalloc`). The 64-bit division comes from the C library
+  (`__aeabi_ldivmod`). Keil's static stack report gave 324 B for the start-up call
+  chain on the main stack in an earlier build (interrupts not included).
 
 ### Drivers
 
@@ -302,12 +316,6 @@ register-level drivers instead of using a vendor library is ADR-0008.
   `clock_init_84mhz()` have never been triggered. `SystemCoreClock` reports HCLK
   only: USART2 and I2C1 must use the 42 MHz APB1 clock.
 - `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
-- The startup file reserves a 512-byte C-library heap that nothing uses;
-  setting `Heap_Size` to 0 would reclaim it and make any accidental `malloc`
-  fail loudly.
-- No HardFault handler that exposes the stacked PC and fault registers.
-- `uart_write()` does not assert that the scheduler has started (the I2C driver
-  does).
 - The I2C driver has no bus clear (a sensor holding SDA low is not freed), its
   3-or-more-byte receive sequence has not been compared with the manual's
   figure, and nothing reads `i2c_recovery_count()`.
@@ -439,11 +447,6 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 ### Small leftovers (optional; none blocks Phase 3)
 
-- A HardFault handler that records the stacked PC and the fault registers.
-- `Heap_Size` 0 in the start-up file: it reclaims 512 B, and any accidental
-  `malloc` then fails loudly.
-- An assertion in `uart_write()` that the scheduler has started, like the I2C
-  driver's.
 - Compare the I2C 3-or-more-byte receive sequence with the RM0383 figure, and
   check the BMP280 register descriptions in the code against the datasheet text
   (the follow-ups of ADR-0007 and ADR-0009).
@@ -581,3 +584,9 @@ on the node).
 - 2026-10-17: this document and the README brought up to date with Phase 2;
   `tools/spi_frame_test.py` added. Footprint from the 2026-10-15 map: Code 18,160 B,
   RO data 612 B, RAM 4,536 B.
+- 2026-10-17: three small leftovers closed: the start-up heap set to 0 bytes, an
+  assertion that the scheduler has started in `uart_write()`, and a HardFault handler
+  (`hardfault.c`) that records the stacked registers and the fault status registers.
+  Built and run on the board; the handler was triggered on purpose and recorded the
+  fault as expected, and RAM went from 4,536 B to 4,072 B (the heap is gone, the
+  56-byte record added).
