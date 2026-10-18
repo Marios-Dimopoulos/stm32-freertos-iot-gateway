@@ -427,9 +427,9 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 ### Phase 2: what is left
 
-1. **The remaining tests of the plan**, with `tools/spi_frame_test.py`: the Pi
-   aborting a run at random moments (the Decision 7 property) and a 30-minute run.
-   (The stack measurement of both tasks is done: ADR-0005.)
+1. **The remaining test of the plan**, with `tools/spi_frame_test.py`: a long run
+   (test 9). The aborted-runs test (ADR-0010) and the stack measurement (ADR-0005)
+   are done.
 2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware is on
    order; PulseView on the PC). Capture NSS, SCK, MISO, MOSI, SCL, SDA and the
    USART2 TX in one trace, triggered on NSS falling, to: see the spikes on NSS and
@@ -592,3 +592,5 @@ on the node).
 - 2026-10-18: stack peaks measured with the `0xA5` pattern after 60 reads from the Pi:
   sensor task 96 words of 256, transmit task 39 words of 128. Neither size changes
   (ADR-0005). Only comments changed in the code.
+- 2026-10-18: test of aborted runs (10 runs stopped with Ctrl+C, then a 5-read run): no
+  shifted or bad frame. Recorded in ADR-0010.

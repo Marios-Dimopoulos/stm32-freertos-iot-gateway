@@ -425,6 +425,21 @@ before Decision 8:
 | **reset of the STM32** during polling | as expected: the sequence restarts and the first frame is the placeholder |
 | overall | about 2 bad frames in about 2000 reads with the wires still, each followed by good ones |
 
+### Verified on the board (2026-10-18): runs of the script aborted with Ctrl+C
+
+Hypothesis: after any aborted run, the next reads are valid, because every real end of
+a transaction re-arms the stream and primes `DR` (Decision 7).
+
+| Test | Result |
+|---|---|
+| 10 runs of `poll --count 100 --period 0.2 --verbose`, each stopped with Ctrl+C at an arbitrary moment | **no shifted and no bad frame** in any run. Runs 2 to 10 each started right after an aborted run, so their first reads (stale, as expected) were also valid |
+| then `poll --count 5 --period 1.0 --verbose` | 5 good frames |
+
+Limit: a Ctrl+C in Python lands between two `xfer2` calls (one call is the whole 14-byte
+transaction in the kernel), so this tests restarting the script (the SPI device closed
+and opened again) and not a transaction cut in the middle. That case is covered by the
+short-read test of 2026-10-14.
+
 ### Found on the board (2026-10-14): the re-arm without priming `DR`
 
 | What | Result |
@@ -467,9 +482,8 @@ Two things follow from the burst:
 - **What produces extra rising edges on NSS** during a transaction (read 20 of the first
   50-read test, and the episode of 28 edges). Moving the wire by hand reproduces
   corrupted frames, which points at the contact or at noise, but nothing was measured on
-  the pin; the logic analyzer would show it. A check of the NSS level in the handler (a
-  rising edge with NSS still low is a glitch: count it and do not wake the task) is
-  written down as a possible next step, not built.
+  the pin; the logic analyzer would show it. The check of the NSS level in the handler
+  (Decision 8) hides their effect, but it does not say what they are.
 
 - **`OVR` handling.** In transmit-only DMA use the received bytes are never read, so
   `OVR` is set (p. 571); whether it must be cleared before re-arming (read `DR`, then
