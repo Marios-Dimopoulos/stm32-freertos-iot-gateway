@@ -52,7 +52,7 @@
  * Stack size: configMINIMAL_STACK_SIZE is in WORDS (StackType_t is
  * uint32_t), so 128 words = 512 bytes. The same macro is used for the array
  * size and for the size reported to the kernel, so the two can never
- * disagree. It is a starting value to be measured, see FreeRTOSConfig.h.
+ * disagree. The value was checked by measurement, see ADR-0005.
  *
  * Alignment: the ARM calling convention wants an 8-byte aligned stack, but a
  * uint32_t array is only guaranteed 4-byte aligned. No attribute is needed:

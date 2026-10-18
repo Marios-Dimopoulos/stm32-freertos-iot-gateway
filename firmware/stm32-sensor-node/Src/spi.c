@@ -75,7 +75,7 @@
  *                          changed on the falling edge (the Pi's spidev default too)
  *     MSTR = 0             SLAVE
  *     BR   = 000           irrelevant in slave mode (see above)
- *     SPE  = 0             DISABLED for now (see spi.h)
+ *     SPE  = 0             DISABLED here; spi_start() enables it once the DMA is armed (see spi.h)
  *     LSBFIRST = 0         most significant bit first
  *     SSM = 0, SSI = 0     hardware NSS: the pin PA4 is the chip select
  *     RXONLY = 0, BIDIMODE = 0, BIDIOE = 0   ordinary two-wire full duplex

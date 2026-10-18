@@ -206,9 +206,8 @@ the CPU's byte 0 would be written over it.
 
 **What this does not explain.** What produced the extra NSS rising edge in read 20 (and
 the earlier episode of 28 edges for one read) is not known; I cannot see NSS. A check of
-the NSS level in the handler (a rising edge with NSS still low is a glitch: count it and
-do not wake the task) is the next cheap instrument, and the logic analyzer is the right
-tool.
+the NSS level in the handler was added afterwards (Decision 8); it hides the effect and
+does not find the cause. The logic analyzer is the right tool for that.
 
 ### Decision 8: a rising edge on NSS counts only if NSS is high when the handler looks
 

@@ -32,6 +32,8 @@ and the numbers are in **ADR-0010**.
 - A short or interrupted transaction does not leave the node shifted by one byte:
   at every re-arm the CPU writes byte 0 into the SPI data register itself
   (ADR-0010, decision 7).
+- Ten runs of the test script stopped with Ctrl+C, and a run after them: no shifted
+  or bad frame (ADR-0010).
 - Noise on NSS: spikes on that line are ignored by the interrupt handler
   (decision 8). With the wires still, 7 spikes were seen in 3000 transactions and
   none damaged a frame; moving the wires by hand corrupts frames, which the Pi
@@ -45,8 +47,8 @@ the true clock frequency are not measured); the first read after an idle time
 returns a stale frame (see the known gaps).
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
-FreeRTOS kernel and eleven application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, main), ten ADRs (`docs/decisions/`), the
+FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), ten ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, and this document.
 **What does not exist:** the logic analyzer captures (an analyzer is on order),
 and the whole Linux side (Phases 3 and 4).

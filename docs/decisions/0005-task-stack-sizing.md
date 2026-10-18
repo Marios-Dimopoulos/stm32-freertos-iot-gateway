@@ -13,7 +13,7 @@ the linker placed below the array (another task's TCB, a queue, a global).
 Nothing crashes at that moment, and the failure shows up later somewhere
 unrelated. `configCHECK_FOR_STACK_OVERFLOW = 2` detects it only after the fact.
 
-Too large wastes RAM. Here RAM is not scarce (3,000 B of 128 KB used), so the
+Too large wastes RAM. Here RAM is not scarce (about 4 KB of 128 KB used), so the
 size matters mostly as a discipline: every number should have a reason.
 
 Facts that bound the choice:
@@ -127,11 +127,11 @@ Each task's stack size is a named macro whose comment records the measured
 peak and how it was measured. The blink task's 128 words were a starting value
 for a temporary task and did not carry over.
 
-**The sensor task keeps its 256 words**, which is 2.9 times the measured peak of
-89 words. The rule alone (peak plus at least 50%) would allow about 160 words, and
-that is the number Option B points at. 256 was kept on purpose: the whole program
-uses about 3 KB of 128 KB, so the 384 bytes saved would buy nothing, and the task
-will grow before Phase 2. This is a deliberate departure from the tightest value
+**The sensor task keeps its 256 words**, which is 2.9 times the Phase 1 peak of
+89 words (2.7 times the 96 words measured in Phase 2). The rule alone (peak plus at
+least 50%) would allow about 160 words, and that is the number Option B points at.
+256 was kept on purpose: the whole program uses about 4 KB of 128 KB, so the 384 bytes
+saved would buy nothing. This is a deliberate departure from the tightest value
 the rule gives, not a missing measurement.
 
 ## Consequences

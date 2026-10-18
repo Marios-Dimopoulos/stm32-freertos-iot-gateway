@@ -329,11 +329,10 @@ static volatile uint32_t ulTxTail;    /* total bytes taken out: changed by the I
  * ISR (which only frees space) cannot make the check wrong in a dangerous
  * direction. A drop is reported to the caller by the return value, UART_ERR_FULL.
  *
- * (There was a drop counter, uart_dropped_messages(); it was removed on 2026-10-16.
- * The only caller prints one line of at most 52 bytes per second into a 256-byte buffer
- * that the UART empties in under 5 ms, so a drop cannot happen with this load, and
- * nothing read the counter. The drop path itself was verified earlier with a temporary
- * burst test. If more tasks print, a counter is the first thing to add back.)
+ * (There is no drop counter. The only caller prints one line of at most 52 bytes per
+ * second into a 256-byte buffer that the UART empties in under 5 ms, so a drop cannot
+ * happen with this load. The drop path itself was verified with a temporary burst test.
+ * If more tasks print, a counter is the first thing to add.)
  *
  * The section lasts as long as the copy loop. The compiled loop is about 6 to 7
  * instructions per byte, so roughly 10 cycles per byte once loads and stores are
