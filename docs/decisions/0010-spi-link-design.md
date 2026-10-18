@@ -439,6 +439,39 @@ transaction in the kernel), so this tests restarting the script (the SPI device 
 and opened again) and not a transaction cut in the middle. That case is covered by the
 short-read test of 2026-10-14.
 
+### Verified on the board (2026-10-18): a 30-minute run
+
+`poll --count 1800 --period 1.0` from the Pi, 1 MHz, wires not touched (but fragile).
+
+| What | Result |
+|---|---|
+| Pi side | **1797 good, 0 shifted, 3 bad**, 1 sequence jump, statuses `OK` 1796 and `NO_READING` 1 |
+| Node counters after the run | `ulNssRisingCount` 1800, `ulWakeUps` 1800, `ulReloadFailures` 0, `ulNssGlitchCount` **15** |
+| the sequence jump and the `NO_READING` frame | both at read 1 (`0 -> 49`): the first read after a reset returns the placeholder (sequence 0), the second the real frame (the node had been running for 49 s). Expected, not a fault |
+| the 3 bad frames (reads 672, 1024, 1724) | see below |
+
+The counters agree with the Pi one for one (1800 reads, 1800 ends, 1800 wake-ups), so
+no real end was lost or doubled, and none of the 3 bad frames came with an extra
+counted end. 15 spikes on NSS were ignored by the check of Decision 8 (0.8% of the
+transactions) and no frame was shifted: that is the evidence for Decision 7 and
+Decision 8 working together. The spike rate is higher than the 7 in 3000 of the
+earlier run; the wires are fragile.
+
+The bad frames, decoded with a script (the CRC recomputed over the first 12 bytes):
+
+| Read | Sequence, T, P | CRC received / computed | What it looks like |
+|---|---|---|---|
+| 672 | 729, 21.33 C, 101741 Pa | `B292` / `9591` | marker, status and values plausible: the damage is in a few bits somewhere; **cause not found** (not 1 or 2 bit flips, not a slip of 1 to 3 bits with plausible values) |
+| 1024 | 1085, 21.41 C, 101744 Pa | `8FF7` / `F1F4` | the same; the low CRC byte differs by `0x03` in both frames, which may be a coincidence |
+| 1724 | 1795, 21.41 C, pressure 50607210 Pa (impossible) | `EC4C` / `942B` | **a slip of exactly 2 bits**: the bytes from byte 8 on are the true frame (`... 6A 8D 01 00 D3 3B`, CRC recomputed) with 2 bits missing, around byte 8 bit 2 to byte 9 bit 0, and the CRC bytes match too |
+
+Read 1724 is the best clue of the run: the node's shift register was 2 bits ahead of
+the Pi's clock from about the 70th bit on. The most likely cause is two extra clock edges
+on SCK seen by the node (noise on a long jumper), but that is a hypothesis: the
+logic analyzer, with SCK and MISO in the same trace, is what can confirm it. It is not
+an NSS problem: no extra end was counted, and the next transaction was good (a rise of
+NSS resets the slave's bit counter).
+
 ### Found on the board (2026-10-14): the re-arm without priming `DR`
 
 | What | Result |

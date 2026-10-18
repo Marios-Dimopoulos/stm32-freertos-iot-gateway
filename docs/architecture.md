@@ -32,6 +32,10 @@ and the numbers are in **ADR-0010**.
 - A short or interrupted transaction does not leave the node shifted by one byte:
   at every re-arm the CPU writes byte 0 into the SPI data register itself
   (ADR-0010, decision 7).
+- A 30-minute run (1800 reads, 1 s apart): 1797 good, 0 shifted, 3 bad. The node's
+  counters agreed with the Pi (1800 ends, 1800 wake-ups, 0 reload failures), and 15
+  spikes on NSS were ignored. One of the bad frames is a 2-bit slip, probably noise
+  on SCK (ADR-0010).
 - Ten runs of the test script stopped with Ctrl+C, and a run after them: no shifted
   or bad frame (ADR-0010).
 - Noise on NSS: spikes on that line are ignored by the interrupt handler
@@ -294,8 +298,9 @@ register-level drivers instead of using a vendor library is ADR-0008.
   probably 100 to 300 microseconds, not measured; a kernel driver or a C program may
   be much faster, so the Phase 4 driver has to enforce a delay); the re-arm time;
   the 1 s sensor period (only checked by the lines in Tera Term).
-- **Spikes on NSS** (ADR-0010, decision 8): about 7 in 3000 transactions with the
-  wires still (0.2%), many when the wires are moved. They are ignored by the
+- **Spikes on NSS** (ADR-0010, decision 8): 7 in 3000 transactions in one run and 15
+  in 1800 in the 30-minute run with the wires still (0.2% to 0.8%), many when the
+  wires are moved. They are ignored by the
   interrupt handler, but their cause is only suspected (long jumpers and a
   breadboard in the path), not measured. Frames hit by a real loss of contact are
   corrupted, and the CRC finds them; the next one is good.
@@ -429,9 +434,8 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 ### Phase 2: what is left
 
-1. **The remaining test of the plan**, with `tools/spi_frame_test.py`: a long run
-   (test 9). The aborted-runs test (ADR-0010) and the stack measurement (ADR-0005)
-   are done.
+1. **The tests of the plan are done**: the long run and the aborted runs with
+   `tools/spi_frame_test.py` (ADR-0010) and the stack measurement (ADR-0005).
 2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware is on
    order; PulseView on the PC). Capture NSS, SCK, MISO, MOSI, SCL, SDA and the
    USART2 TX in one trace, triggered on NSS falling, to: see the spikes on NSS and
@@ -596,3 +600,6 @@ on the node).
   (ADR-0005). Only comments changed in the code.
 - 2026-10-18: test of aborted runs (10 runs stopped with Ctrl+C, then a 5-read run): no
   shifted or bad frame. Recorded in ADR-0010.
+- 2026-10-18: the 30-minute run (1800 reads): 1797 good, 0 shifted, 3 bad; counters
+  agree with the Pi; 15 NSS spikes ignored. One bad frame decoded as a 2-bit slip
+  (probably noise on SCK), two without a found cause. Recorded in ADR-0010.
