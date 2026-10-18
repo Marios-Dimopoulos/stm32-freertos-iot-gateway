@@ -76,6 +76,12 @@ would reach a booting Pi sooner; the speed was not the goal.
   choice; only the Pi side does.
 - The build directory is huge and must stay out of git (`.gitignore`), as CLAUDE.md says.
   Only the layers and configuration files go in the repo.
+- The Yocto system-requirements page (release 6.0.3 "Wrynose", read 2026-10-18) lists
+  Ubuntu 24.04 as supported, but says that **WSL 2 is not validated** as a build host, and
+  gives 32 GB of RAM and 140 GB of disk as the minimum for building its large graphical
+  example image on 4 cores. My image will be far smaller, and I raised WSL's memory from
+  7.6 GB to 12 GB (`.wslconfig`), but running on WSL2 with 16 GB of RAM is a known risk:
+  a slower build, or a build killed for lack of memory, would be recorded here.
 - Not verified: the build time and disk figures I have read ("hours", "tens of GB") are
   from memory; I will record the real numbers after the first build.
 - Follow-up: the first steps are the environment in WSL2, then a first minimal image that
