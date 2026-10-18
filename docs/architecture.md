@@ -52,7 +52,7 @@ returns a stale frame (see the known gaps).
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), ten ADRs (`docs/decisions/`), the
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), eleven ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, and this document.
 **What does not exist:** the logic analyzer captures (an analyzer is on order),
 and the whole Linux side (Phases 3 and 4).
@@ -352,6 +352,9 @@ register-level drivers instead of using a vendor library is ADR-0008.
   frame with CRC-16, a one-slot latest-frame queue, a transmit task that re-arms a
   normal-mode DMA on the NSS rising edge; the CPU primes the data register
   (decision 7); NSS spikes are ignored (decision 8).
+- ADR-0011: the gateway image is built with Yocto (not Buildroot): the industry standard,
+  and its layers keep my driver and recipes separate from the Raspberry Pi support.
+  Phase 3 has started (decision only; nothing built yet).
 
 ## System design (implemented: this is what runs)
 
@@ -603,3 +606,4 @@ on the node).
 - 2026-10-18: the 30-minute run (1800 reads): 1797 good, 0 shifted, 3 bad; counters
   agree with the Pi; 15 NSS spikes ignored. One bad frame decoded as a 2-bit slip
   (probably noise on SCK), two without a found cause. Recorded in ADR-0010.
+- 2026-10-18: Phase 3 started: ADR-0011 chooses Yocto for the gateway image. Nothing built yet.
