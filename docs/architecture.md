@@ -473,6 +473,22 @@ Phase 2: the kernel driver must leave a minimum delay between SPI transfers, and
 must decide what to do about the stale first read (read twice, or refresh the buffer
 on the node).
 
+## Gateway image (Phase 3, started; nothing built yet)
+
+The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 24.04,
+12 GB of RAM given to WSL through `.wslconfig`). The repos are cloned by hand into
+`~/yocto/`, outside this repo. Cloned on 2026-10-18:
+
+| Repo | Branch | Commit | Date of the commit |
+|---|---|---|---|
+| `bitbake` | `2.18` | `6e260eb6ab16` | 2026-10-07 |
+| `openembedded-core` | `wrynose` | `636e5d3b12d5` | 2026-10-12 |
+| `meta-yocto` | `wrynose` | `7c25b11156553` | 2026-09-30 |
+| `meta-raspberrypi` | `wrynose` | `919588393f41` | 2026-10-10 |
+
+Next: the build configuration (`bblayers.conf`, `local.conf`) for the machine
+`raspberrypi0-2w-64`, then a first minimal image that only has to boot.
+
 ## Open questions / not yet decided
 
 - What produces the spikes on NSS (wiring is suspected; to be shown with the
@@ -610,3 +626,4 @@ on the node).
   (probably noise on SCK), two without a found cause. Recorded in ADR-0010.
 - 2026-10-18: Phase 3 started: ADR-0011 chooses Yocto for the gateway image. Nothing built yet.
 - 2026-10-18: ADR-0012: Yocto release (Wrynose) and how the layers are fetched. Nothing built yet.
+- 2026-10-18: the four Yocto repos cloned in WSL (commits in the Gateway image section).
