@@ -61,8 +61,6 @@ Size from the last build map (2026-10-17): about 18.5 KB of flash and 4.0 KB of 
   accurate) are open.
 - The first read after an idle time returns a stale frame (as old as the idle time):
   fine for a poller that reads every period, to be decided with the Phase 4 driver.
-- The transmit task's stack (the default 128 words) has not been measured, and the
-  sensor task's has to be measured again.
 - The Pi side is the stock Raspberry Pi OS with Python `spidev`: a temporary test jig,
   not the final image.
 - A sensor locked out by CSB needs a power cycle, which no I2C driver can fix.

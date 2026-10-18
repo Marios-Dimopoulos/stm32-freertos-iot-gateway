@@ -56,13 +56,15 @@
  * With static allocation (ADR-0001) we declare the task's memory ourselves and hand
  * it to xTaskCreateStatic():
  *   - the stack: a StackType_t array. The size is in WORDS (4 bytes each), so 256
- *     means 1 KB. MEASURED (ADR-0005): uxTaskGetStackHighWaterMark() reported 167
- *     words free at the minimum, so the deepest path used 89 words (356 bytes), the
- *     same with the sensor connected and disconnected (the failing init returns at its
- *     first call, so it is shallower than the successful one, which runs at start-up).
- *     256 words is 2.9 times that peak. The ADR-0005 rule (peak plus at least 50%)
- *     alone would allow 160; 256 was kept on purpose, because RAM is plentiful and
- *     this task will grow before Phase 2. The task calls the BMP280 module, the I2C
+ *     means 1 KB. MEASURED (ADR-0005). Phase 1, before the frame code:
+ *     uxTaskGetStackHighWaterMark() reported 167 words free, so the deepest path used
+ *     89 words (356 bytes), the same with the sensor connected and disconnected (the
+ *     failing init returns at its first call, so it is shallower than the successful
+ *     one, which runs at start-up). Phase 2, with the frame code (2026-10-18, the 0xA5
+ *     pattern in the debugger after 60 reads from the Pi): 640 bytes untouched, so the
+ *     peak is 96 words (384 bytes) and 256 words is 2.7 times that. The ADR-0005 rule
+ *     (peak plus at least 50%) alone would allow 144; 256 is kept on purpose, because
+ *     RAM is plentiful. The task calls the BMP280 module, the I2C
  *     driver (with its critical sections and tick reads), the formatter, a 64-byte
  *     line buffer and the UART; the worst-case saved context alone is 51 words (see
  *     FreeRTOSConfig.h). Repeat the measurement if the task's code changes.

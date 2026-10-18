@@ -41,9 +41,8 @@ and the numbers are in **ADR-0010**.
 
 **What is not verified:** nothing about the real signals (no logic analyzer in use
 yet: the cause of the NSS spikes, the real minimum gap between transactions and
-the true clock frequency are not measured); the transmit task's stack is the
-default 128 words, never measured; the first read after an idle time returns a
-stale frame (see the known gaps).
+the true clock frequency are not measured); the first read after an idle time
+returns a stale frame (see the known gaps).
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and eleven application modules (clock, uart, i2c, bmp280, format,
@@ -118,9 +117,9 @@ firmware/stm32-sensor-node/FreeRTOS/
   placeholder), and hands it to a one-slot queue (`xLatestFrame`, private to the
   file, `xQueueOverwrite`). The sequence therefore keeps moving while the sensor
   fails: it is a heartbeat. `sensor_task_latest_frame()` copies the newest frame
-  out with `xQueuePeek` and never waits. The stack was measured in Phase 1 at 89
-  words peak (167 free) and kept at 256 (ADR-0005), **before** the frame code was
-  added: to be measured again.
+  out with `xQueuePeek` and never waits. The stack was measured at 89 words peak in
+  Phase 1 and again with the frame code at 96 words (160 free), and kept at 256
+  (ADR-0005).
 - `format.c` / `format.h`: three tiny text functions with no `printf` and no
   `malloc`: `format_text`, `format_u32` and `format_fixed2` (a number in
   hundredths with two decimals: 2364 gives `23.64`, -5 gives `-0.05`). They write
@@ -253,8 +252,8 @@ firmware/stm32-sensor-node/FreeRTOS/
   low means a spike (counted in `ulNssGlitchCount`, nothing else). Counters for the
   debugger: `ulNssRisingCount`, `ulNssGlitchCount`, `ulReloadFailures`. Decisions
   and failures: ADR-0010.
-- `transmit_task.c` / `transmit_task.h`: priority 2, static 128-word stack (not
-  measured). It waits without limit for a task notification (`ulTaskNotifyTake( pdTRUE,
+- `transmit_task.c` / `transmit_task.h`: priority 2, static 128-word stack (measured:
+  39 words peak, ADR-0005). It waits without limit for a task notification (`ulTaskNotifyTake( pdTRUE,
   portMAX_DELAY )`: the count is cleared, so ends that merge cost one wake-up), then
   fetches the newest frame with `sensor_task_latest_frame()` (the placeholder if the
   queue is still empty) and calls `spi_load_frame()`. `ulWakeUps` counts its
@@ -307,9 +306,9 @@ register-level drivers instead of using a vendor library is ADR-0008.
   jig (ADR-0010), not the final image.
 - The SPI `OVR` flag (received bytes are never read) has not been examined,
   because nothing has gone wrong that it would explain.
-- **Stacks.** The sensor task was measured at 89 words (167 of its 256 free) in
-  Phase 1, **before** the frame code was added: to be measured again. The transmit
-  task has the default 128 words and was never measured. Idle: at least 21 words
+- **Stacks.** Measured on 2026-10-18 after 60 reads from the Pi, as lower bounds:
+  sensor task 96 words peak of 256, transmit task 39 words of 128 (the placeholder
+  path did not run, and the NACK paths were not exercised). Idle: at least 21 words
   actually written (the `0xA5` pattern said 14, but R4-R11 were saved with the fill
   value, so the pattern was forged by data), 128 words allocated (ADR-0005).
 - **Clock accuracy is that of the HSI (about 1%).** The timeout/error paths of
@@ -333,7 +332,8 @@ register-level drivers instead of using a vendor library is ADR-0008.
 - ADR-0003: RTOS tick derived from `SystemCoreClock`, at 1 kHz.
 - ADR-0004: interrupt priority threshold for FreeRTOS API calls at level 5.
 - ADR-0005: task stacks sized by measurement with a margin; Idle stays at 128
-  words; the sensor task was measured (89 words peak) and kept at 256.
+  words; the sensor task (96 words peak) and the transmit task (39 words peak) were
+  measured and keep 256 and 128.
 - ADR-0006: CPU at 84 MHz from the HSI through the PLL, in its own module.
 - ADR-0007: I2C1 driver: register-oriented polling API with tick-based timeouts and
   self-recovery.
@@ -428,9 +428,8 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 ### Phase 2: what is left
 
 1. **The remaining tests of the plan**, with `tools/spi_frame_test.py`: the Pi
-   aborting a run at random moments (the Decision 7 property), a 30-minute run,
-   and the **stack measurement** of the transmit task and again of the sensor
-   task (the `0xA5` fill pattern), to be recorded in ADR-0005.
+   aborting a run at random moments (the Decision 7 property) and a 30-minute run.
+   (The stack measurement of both tasks is done: ADR-0005.)
 2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware is on
    order; PulseView on the PC). Capture NSS, SCK, MISO, MOSI, SCL, SDA and the
    USART2 TX in one trace, triggered on NSS falling, to: see the spikes on NSS and
@@ -590,3 +589,6 @@ on the node).
   Built and run on the board; the handler was triggered on purpose and recorded the
   fault as expected, and RAM went from 4,536 B to 4,072 B (the heap is gone, the
   56-byte record added).
+- 2026-10-18: stack peaks measured with the `0xA5` pattern after 60 reads from the Pi:
+  sensor task 96 words of 256, transmit task 39 words of 128. Neither size changes
+  (ADR-0005). Only comments changed in the code.

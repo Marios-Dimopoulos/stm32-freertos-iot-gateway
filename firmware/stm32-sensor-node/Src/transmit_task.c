@@ -47,9 +47,13 @@
  * Static allocation (ADR-0001): the stack and the TCB are ours, file-level static so
  * they live in .bss for the whole run (as for the sensor task).
  *
- * The stack is configMINIMAL_STACK_SIZE words (128, 512 bytes) for now: the body is
- * tiny. It is NOT a measured size. Per ADR-0005 it has to be measured once the task
- * does its real work (uxTaskGetStackHighWaterMark), and the figure recorded there.
+ * The stack is configMINIMAL_STACK_SIZE words (128, 512 bytes). MEASURED (ADR-0005,
+ * 2026-10-18, by the 0xA5 pattern in the debugger after 60 reads from the Pi): 356 bytes
+ * untouched, so the peak is 39 words (156 bytes) and 128 words is 3.3 times that. The
+ * rule of ADR-0005 (peak plus 50%) would allow 59 words; I keep 128 because RAM is
+ * plentiful. The placeholder path (frame_build() when the queue is still empty) did not
+ * run in that test; the sensor task, which also calls frame_build(), covers its depth.
+ * Repeat the measurement if the task's code changes.
  */
 #define TRANSMIT_TASK_STACK_WORDS    ( configMINIMAL_STACK_SIZE )
 #define TRANSMIT_TASK_PRIORITY       ( 2 )

@@ -63,6 +63,32 @@ interrupt frames (when SysTick or USART2 fire, the hardware pushes an 8-word fra
 onto the task's stack, and the I2C busy-waits last long enough compared with the
 1 ms tick for that to have happened many times), but that was not forced.
 
+### Measurement of the sensor and transmit tasks, Phase 2 (2026-10-18)
+
+Both tasks with their final code (frame building, the CRC, the queue, the SPI re-arm).
+Method: no code added. I ran `tools/spi_frame_test.py poll --count 60 --period 1.0` from
+the Pi (60 reads, one a second, so one minute of the sensor task running and 60
+wake-ups of the transmit task), pressed Stop and counted in the Memory window the bytes
+still equal to `0xA5` from the lowest address of each stack array (addresses from the
+map file).
+
+| Task | Array | Untouched `0xA5` | Peak used | Array / peak |
+|---|---|---|---|---|
+| Sensor | 256 words (1024 B) at `0x20000540` | 640 B (160 words) | **96 words (384 B)** | 2.7x |
+| Transmit | 128 words (512 B) at `0x20000998` | 356 B (89 words) | **39 words (156 B)** | 3.3x |
+
+- Both peaks are above the 17-word minimum of a context switch, so the cross-check
+  above does not flag a forged pattern.
+- The sensor task went from 89 words (Phase 1) to 96 words with the frame code: 7 more.
+- The rule (peak plus at least 50%) asks for 144 words (sensor) and 59 words (transmit).
+  Both arrays are larger, so **neither size changes**.
+- Limits, as before: a lower bound. It covers one minute with the sensor connected
+  (not the NACK paths). For the transmit task, the placeholder path
+  (`frame_build()` when no sensor frame exists yet) did not run: it needs a transaction
+  to end within about 20 ms of power-up. `frame_build()` also runs in the sensor task,
+  whose peak includes it. Interrupt frames (8 words each, pushed on the task's stack by
+  the hardware) are in the numbers only if one happened at the deepest moment.
+
 ## Options considered
 
 ### Option A: estimate from the call graph and round up
@@ -114,7 +140,7 @@ the rule gives, not a missing measurement.
   minimum before trusting it; if it is lower, find out why.
 - The high-water mark covers **task stacks only**. The 1 KB main stack, shared
   by all interrupt handlers, has no check watching it (a main-stack overflow
-  would run into the 512 B heap block and then `.bss`), so ISRs must stay
+  would run into whatever the linker placed below it, since the heap size is 0), so ISRs must stay
   small. Keil's static report says 324 B for the start-up chain, which does
   not include interrupts.
 - The sensor task reported its high-water mark over USART2 during bring-up (done,
