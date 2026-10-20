@@ -53,9 +53,9 @@ to the assembly dialect, not to the compiler actually used.
 
 ## Consequences
 
-- `port.c` now compiles under AC6. The first full build will instead fail on
-  missing `FreeRTOSConfig.h` settings (clock/tick, priorities, etc.), which
-  is expected until the config file is complete.
+- `port.c` compiles under AC6. The first full build then failed on missing
+  `FreeRTOSConfig.h` settings (clock/tick, priorities, etc.), until the config file
+  was complete.
 - Include path is now `.\FreeRTOS\portable\GCC\ARM_CM4F`, and the
   `FreeRTOS Portable` group references the GCC `port.c`.
 - Kernel upgrades must take `port.c` / `portmacro.h` from `portable/GCC/ARM_CM4F`
@@ -65,11 +65,10 @@ to the assembly dialect, not to the compiler actually used.
   (`__FPU_PRESENT` / *Floating Point Hardware: Single Precision* in Keil
   Target options). Confirmed: the `.uvprojx` has `<RvdsVP>2</RvdsVP>`
   (single-precision FPU enabled).
-- Follow-up: the startup file (`startup_stm32f411xe.s`) names the handlers
-  `SVC_Handler`, `PendSV_Handler` and `SysTick_Handler`, while the port
-  defines `vPortSVCHandler`, `xPortPendSVHandler` and `xPortSysTickHandler`.
-  These must be mapped to each other (usually with `#define`s in
-  `FreeRTOSConfig.h`) in the interrupt section of the config.
+- The startup file (`startup_stm32f411xe.s`) names the handlers `SVC_Handler`,
+  `PendSV_Handler` and `SysTick_Handler`, while the port defines `vPortSVCHandler`,
+  `xPortPendSVHandler` and `xPortSysTickHandler`. They are mapped to each other with
+  `#define`s in the interrupt section of `FreeRTOSConfig.h`.
 
 ## Interview angle
 

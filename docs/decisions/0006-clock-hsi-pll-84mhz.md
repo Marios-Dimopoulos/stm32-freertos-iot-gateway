@@ -33,8 +33,8 @@ before any output exists, with nothing to show why.
   (16 MHz / M = 8 -> 2 MHz, x N = 168 -> 336 MHz, / P = 4 -> 84 MHz).
 - Pros: no dependence on the board and nothing extra to configure; there is
   no external oscillator that might fail to start.
-- Cons: the HSI is accurate to only about 1% at room temperature (datasheet
-  figure from memory) and drifts with temperature. `HSI_VALUE` in
+- Cons: the HSI is accurate to only about 1% at room temperature and drifts with
+  temperature (measured on this chip: about 1.1% fast, see below). `HSI_VALUE` in
   `system_stm32f4xx.c` is a nominal constant, not a measurement.
 
 ### Option B: HSE from the ST-LINK's 8 MHz output (bypass mode) + PLL
@@ -42,8 +42,11 @@ before any output exists, with nothing to show why.
   (M = 4, N = 168, P = 4 gives the same 84 MHz).
 - Pros: much better accuracy.
 - Cons:
-  - depends on the board's revision and solder bridges (to be checked in the
-    Nucleo user manual; I could not confirm it from here);
+  - depends on the board's revision and solder bridges (Nucleo-64 manual UM1724,
+    "OSC clock supply"): the ST-LINK's clock is fixed at 8 MHz and needs SB54 and
+    SB16/SB50 closed with SB55 open; boards marked MB1136 C-02 or later are set up
+    that way by default, MB1136 C-01 boards have the HSE pins left as GPIOs. The
+    revision of this board (a sticker on the bottom side) was not looked at;
   - needs `HSEBYP` and a bounded wait for `HSERDY`;
   - `system_stm32f4xx.c` defines `HSE_VALUE` as 25 MHz by default, so with an
     8 MHz source `SystemCoreClockUpdate()` would compute 25 MHz / 4 * 168 / 4 =
@@ -84,8 +87,8 @@ The sequence in `clock_init_84mhz()`, in this order:
 Design rules of the module:
 
 - **Bounded waits, never a bare `while`.** Each wait is a counter of loop
-  passes (a rough 6 ms at 16 MHz, not a real time, because no timer exists yet
-  and SysTick belongs to FreeRTOS). On a timeout the function stops and returns
+  passes (about 6 ms at 16 MHz by estimate, not a real time, because no timer
+  exists at that point of the start-up and SysTick belongs to FreeRTOS). On a timeout the function stops and returns
   a status code. The CPU is then still on the HSI, which works.
 - **Register fields derived from divider values**, because the P field is
   encoded (00 = /2, 01 = /4, 10 = /6, 11 = /8).
@@ -102,9 +105,10 @@ Design rules of the module:
   `SystemCoreClockUpdate()`, then `vTaskStartScheduler()`.
 - **APB1 runs at 42 MHz, and `SystemCoreClock` reports HCLK only.** USART2's
   baud divisor and I2C1's timing must use 42 MHz, not `SystemCoreClock`.
-- **SPI1 sits on APB2 (84 MHz).** The 6 MHz limit from CLAUDE.md needs a
-  prescaler of /16 (5.25 MHz); /8 would give 10.5 MHz. To be rechecked in
-  Phase 2.
+- **SPI1 sits on APB2 (84 MHz).** As a master the 6 MHz limit from CLAUDE.md would
+  need a prescaler of /16 (5.25 MHz); /8 would give 10.5 MHz. SPI1 is a slave in the
+  end (ADR-0010): the Pi's clock sets the rate, the prescaler does not matter, and the
+  limit is kept on the Pi's side (measured 5.88 MHz for the 6 MHz setting).
 - The absolute frequency is only as good as the HSI (about 1%). Baud rates and
   any time measurement inherit that error.
 - **Verified on the board** by reading registers in the debugger (all matched
@@ -119,14 +123,13 @@ Design rules of the module:
   +1.07%); and the I2C clock, set for 100 kHz (CCR = 210 at 42 MHz), has a typical
   period of 9.89 us (about 101.1 kHz, +1.1%). The mean SCL period is 9.92 to 9.93 us
   (+0.7 to +0.8%) because a few clock periods are longer (11 to 12 us). The two sessions
-  differ by 0.1%; the HSI is known to drift with temperature, but I did not test that.
-  This is at the edge of the "about 1%" of the datasheet figure quoted above.
-  Assumption: the Pico's sample clock is accurate (it runs from a crystal; I did not
-  check the firmware's real sample rate).
-- **Not verified:** the frequency measured on the clock itself (the MCO pin could output
-  it), the UART bit time (planned), and the timeout and error paths, which were never
-  triggered (a broken PLL is hard to produce on purpose, and the build-time checks make
-  it harder).
+  differ by 0.1%; the HSI drifts with temperature, which was not recorded. This is at
+  the edge of the "about 1%" of the HSI accuracy quoted above. The measurement assumes
+  that the Pico's sample clock is accurate (it runs from a crystal).
+- **Not measured:** the frequency on the clock itself (the MCO pin could output it) and
+  the UART bit time (PA2 is wired to the ST-LINK only on the default solder bridges,
+  see ADR-0010). The timeout and error paths were never triggered (a broken PLL is hard
+  to produce on purpose, and the build-time checks make it harder).
 - A request withdrawn at the exact moment the hardware completes the switch is
   a race that has not been analysed.
 - If the project ever moves to HSE: define `HSE_VALUE=8000000`, enable

@@ -28,7 +28,7 @@ The forces at play:
 - The target clock is 84 MHz from the PLL, but **no clock-tree code exists
   yet**. After reset, `SystemInit()` leaves the chip on the 16 MHz HSI
   oscillator.
-- i want to build and test the RTOS *before* writing the PLL code, and not
+- I want to build and test the RTOS *before* writing the PLL code, and not
   have to revisit the RTOS config when the PLL code is added.
 - The node is USB-powered, so power is not a concern.
 - The logic analyzer and the Keil debugger make the result directly
@@ -43,7 +43,7 @@ The forces at play:
   83,999.
 - Pros: The value is visible in the header, and there's no run-time ordering
   to get right.
-- Cons: It states the clock i *intend*, not the one i *have*. Today (16 MHz)
+- Cons: It states the clock I *intend*, not the one I *have*. At 16 MHz
   every tick would be 84,000 × 62.5 ns = 5.25 ms, so all delays would be
   5.25× too long with no error or warning. Any future clock change must also
   remember to edit this header.
@@ -65,7 +65,7 @@ The forces at play:
 - Pros: `pdMS_TO_TICKS()` is exact for whole milliseconds. The worst-case
   delay error is 1 ms. The integer division is exact at both 16 and 84 MHz.
 - Cons: 1000 SysTick interrupts per second. The expected overhead is well
-  under 1% at 84 MHz, but this should be measured.
+  under 1% at 84 MHz (an estimate; the overhead was not measured).
 
 #### Option D: 100 Hz (10 ms tick)
 - Pros: 10× fewer interrupts, which matters for battery devices.
@@ -89,8 +89,8 @@ rounding-to-zero bugs.
   clock setup → `SystemCoreClockUpdate()` → `vTaskStartScheduler()`.
   `SystemCoreClockUpdate()` only *reads* the clock configuration; it
   configures nothing.
-- The RTOS can be built and tested now, on 16 MHz HSI. Adding the PLL later
-  needs no change to `FreeRTOSConfig.h`.
+- The RTOS could be built and tested first on the 16 MHz HSI. Adding the PLL
+  (ADR-0006) needed no change to `FreeRTOSConfig.h`.
 - `FreeRTOSConfig.h` declares `extern uint32_t SystemCoreClock;`. Application
   code must include `FreeRTOS.h`, which provides `<stdint.h>` first, never
   `FreeRTOSConfig.h` directly.
@@ -99,11 +99,14 @@ rounding-to-zero bugs.
   16,000 × 11.9 ns ≈ 0.19 ms and every delay runs **5.25× too fast**. A GPIO
   toggled every `pdMS_TO_TICKS(500)` would show a ~190 ms period instead of
   1.000 s.
-- **Verification to do** once the first task exists:
-  - Keil *Peripherals → Core Peripherals → System Tick Timer* shows
-    `LOAD = 15999` (HSI), and `83999` after the PLL step.
-  - The PulseView period of the 500 ms toggle is 1.000 s.
-  - Measure the actual tick overhead.
+- **Verification:**
+  - Keil *Peripherals → Core Peripherals → System Tick Timer* showed
+    `LOAD = 15999` on the HSI and `83999` after the PLL step (ADR-0006).
+  - With the logic analyzer (2026-10-20) the sensor task's 1000-tick period lasts
+    988 to 989 ms, not 1000 ms. That is the HSI being about 1.1% fast (ADR-0006), not a
+    tick-configuration error: the tick follows the real clock only as far as the HSI is
+    accurate.
+  - The tick overhead itself was not measured.
 - Revisit the tick rate only if a low-power mode (tickless idle) is ever
   needed.
 

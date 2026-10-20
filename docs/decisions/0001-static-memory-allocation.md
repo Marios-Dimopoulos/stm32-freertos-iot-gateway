@@ -16,7 +16,7 @@ time (`xTaskCreate` → `pvPortMalloc`, backed by one of `heap_1.c`–`heap_5.c`
 or from buffers the application declares at compile time (`xTaskCreateStatic`
 and friends). The kernel's default is dynamic allocation enabled.
 
-If i did nothing, i would get the default: a heap sized by guesswork,
+If I did nothing, I would get the default: a heap sized by guesswork,
 objects that can fail to be created at run time if the heap is too small or
 fragmented, and RAM usage that only shows up as one opaque `ucHeap[]` array
 in the map file. CLAUDE.md sets "no dynamic memory allocation in the FreeRTOS
@@ -80,13 +80,13 @@ developer's machine, not in the field.
   `uxTaskGetStackHighWaterMark()` / stack overflow checking).
 - Forecloses: creating or deleting objects at run time, and the heap-dependent
   FreeRTOS stats-formatting helpers.
-- Follow-up work:
-  - Implement `vApplicationGetIdleTaskMemory()` (and
-    `vApplicationGetTimerTaskMemory()` if `configUSE_TIMERS = 1`). The project
-    won't link until these exist.
-  - These settings only cover the FreeRTOS allocator. Check the linker
-    `.map` file to confirm the C library's `malloc`/`free` are not pulled in
-    (e.g. by `printf`-family functions).
+- Done as a consequence:
+  - `vApplicationGetIdleTaskMemory()` is in `freertos_callbacks.c`; the project does
+    not link without it. `vApplicationGetTimerTaskMemory()` is not needed, because
+    `configUSE_TIMERS = 0`.
+  - These settings only cover the FreeRTOS allocator, so the linker `.map` file is
+    checked for the C library's `malloc`/`free`: none is linked (2026-10-03, and again
+    in the last map, with a start-up heap of 0 bytes; see `architecture.md`).
 
 ## Interview angle
 

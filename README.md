@@ -7,9 +7,9 @@ The next step is a custom-built Linux image on the Pi, where a kernel driver han
 the data to an MQTT publisher.
 
 **Status: Phases 1 and 2 work on the board.** The Pi (running the stock Raspberry Pi
-OS as a temporary test jig) reads a valid frame every second. **Still to come: the SPI
-logic analyzer captures of Phase 2 (the I2C ones are done), the first boot of the Phase 3
-image (built, never booted), and Phase 4.**
+OS as a temporary test jig) reads a valid frame every second. **Still to come: the first boot of
+the Phase 3 image (built, never booted), and Phase 4.** The logic analyzer captures of
+Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it
 honest: what is verified, and what is not.
 
@@ -49,17 +49,19 @@ removed now, so the node prints only the init line and the readings.*
 | **Spikes on NSS are ignored** by the interrupt handler (it reads the pin before believing the edge) and counted. | With the wires still: 7 spikes in 3000 transactions, no damaged frame. While touching the wire: about 3000 spikes, 3017 ignored. |
 | **Range.** | SPI clock from 100 kHz to 6 MHz, and reads back to back from Python: all good, apart from the rare noise-damaged frame, always followed by good ones. |
 | **A sensor failure reaches the Pi.** | With SDA unplugged: frames with status `NACK` and zeros, then `NO_READING`, then `OK`; the sequence kept counting. |
+| **Checked on the wire** with a logic analyzer (a Raspberry Pi Pico with `sigrok-pico`, read in PulseView). | NSS low during exactly 112 SCK clocks in SPI mode 0, and the frame decodes with a valid CRC. SCK measured 1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4 and 6 MHz requested. NSS stays high 154 to 228 us between back-to-back reads from Python, and 30000 such reads were all good. The BMP280 read on I2C and the CPU clock (about 1.1% fast) were measured too. `docs/captures/`, ADR-0006, ADR-0007, ADR-0010 |
 
 Size from the last build map (2026-10-17): about 18.5 KB of flash and 4.0 KB of RAM (of
 128 KB), FreeRTOS included.
 
 ### What is not verified, or not done
 
-- **The SPI signals have not been measured yet.** The logic analyzer works and has
-  captured the I2C bus: the BMP280 read is as designed, and the clock runs about 1.1%
-  fast (`docs/captures/`, ADR-0006). Still open: the cause of the spikes on NSS (long
-  jumpers and a breadboard are suspected), the real minimum gap between two
-  transactions, the re-arm time, and the SPI clock.
+- **The logic analyzer works and has captured the I2C and SPI links**
+  (`docs/captures/`, ADR-0006, ADR-0010): the BMP280 read and the 14-byte SPI frame are as
+  designed, the clock runs about 1.1% fast, SCK is within the 6 MHz limit (5.88 MHz at the
+  top setting), and 30000 back-to-back reads from the Pi were all good. Still open: the
+  re-arm time (only an upper bound of 154 us), the cause of the spikes the firmware counts
+  on NSS (none were seen with a clean probe wiring), and the UART bit time.
 - The first read after an idle time returns a stale frame (as old as the idle time):
   fine for a poller that reads every period, to be decided with the Phase 4 driver.
 - The Pi side is the stock Raspberry Pi OS with Python `spidev`: a temporary test jig,
@@ -122,7 +124,7 @@ considered, the one I chose and why, and what I did not verify.
 - Raspberry Pi Zero 2 W: today the SPI master of the test (stock Raspberry Pi OS Lite,
   Python `spidev`), later the target of the custom Linux image (Phase 3)
 - A logic analyzer for Phase 2 (a Raspberry Pi Pico with the `sigrok-pico` firmware,
-  read with `PulseView`): working, used on I2C so far
+  read with `PulseView`): used for the I2C and SPI captures in `docs/captures/`
 
 The extra hardware budget is 50 EUR. See `docs/budget.md`.
 
@@ -153,9 +155,10 @@ Both sides are 3.3 V; only these five wires, and no power between the boards.
 | MOSI | 19 (GPIO10) | PA7 (D11) |
 | GND | 25 | GND |
 
-The pin numbers are from my memory of the two pinouts; check them against the
-labels. Long jumpers and a breadboard in the SPI path cause spikes on NSS: keep the
-wires short.
+The Nucleo pins and their Arduino labels are those of the Nucleo-64 manual (UM1724,
+Table 16); the Pi pins are its standard SPI0 pins. This is the wiring used in all the
+tests. Keep the wires short: wires that disturb the link, such as probe wires clipped
+onto the SPI lines, create spikes on NSS (ADR-0010).
 
 ## Build and run
 
@@ -205,8 +208,8 @@ poll 1000000 Hz           good    10  shifted    0  bad    0  seq-jumps   1  [OK
 | Phase | What | State |
 |---|---|---|
 | 1 | Hardware and RTOS: I2C driver, BMP280, FreeRTOS with static allocation | Working on the board |
-| 2 | SPI + DMA transfer to the gateway, checked with a logic analyzer | The firmware and the Pi-side tests work; the I2C captures are done, the SPI ones are still to come |
-| 3 | Custom minimal Linux image for the Raspberry Pi Zero 2 W (Yocto or Buildroot, not decided yet) | Not started |
+| 2 | SPI + DMA transfer to the gateway, checked with a logic analyzer | Working and checked on the wire; the re-arm time and the UART bit time are not measured |
+| 3 | Custom minimal Linux image for the Raspberry Pi Zero 2 W (Yocto, ADR-0011) | The image builds (2008 packages, 79 MB compressed); never booted on the board |
 | 4 | Linux kernel SPI driver, Device Tree overlay, MQTT publishing | Not started |
 
 Practices that belong to the later phases (a custom Linux image, a kernel driver
@@ -218,12 +221,12 @@ achievements, until they exist.
 ```
 firmware/stm32-sensor-node/   Keil project
   Src/                        main, clock, uart, i2c, bmp280, format, frame, spi,
-                              sensor_task, transmit_task, hardfault
+                              sensor_task, transmit_task, hardfault, freertos_callbacks
   FreeRTOS/                   kernel V11.3.1 (unmodified) and the project's config
 docs/
   architecture.md             the current state of the system (living document)
   decisions/                  Architecture Decision Records
-  captures/                   screenshots and, later, logic analyzer captures
+  captures/                   the Phase 1 screenshot and the logic analyzer captures (README inside)
   budget.md                   hardware cost tracking
   plan.md                     the original plan of the whole project (in Greek)
 tools/

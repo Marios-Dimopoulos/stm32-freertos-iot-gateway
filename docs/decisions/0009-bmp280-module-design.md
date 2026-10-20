@@ -77,12 +77,14 @@ The forces:
 - **Normal mode, integer results, initialise again after any error.**
 - **Settings:** temperature and pressure oversampling x16, IIR filter 16, standby 0.5 ms
   (the settings of the course reference code). `config` is written before `ctrl_meas`,
-  because writes to `config` can be ignored once the sensor is in normal mode (as I
-  remember the datasheet); the values are built from named fields (0x10 and 0xB7).
+  because writes to `config` may be ignored once the sensor is in normal mode (the
+  datasheet says so for the `config` register); the values are built from named fields
+  (0x10 and 0xB7).
 - **Init order:** soft reset, a 10 ms `vTaskDelay`, chip ID (0x58), the 24 calibration
   bytes into a local buffer and only then into the static struct, `config`, `ctrl_meas`.
   A flag set after a complete init lets `bmp280_read()` assert that init succeeded.
-- **Read:** one 6-byte burst from 0xF7 (the sensor freezes the six registers together),
+- **Read:** one 6-byte burst from 0xF7 (the datasheet's "data register shadowing"
+  guarantees consistent data only for a single burst read),
   the two 20-bit raw values, and `0x80000` on either means no measurement yet.
 - **The compensation** is two pure functions that take the calibration as an argument.
   The left shifts of terms that can be negative are written as multiplications (a left
@@ -101,8 +103,8 @@ defend than a table of cases that nothing has shown to be needed.
 
 ## Consequences
 
-- The sensor task and the future transmit task only see `bmp280_init()`, `bmp280_read()`
-  and a status; they never touch I2C.
+- The sensor task is the only user of `bmp280_init()`, `bmp280_read()` and a status; the
+  transmit task never touches the sensor or I2C (it reads the latest frame, ADR-0010).
 - A sensor that was disconnected or power-cycled recovers without resetting the MCU.
   Verified on the board by disconnecting the sensor completely and reconnecting it.
 - The IIR filter makes the output smooth and slow to follow real changes (a finger takes
@@ -114,34 +116,36 @@ defend than a table of cases that nothing has shown to be needed.
 - Chip ID 0x58; the calibration bytes in the typical ranges; a reading of 23.64 C and
   101969 Pa, stable, and plausible for the room; NACK with the sensor disconnected or
   CSB at GND, and recovery after reconnection.
-- The formulas, transcribed into Python with C's integer rules, reproduce the example
-  values I remember from Bosch's datasheet (25.08 C and 100653 Pa).
+- The formulas, transcribed into Python with C's integer rules, give 25.08 C and
+  100653 Pa for an example set of calibration values and raw readings (listed in
+  `bmp280.c`).
 - On the wire (2026-10-20, logic analyzer): the burst read starts at register 0xF7 and
   returns six bytes; the raw pressure (20 bits) and temperature (20 bits), decoded from
   them by hand, change slowly from one second to the next (pressure about 348234 to
-  348281, temperature about 510082 to 510159), as a live sensor should. The order of the
-  six bytes (pressure first) is as I remember it from the datasheet; I did not check the
-  text.
+  348281, temperature about 510082 to 510159), as a live sensor should. The bytes come
+  pressure first, then temperature, as in the register map (0xF7 to 0xFC).
+
+### Compared with the BMP280 datasheet (Rev. 1.26, 2026-10-20)
+The code matches the datasheet on: the field positions of `ctrl_meas` (`osrs_t` bits 7:5,
+`osrs_p` bits 4:2, `mode` bits 1:0) and `config` (`t_sb` bits 7:5, `filter` bits 4:2); the
+oversampling code 5 for x16; the standby code 0 for 0.5 ms; the chip ID 0x58; the soft-reset
+word 0xB6; the value 0x80000 for a skipped or missing measurement; the byte order of the
+burst; the shadowing of the data registers during a single burst read; and the note that
+writes to `config` in normal mode may be ignored. The datasheet's compensation code is the
+integer algorithm used here.
 
 ### What is not verified, or not done
-- **The register layouts and the codes are from my memory of the datasheet** (the field
-  positions of `ctrl_meas` and `config`, the oversampling and filter codes, the 0x80000
-  value, the reset behaviour, and the latching of the six data registers during a burst).
-  They work on the board, but they have not been checked
-  against the datasheet text, and the configuration registers were never read back.
-- Whether x16 oversampling on the temperature improves anything (I vaguely remember that
-  it does not for the pressure result) has not been checked.
-- The example values in the Python check are from memory, and the C code itself has not
-  been run on a PC.
+- The filter field value 4 for the coefficient 16 was not compared with a table (the
+  datasheet text lists the coefficients but not their register codes); the smooth output on
+  the board is consistent with it.
+- The configuration registers are not read back (a decision, see above).
+- The datasheet says that temperature oversampling above x2 does not significantly improve
+  the pressure accuracy and recommends x2 for x16 pressure. The x16 used here (the course
+  reference settings) therefore only adds temperature resolution (20 bit, 0.0003 C).
+- The C code itself was not run on a PC; the Python transcription was.
 - The `no data` path and the zero-divisor path have never been exercised on the board
   (the sensor task waits a full period after init, so the first read always finds data).
 - The absolute accuracy of the readings is not known; "plausible" is the only claim.
-
-### Follow-up
-- Check the datasheet's register descriptions against the code once, and note the result
-  here.
-- How the readings reach the Phase 2 transmit task (a queue or a shared buffer) is still
-  open (`architecture.md`).
 
 ## Interview angle
 

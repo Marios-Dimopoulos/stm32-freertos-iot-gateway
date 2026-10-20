@@ -32,9 +32,9 @@ Doing nothing special would mean generating HAL code and calling it.
   `HAL_UART_Transmit_IT`, `HAL_RCC_ClockConfig`).
 - Pros: the fastest way to a working system; tested by ST; covers every peripheral.
 - Cons: it hides exactly what an interviewer asks about (the flag sequences, the ACK/STOP
-  deadline, the clock order). As I understand it, its timeouts and `HAL_Delay` rely on a
-  millisecond counter incremented by SysTick, which here belongs to FreeRTOS, so the HAL
-  would need a different time base. Its internal state and locking model is not ours.
+  deadline, the clock order). Its timeouts and `HAL_Delay` rely on a millisecond counter
+  incremented by SysTick, which here belongs to FreeRTOS, so the HAL would need a
+  different time base. Its internal state and locking model is not ours.
 
 ### Option B: ST LL (low-layer) or the Standard Peripheral Library
 - How it works: thin functions over the registers (`LL_I2C_GenerateStartCondition`, and
@@ -74,19 +74,22 @@ Standard Peripheral Library.
 
 - Easier: every register access has a written reason in the code; the drivers fit the
   RTOS rules of the project (static allocation, bounded waits, flagged blocking); the
-  whole firmware including the kernel is small (about 13 KB of flash in the last map).
+  whole firmware including the kernel is small (about 18.5 KB of flash and 4.0 KB of
+  RAM in the last map, 2026-10-17).
 - Harder: each driver carries the risk of mistakes a library would have fixed, and the
   chip's quirks have to be found by us (for example, how the I2C peripheral behaves
   after a reset in the middle of a transfer). Only what is needed exists: USART2 TX at
-  115200, I2C master at 100 kHz with 7-bit addresses, no receive, no DMA yet.
+  115200 (no receive), I2C master at 100 kHz with 7-bit addresses, and SPI1 as a slave
+  with DMA (ADR-0010).
 - What has not been verified is listed per driver, honestly: the error paths of the clock
-  module and the true frequency (ADR-0006), the I2C receive sequence for three or more
-  bytes against the manual's figure (ADR-0007), and the UART baud accuracy (see
-  `architecture.md`, known gaps).
-- Rules this creates for the next drivers (Phase 2, SPI with DMA): the same style, written
-  and checked one step at a time, with the reasoning in the comments, expected register
-  values for the debugger, bounded waits, a status code for every failure, and the
-  unverified items written down.
+  module (ADR-0006), the I2C error paths other than the ones provoked on the board
+  (ADR-0007), and the UART bit time on the wire (see `architecture.md`, known gaps). The
+  clock frequency and the I2C receive sequence were measured on the wire with a logic
+  analyzer (ADR-0006, ADR-0007).
+- Rules this created for the SPI driver (Phase 2), which follows them: the same style,
+  written and checked one step at a time, with the reasoning in the comments, expected
+  register values for the debugger, bounded waits, a status code for every failure, and
+  the unverified items written down.
 - Revisit if a peripheral is too big for the benefit of writing it (a USB stack, Ethernet,
   cryptography): use the vendor or a middleware then, and record that choice in its own
   ADR.

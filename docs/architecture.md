@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) work end to end on the board; Phases 3 and 4 not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a built image that was never booted; Phase 4 has not started
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -44,20 +44,29 @@ and the numbers are in **ADR-0010**.
   detects with the CRC, and the next frame is good.
 - The sensor failing travels in the frame: with SDA unplugged the Pi gets frames
   with status `NACK` and zeros, then `NO_READING`, then `OK` when it is back.
+- On the wire, with a logic analyzer (2026-10-20, `docs/captures/`): every BMP280 read
+  is START, `0xEC`, `0xF7`, repeated START, `0xED`, six bytes (ACK on the first five,
+  NACK on the last), STOP, 834 us (ADR-0007); the SPI frame is 112 clocks in mode 0 and
+  decodes with a valid CRC; SCK measured 1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4
+  and 6 MHz requested; NSS stays high 154 to 228 us between back-to-back reads, and
+  30000 such reads were good (ADR-0010). The CPU clock runs about 1.1% fast (ADR-0006).
 
-**What is not verified:** the SPI signals (the logic analyzer is working and has been
-used only on I2C so far: the cause of the NSS spikes, the real minimum gap between
-transactions, the re-arm time and the SPI clock are not measured, nor is the UART
-bit time); the first read after an idle time returns a stale frame (see the known gaps).
-The I2C read and the clock error (about 1.1% fast) are measured on the wire.
+**What is not verified:** the re-arm time (only an upper bound: the node was ready
+within the 154 us minimum gap of back-to-back reads); the cause of the firmware's NSS
+spikes (the analyzer showed spikes only with a probe wiring that disturbed the link);
+MOSI on the wire; the UART bit time (PA2 is not reachable on the headers, see below);
+the first read after an idle time returns a stale frame (see the known gaps).
+Measured on the wire (logic analyzer, 2026-10-20): the I2C read of the BMP280, the
+clock error (about 1.1% fast), the SPI frame (112 clocks, mode 0, valid CRC), the SCK
+frequency at 1 to 6 MHz and the gap between back-to-back reads.
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
 frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), fourteen ADRs (`docs/decisions/`), the
-test script `tools/spi_frame_test.py`, the README, this document, and two I2C captures
-(`docs/captures/`).
-**What does not exist:** the SPI, UART and NSS captures, and the running Linux side
-(Phase 3 has a built image that was never booted; Phase 4 has not started).
+test script `tools/spi_frame_test.py`, the README, this document, and the logic analyzer
+captures of the I2C and SPI links (`docs/captures/`).
+**What does not exist:** a UART capture, a measured re-arm time, and the running Linux
+side (Phase 3 has a built image that was never booted; Phase 4 has not started).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -194,15 +203,16 @@ firmware/stm32-sensor-node/FreeRTOS/
   deadline operations (clear ACK, ADDR, STOP) run in a short critical section.
   After a timeout, a bus error or a bus that stays busy the driver pulses
   `SWRST` and re-initialises I2C1 itself (counted by `i2c_recovery_count()`,
-  which nothing reads yet); the public functions assert that the scheduler has
+  which nothing reads); the public functions assert that the scheduler has
   started. **Verified on the board with the BMP280 at 0x76:** register write,
   chip ID 0x58, the 6-byte burst and the 24 trimming bytes; a missing sensor
   gives NACK without hanging; the sensor-disconnect test recovers by itself.
   Grounding SDA gave TIMEOUT on 2026-10-06 and NACK on 2026-10-08 (not
   investigated). **Limits:** no bus clear (a sensor holding SDA low is not
-  freed); the 3-or-more-byte receive sequence is from memory of RM0383 and has
-  not been compared with the manual's figure; the pull-ups of the breakout were
-  never measured. A sensor locked out by CSB needs a power cycle, which no I2C
+  freed); the pull-ups of the breakout were never measured. **Seen on the wire
+  (2026-10-20):** the 3-or-more-byte receive sequence gives ACK on every byte but the
+  last and NACK on the last, and SCL runs at a typical 101.1 kHz for the 100 kHz set.
+  A sensor locked out by CSB needs a power cycle, which no I2C
   driver can fix (see the BMP280 entry). Decisions (register API, 7-bit
   address, distinct error codes, tick-based bounded polling, critical section
   for the time-critical receive operations, single owner without mutex,
@@ -233,8 +243,9 @@ firmware/stm32-sensor-node/FreeRTOS/
   debugger, now printed every second, stable. With the sensor powered, a
   falling edge on CSB makes it answer NACK until its power is cycled, even
   after CSB goes back to 3.3 V (reproduced twice): CSB must be wired firmly to
-  3.3 V. The register layouts and codes are from memory of the datasheet and
-  have not been checked against its text. Decisions: ADR-0009.
+  3.3 V. The register layouts and codes were compared with the BMP280 datasheet
+  (2026-10-20) and match; the filter code is the one item its text does not list.
+  Decisions: ADR-0009.
 - `frame.c` / `frame.h`: the contract with the Pi. `frame_build()` writes a 14-byte
   frame byte by byte (little-endian, no struct): marker `0xA5`; status
   (`frame_status_t`: `OK`, `NO_READING`, `SENSOR_NACK`, `SENSOR_TIMEOUT`,
@@ -293,19 +304,24 @@ register-level drivers instead of using a vendor library is ADR-0008.
 
 ### Known gaps (real current state, not bugs)
 
-- **The SPI signals have not been measured.** The logic analyzer (a Raspberry Pi Pico
-  with sigrok-pico) works and has been used on I2C only (ADR-0006, ADR-0007): the clock
-  runs about 1.1% fast, so the "1 s" sensor period is 0.988 to 0.989 s. These are still
-  open: the real **minimum gap** between two SPI transactions (no failure was seen down
-  to back-to-back reads from Python, whose own overhead is probably 100 to 300
-  microseconds, not measured; a kernel driver or a C program may be much faster, so the
-  Phase 4 driver has to enforce a delay); the re-arm time; the SPI clock; the UART bit
-  time.
+- **What the logic analyzer (a Raspberry Pi Pico with sigrok-pico) showed on
+  2026-10-20** (ADR-0006, ADR-0007, ADR-0010): the clock runs about 1.1% fast, so the
+  "1 s" sensor period is 0.988 to 0.989 s; the SPI frame is 112 clocks in mode 0; SCK is
+  1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4 and 6 MHz requested (once 0.625 MHz for
+  1 MHz); the Pi adds one extra clock period between bytes. Back-to-back reads from
+  Python leave NSS high for 154 to 228 us (30 gaps), and 30000 such reads were all good.
+  Still open: the **re-arm time** itself (only the upper bound of 154 us); a kernel driver
+  or a C program may be much faster than Python, so the Phase 4 driver has to enforce a
+  delay; the UART bit time (PA2 is wired to the ST-LINK only: with the solder bridges at
+  their default, SB62 and SB63 open, the `D1` socket and the morpho pin do not carry it,
+  per the Nucleo-64 manual UM1724; I did not change the bridges).
 - **Spikes on NSS** (ADR-0010, decision 8): 7 in 3000 transactions in one run and 15
   in 1800 in the 30-minute run with the wires still (0.2% to 0.8%), many when the
   wires are moved. They are ignored by the
-  interrupt handler, but their cause is only suspected (long jumpers and a
-  breadboard in the path), not measured. Frames hit by a real loss of contact are
+  interrupt handler. The logic analyzer saw spikes of 50 ns on NSS exactly at SCK's
+  falling edge with a probe wiring that disturbed the link, and none in about 40 frames
+  with a clean wiring, so the cause of the counted spikes is still not settled (long
+  jumpers are the suspect). Frames hit by a real loss of contact are
   corrupted, and the CRC finds them; the next one is good.
 - **The first read after an idle time is stale.** The buffer is refilled right
   after each transaction and nothing refreshes it, so a Pi that has not read for a
@@ -314,25 +330,25 @@ register-level drivers instead of using a vendor library is ADR-0008.
   (read twice, or refresh the buffer between transactions).
 - The test master is the stock Raspberry Pi OS with Python `spidev`: a temporary
   jig (ADR-0010), not the final image.
-- The SPI `OVR` flag (received bytes are never read) has not been examined,
-  because nothing has gone wrong that it would explain.
+- The SPI `OVR` flag (received bytes are never read) is set and not cleared;
+  nothing has gone wrong that it would explain (30000 back-to-back reads were good).
 - **Stacks.** Measured on 2026-10-18 after 60 reads from the Pi, as lower bounds:
   sensor task 96 words peak of 256, transmit task 39 words of 128 (the placeholder
   path did not run, and the NACK paths were not exercised). Idle: at least 21 words
   actually written (the `0xA5` pattern said 14, but R4-R11 were saved with the fill
   value, so the pattern was forged by data), 128 words allocated (ADR-0005).
-- **Clock accuracy is that of the HSI (about 1%).** The timeout/error paths of
+- **Clock accuracy is that of the HSI: measured about 1.1% fast (ADR-0006).** The
+  timeout/error paths of
   `clock_init_84mhz()` have never been triggered. `SystemCoreClock` reports HCLK
   only: USART2 and I2C1 must use the 42 MHz APB1 clock.
 - `vApplicationGetTimerTaskMemory()` is NOT needed (`configUSE_TIMERS 0`).
-- The I2C driver has no bus clear (a sensor holding SDA low is not freed), its
-  3-or-more-byte receive sequence has not been compared with the manual's
-  figure, and nothing reads `i2c_recovery_count()`.
+- The I2C driver has no bus clear (a sensor holding SDA low is not freed), and
+  nothing reads `i2c_recovery_count()`.
 - The BMP280 can be locked out of I2C by a glitch on CSB until its power is
   cycled; the sensor task reports it and keeps trying, but only a power cycle
   fixes it.
-- `docs/captures/` has only a terminal screenshot. `docs/budget.md` still lists
-  the BMP280 as not purchased and has no figures for the new purchases.
+- `docs/captures/` holds the Phase 1 screenshot and the logic analyzer captures (its
+  README lists them). `docs/budget.md` is not updated with the real purchases.
 - There is no LICENSE file (a decision, not an oversight).
 
 ### Architecture decisions so far
@@ -444,43 +460,33 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 ## Where to continue
 
-### Phase 2: what is left
+### Phases 1 and 2: finished
 
-1. **The tests of the plan are done**: the long run and the aborted runs with
-   `tools/spi_frame_test.py` (ADR-0010) and the stack measurement (ADR-0005).
-2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware, read in
-   PulseView). Done: I2C (two captures in `docs/captures/`). Left, one capture session
-   per signal group because of the few jumper wires: the UART bit time (PA2 only); one
-   SPI frame (NSS, SCK, MISO, MOSI); the SPI clock at 1, 4 and 6 MHz; the gap between
-   transactions; the re-arm time (needs a marker pin in the firmware, to be decided);
-   and the spikes on NSS and their cause, before and after better wiring. The
-   captures go in `docs/captures/`; that is what Phase 2 promised.
-3. **Wiring**: shorter jumpers, the SPI wires direct between the Pi header and the
-   Nucleo (no breadboard in the path), a firm ground next to SCK. The counter
-   `ulNssGlitchCount` is the way to measure the improvement.
-4. **A quiz** on the SPI, DMA and re-arm material (the project rules ask for one
-   after a milestone).
-5. Update `docs/budget.md` with the real purchases (BMP280, the Pico, the USB-UART
-   adapter, the resistor kit).
+Phase 2 is closed. What was done: the long run and the aborted runs with
+`tools/spi_frame_test.py` (ADR-0010), the stack measurements (ADR-0005), and the logic
+analyzer captures of I2C and SPI (2026-10-20, `docs/captures/`). Open items that are
+accepted and not blocking:
 
-### Small leftovers (optional; none blocks Phase 3)
+- the re-arm time (only the 154 us upper bound; measuring it would need a marker pin in
+  the firmware);
+- the UART bit time (PA2 does not reach the headers with the default solder bridges;
+  the board was not modified);
+- whether the firmware's own NSS spikes are real (none were seen in about 40 frames
+  with a clean wiring);
+- the stale first read after an idle time, which the Phase 4 driver decides.
 
-- Compare the I2C 3-or-more-byte receive sequence with the RM0383 figure, and
-  check the BMP280 register descriptions in the code against the datasheet text
-  (the follow-ups of ADR-0007 and ADR-0009).
-- Learning checkpoints: quizzes done for the clock module, the UART and the I2C
-  driver (questions 1 to 7); not done yet for the formatter, the BMP280 module,
-  the sensor task, the FreeRTOS configuration, and the SPI link.
+Learning checkpoints: quizzes were done for the clock module, the UART and the I2C
+driver, and an interview-style question set on Phases 1 and 2 was answered and graded.
 
 ### Phases 3 and 4
 
 Phase 3: the image is built but has never been flashed or booted (see the next section).
-It is waiting for a microSD card and for the USB-to-UART adapter (3.3 V), which is on
-order: the serial console is the only way into this image (it has no SSH server), and it
-is how a custom image that does not boot is debugged. Phase 4 has not started. It has two
-requirements that come from Phase 2: the kernel driver must leave a minimum delay between SPI transfers, and it
-must decide what to do about the stale first read (read twice, or refresh the buffer
-on the node).
+The USB-to-UART adapter (3.3 V) and a microSD card are at hand; the next step is
+flashing and the first boot over the serial console, which is the only way into this
+image (it has no SSH server) and is how a custom image that does not boot is debugged.
+Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
+driver must leave a minimum delay between SPI transfers, and it must decide what to do
+about the stale first read (read twice, or refresh the buffer on the node).
 
 ## Gateway image (Phase 3: built, never booted)
 
@@ -559,10 +565,12 @@ Wi-Fi and SSH, SPI, and our own layer with a smaller image.
 
 ## Open questions / not yet decided
 
-- What produces the spikes on NSS (wiring is suspected; to be shown with the
-  analyzer).
+- What produces the spikes on NSS that the firmware counts (the analyzer showed that a
+  disturbing probe wiring creates spikes at SCK falling edges and a clean one none;
+  ADR-0010).
 - How to deal with the stale first read after an idle time (ADR-0010, consequences).
-- The real minimum gap between SPI transactions (to be measured).
+- The real re-arm time (only the 154 us minimum gap between back-to-back reads is
+  measured).
 - Whether the HSI accuracy stays good enough, or the clock moves to the ST-LINK's
   8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). Measured: about 1.1% fast
   (ADR-0006), which nothing in the project needs better than so far; to be decided
@@ -705,3 +713,9 @@ Wi-Fi and SSH, SPI, and our own layer with a smaller image.
   First captures, on I2C: the BMP280 read (address 0x76, register 0xF7, six bytes, ACK
   and NACK as expected, 834 us) and the clock: about 1.1% fast (SysTick period and SCL
   agree). Files in `docs/captures/`, results in ADR-0006, ADR-0007 and ADR-0009.
+- 2026-10-20: first SPI captures: the frame is 112 clocks in mode 0 with a valid CRC; SCK
+  1.000 / 2.000 / 3.997 / 5.88 MHz for 1 / 2 / 4 / 6 MHz requested; the Pi pauses one
+  extra clock between bytes; NSS stays high 154 to 228 us between back-to-back reads
+  (30000 such reads all good). NSS spikes on SCK falling edges appeared with a disturbing
+  probe wiring and not with a clean one. Re-arm time and UART bit time not measured.
+  Results in ADR-0010.

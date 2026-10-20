@@ -43,13 +43,12 @@ events) wakes a task, so all of them need the `...FromISR()` functions.
   kernel-unaware levels left over for an ISR that must never be delayed
   (e.g. precise timer capture). It is also the value used in ST's and
   FreeRTOS's own STM32 examples.
-- Cons: nothing today needs a kernel-unaware ISR, so levels 0-4 are unused
-  for now.
+- Cons: nothing needs a kernel-unaware ISR, so levels 0-4 are unused.
 
 ### Option B: threshold at level 1
 - How it works: only level 0 is kernel-unaware, levels 1-15 are kernel-aware.
 - Pros: the most levels for ISRs that use the kernel.
-- Cons: only one level for a time-critical ISR, and i only need a handful of
+- Cons: only one level for a time-critical ISR, and I only need a handful of
   kernel-aware levels, so this gains nothing.
 
 ### Option C: threshold at level 15
@@ -91,6 +90,9 @@ configMAX_SYSCALL_INTERRUPT_PRIORITY         5 << (8 - 4)   /* 0x50 */
   does not read it.
 - Task priorities are a separate system (higher number = more urgent) and
   are not related to these interrupt levels. Any interrupt preempts any task.
+- In use: the NSS interrupt of the SPI link (EXTI4) at level 6 and USART2 at level 10,
+  both checked at build time with a `_Static_assert` against this threshold
+  (`spi.c`, `uart.c`).
 
 ## Interview angle
 

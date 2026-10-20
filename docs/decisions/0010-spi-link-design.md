@@ -3,10 +3,11 @@
 **Status:** Accepted, and working end to end on the board (2026-10-14): the sensor task
 builds a frame every second, the NSS interrupt wakes the transmit task, which loads the
 newest frame and re-arms the DMA, and the Pi reads real frames with a valid CRC, one
-transaction after another (see "Verified on the board" and "Found on the board"). Still
-open: what produces the occasional extra NSS edges (a loose wire is suspected, never
-measured), the staleness of the first read after an idle time, and everything about the
-real signals (no logic analyzer yet).
+transaction after another (see "Verified on the board" and "Found on the board"). Checked
+on the wire with a logic analyzer on 2026-10-20 (see "Seen on the wire"): the frame, the
+SPI mode, the clock and the gap between reads. Still open: the re-arm time (only an upper
+bound), what produces the occasional extra NSS edges that the firmware counts, and the
+staleness of the first read after an idle time.
 **Date:** 2026-10-11
 **Phase:** 2
 
@@ -31,8 +32,9 @@ SPI has properties that shape everything below (RM0383, chapter 20):
 - the DMA is a second bus master that reads RAM by itself: a critical section or a mutex
   does not stop it.
 
-The sensor produces one reading per second (ADR-0009). The Pi's custom Linux image does
-not exist until Phase 3, and the logic analyzer is not purchased.
+The sensor produces one reading per second (ADR-0009). During Phase 2 the Pi runs the
+stock Raspberry Pi OS as a test jig; its custom Linux image is Phase 3. The logic
+analyzer is a Raspberry Pi Pico running the sigrok-pico firmware.
 
 ## Options considered
 
@@ -50,8 +52,8 @@ not exist until Phase 3, and the logic analyzer is not purchased.
 
 #### Option B: the STM32 is the master, the Pi is the slave
 - Pros: the STM32 decides when to send; plain normal-mode DMA.
-- Cons: as I understand it, mainline Linux support for the Pi's SPI controller as a slave
-  is thin or absent (not verified), and the Phase 4 kernel-driver plan would have to be
+- Cons: the Phase 4 plan is a Linux `spi_driver` for a device behind the Pi's SPI
+  controller, which is a master; with the Pi as the slave that plan would have to be
   reinvented.
 
 A build switch for both roles was not considered: it is generality nothing needs.
@@ -128,9 +130,9 @@ overlap probability is small (my estimate: about 3 x 10^-5 per reading, roughly 
   copy in `xQueueGenericSend` and `xQueuePeek` is inside `taskENTER_CRITICAL()`,
   `queue.c` lines 971 to 985 and 1908 to 1921 of the V11.3.1 source in the repository).
   The logic lives in a task, not in an ISR.
-- Cons: more latency than Option B (interrupt, context switch, copy, arm: my estimate is
-  tens of microseconds, not measured). That becomes a requirement on the Pi: a minimum
-  gap between transactions.
+- Cons: more latency than Option B (interrupt, context switch, copy, arm: estimated at
+  tens of microseconds; the logic analyzer showed the node ready within 154 us, see "Seen
+  on the wire"). That becomes a requirement on the Pi: a minimum gap between transactions.
 
 ### Decision 6: DMA mode and the re-arm trigger
 
@@ -269,8 +271,10 @@ Reading of it:
   rest is corruption of the bits themselves by a contact that opens and closes while the
   frame is clocked: nothing in the firmware can recover that frame (the SPI peripheral
   loses it too), and the CRC finds it. Each bad frame was followed by good ones.
-- Still open: what the spike is. A few hundred nanoseconds on a long jumper over a
-  breadboard is the suspect; it needs the logic analyzer to be shown.
+- What the spike is: the logic analyzer saw spikes of 50 ns on NSS, exactly on SCK
+  falling edges, with a probe wiring that disturbed the link, and none with a clean one
+  (see "Seen on the wire"). What produces the spikes that the firmware counts is not
+  settled.
 
 ## Decision
 
@@ -352,8 +356,9 @@ Reading of it:
   by the Pi, or by the STM32 through `NDTR`.
 - **Makes harder:**
   - the Pi side must respect a **minimum gap** between the end of one transaction and the
-    start of the next. I will write 1 ms into the Pi script and the Phase 4 driver; the
-    real re-arm time still has to be measured;
+    start of the next. The Pi script and the Phase 4 driver keep a gap (1 ms is the
+    conservative figure; with Python back to back NSS stays high 154 us at least, and
+    30000 such reads were good); the re-arm time itself was not measured;
   - the layout and the CRC variant must be identical in the STM32 code, the test script
     and the Phase 4 driver (the test vector exists for that);
   - the EXTI interrupt and its handler are at level 5 or a larger number (ADR-0004),
@@ -366,7 +371,7 @@ Reading of it:
   older than the newest one in the queue; **after an idle time it is as old as the idle
   time**: in the burst test the first read of a run returned a frame about a minute old
   (sequence 272, then 331 on the next read). The sequence number shows it, nothing else
-  does. Accepted for now, because a poller that reads every period never sees it. What
+  does. Accepted, because a poller that reads every period never sees it. What
   would remove it: the Pi discards the first frame of a run (read twice), or the node
   refreshes the buffer between transactions, which needs a safe way to know that no
   transaction is running. To decide when the Phase 4 driver is written.
@@ -376,16 +381,12 @@ Reading of it:
   re-arm therefore reads 14 times the same byte, and the marker rejects it (`0xA5`
   expected). The marker is not enough on its own, since the last byte could be `0xA5`
   for some frame; the CRC covers that case.
-- **Follow-up work:**
-  - done: the sensor task builds the frame and keeps the latest-frame queue filled;
-    `spi.c` (SPI1 slave, DMA2 stream 3, EXTI line 4); the transmit task, woken by the
-    NSS interrupt;
-  - to do: a public function in `spi.c` that stops the stream, copies a frame into
-    `ucDmaFrame` and reloads it; `sensor_task_latest_frame()`; the transmit task calling
-    both after each wake-up; its stack size measured (ADR-0005);
-  - `docs/architecture.md`, the task table (priority 2 stays), and the README list of
-    ADRs need the new entry when this is finished;
-  - buy the logic analyzer; nothing about the signals can be called verified without it.
+- **Built as a consequence:** the sensor task builds the frame and keeps the latest-frame
+  queue filled (`sensor_task_latest_frame()`); `spi.c` (SPI1 slave, DMA2 stream 3, EXTI
+  line 4, and `spi_load_frame()`, which stops the stream, copies a frame into the DMA
+  buffer and reloads it); the transmit task, woken by the NSS interrupt, which calls both
+  after each wake-up; its stack size measured (ADR-0005); `docs/architecture.md` and the
+  README list this ADR.
 
 ### Verified on the board (2026-10-13)
 
@@ -417,7 +418,7 @@ before Decision 8:
 
 | Test | Result |
 |---|---|
-| **minimum gap**: pause between reads 100, 10, 5, 2, 1, 0.5, 0.2, 0 ms | 200 good in every line but one: 1 ms had 1 bad (a bit-mix, `80 09 A9 40 ...`). No failure down to back-to-back reads. So the re-arm finishes within the time Python needs between two `xfer2` calls (probably 100 to 300 µs, **not measured**: the real minimum needs the analyzer). The "1 ms" of this ADR is a safe upper bound |
+| **minimum gap**: pause between reads 100, 10, 5, 2, 1, 0.5, 0.2, 0 ms | 200 good in every line but one: 1 ms had 1 bad (a bit-mix, `80 09 A9 40 ...`). No failure down to back-to-back reads. So the re-arm finishes within the time Python needs between two `xfer2` calls. Measured later with the logic analyzer: 154 to 228 µs (see "Seen on the wire"). The "1 ms" of this ADR is a safe upper bound |
 | **SPI clock**: 100 kHz, 500 kHz, 1, 2, 4, 6 MHz | all 200 good, apart from 1 bad at 1 MHz (the frame that was its first 7 bytes twice: a restart by a spike, see Decision 8). The slave keeps up to the 6 MHz limit (the controller rounds the requested clock) |
 | **first read of each run** | stale: sequence 111 then 269, 294 then 340 (the frame loaded at the end of the previous run). The staleness consequence, seen again |
 | **sensor unplugged** (SDA only) during polling | `status=NACK` with T=0 P=0, then `NO_READING`, then `OK` again; the sequence kept moving. Touching the wires while doing it produced bad SPI frames that recovered by themselves |
@@ -472,6 +473,43 @@ logic analyzer, with SCK and MISO in the same trace, is what can confirm it. It 
 an NSS problem: no extra end was counted, and the next transaction was good (a rise of
 NSS resets the slave's bit counter).
 
+### Seen on the wire (2026-10-20): the first logic analyzer captures of the SPI link
+
+A Raspberry Pi Pico with the sigrok-pico firmware, read in PulseView. Files and wiring:
+`docs/captures/README.md`. The Pi was the master (`tools/spi_frame_test.py`, mode 0); the
+Pico tapped NSS (`A2`, PA4), SCK (`D13`, PA5) and MISO (`D12`, PA6) at the Nucleo's
+Arduino sockets, without resistors. I decoded the files with a Python script that samples
+MISO on every SCK rising edge, as the node's SPI mode implies.
+
+| What | Result |
+|---|---|
+| frame on the wire | NSS low during **exactly 112 SCK clocks**; MISO sampled on the rising edge decodes to a valid frame (`A5 00 51 0C 51 08 00 00 7A 8E 01 00 2E 54`, CRC valid). This confirms SPI mode 0, the 14-byte frame and the marker. |
+| SCK, 1 MHz requested | 1.000 MHz in most captures; **625 kHz in one capture** (1.6 us per clock) with the same command. Hypothesis: the Pi's SPI clock source changes between 400 MHz and 250 MHz (the divider is chosen for one and the clock then runs at the other; 250/400 = 0.625) |
+| SCK, 2 / 4 / 6 MHz requested | **2.000 / 3.997 / 5.88 MHz** measured. 5.88 is 400 MHz / 68: the controller rounds the divider up to an even number; the 6 MHz limit holds. All frames good (5, 2 and 2 frames captured) |
+| pause between bytes | the Pi's controller adds **one extra clock period** between bytes (2 clock periods from the last rising edge of a byte to the first of the next), at every speed |
+| NSS low per frame | 143 to 148 us at 1 MHz (the 112 us of the estimate above did not include the pauses and the lead and tail), 80 us at 2 MHz, 48 us at 4 MHz, 23 us at 5.88 MHz |
+| NSS fall to first clock, last clock to NSS rise | 4 us and 19 us at 1 MHz; at 5.88 MHz 1.3 us and 0.8 us (the tail is about 16 us at 1 to 4 MHz and under 1 us at 5.88 MHz; the reason was not examined) |
+| **gap between transactions**, `poll --period 0` | NSS high **154 us minimum, 209 us typical, 228 us maximum** (30 gaps in one capture). 30000 back-to-back reads from the Pi: **30000 good, 0 shifted, 0 bad** (the only sequence jump is the stale first read). So the node is ready again within 154 us in the captured gaps; this is an upper bound on the re-arm, which is **not measured** |
+| 3000 reads at 5 ms with the probes connected (clean wiring) | 3000 good, 0 bad |
+
+**Spikes on NSS.** In two earlier captures, with the probe wiring of that moment (a MOSI
+probe wire only partly connected, the Pico's ground from elsewhere), NSS showed 12 and 36
+upward spikes, each **one sample (50 ns) wide and exactly on an SCK falling edge**, and the
+Pi saw bad frames while that wire was connected. In the five captures with the clean
+wiring (no MOSI probe, a short ground from the `GND` pin next to `D13`) there are **no
+spikes** in about 40 frames. What I conclude: the probe wiring can create spikes that line
+up with the falling edge of SCK (coupling or ground bounce). What I cannot conclude: whether
+the 7 in 3000 and 15 in 1800 that the firmware counted came from the same mechanism; 40
+frames cannot show an event of 0.5%. The cause of the firmware's spikes is still open.
+
+The three bad frames of the 30-minute run (reads 672, 1024, 1724) were not seen again; no
+other check was made on them.
+
+**The UART bit time could not be measured.** PA2 (USART2 TX) reaches only the ST-LINK on
+the Nucleo's default solder bridges (SB13 and SB14 closed, SB62 and SB63 open, UM1724):
+neither the Arduino `D1` socket nor the morpho pin carries it. Both were tried and read
+low on the analyzer, while Tera Term showed the output. The bridges were not changed.
+
 ### Found on the board (2026-10-14): the re-arm without priming `DR`
 
 | What | Result |
@@ -479,7 +517,7 @@ NSS resets the slave's bit counter).
 | after a reset, one 14-byte read, then `NDTR` | 13: the first re-arm served its request |
 | second read | a correct real frame (seq 10, 21.15 C, 1017.16 hPa, CRC valid) |
 | 50 reads, 1.1 s apart, no reset | reads 0 to 19 correct (the sequence `+1`, and `+2` when a sensor period fell between two reads); read 20 corrupted; reads 21 to 49 **all shifted by one byte** with the last byte missing: the failure of Decision 7 |
-| a single read, after a reset, in the same run of tests | **28** rising edges on NSS counted for one 14-byte read, and a frame with its first 4 bytes right and the rest wrong. The next tries (reads of 2, 7 and 14 bytes, reset between) counted exactly 1. Cause not known: a contact, or noise on the NSS wire, suspected; not shown |
+| a single read, after a reset, in the same run of tests | **28** rising edges on NSS counted for one 14-byte read, and a frame with its first 4 bytes right and the rest wrong. The next tries (reads of 2, 7 and 14 bytes, reset between) counted exactly 1. Cause not found: a contact or noise on the NSS wire |
 
 Option A of Decision 7 was written after these results. Its verification follows.
 
@@ -509,27 +547,37 @@ Two things follow from the burst:
   transaction, about a minute earlier. The sequence number shows it, but nothing else
   does. See the consequences.
 
-### Not verified (from memory, or open until tested on the board)
+### Not verified, or open
 
 - **What produces extra rising edges on NSS** during a transaction (read 20 of the first
   50-read test, and the episode of 28 edges). Moving the wire by hand reproduces
-  corrupted frames, which points at the contact or at noise, but nothing was measured on
-  the pin; the logic analyzer would show it. The check of the NSS level in the handler
-  (Decision 8) hides their effect, but it does not say what they are.
+  corrupted frames, which points at the contact or at noise. On 2026-10-20 the logic
+  analyzer showed spikes on NSS that line up with SCK falling edges, but only with a
+  probe wiring that disturbed the link; with a clean wiring there were none in about 40
+  frames (see "Seen on the wire"). Whether the firmware's own spike count has the same
+  cause is open. The check of the NSS level in the handler (Decision 8) hides their
+  effect, but it does not say what they are.
 
-- **`OVR` handling.** In transmit-only DMA use the received bytes are never read, so
-  `OVR` is set (p. 571); whether it must be cleared before re-arming (read `DR`, then
-  `SR`, p. 573) is not known. The `SR` value read after the first transaction (`0x0002`)
-  is not reliable: the debugger's Memory window reads a block that includes `SPI1->DR`,
-  and reading `DR` clears `RXNE`. A single-address read (a Watch cast) is needed.
-- **What a byte shifted halfway does when NSS rises early**: not found in the manual;
-  it decides whether the SPI must be disabled and enabled again on every re-arm.
-- **The timing estimates** (re-arm in tens of microseconds, torn-frame probability) are
-  mine, not measured.
-- **`crc_ccitt()` in the Linux kernel** (helpful for Phase 4): from memory.
-- **The claim that mainline Linux cannot be an SPI slave on the Pi's controller**
-  (Option B of Decision 1): from memory.
-- **Everything about the real signals:** no logic analyzer exists yet.
+- **`OVR`.** In transmit-only DMA use the received bytes are never read, so the `OVR`
+  flag is set (RM0383 p. 571). The code does not clear it, and no effect was seen:
+  30000 back-to-back reads and the 30-minute run were good. The `SR` value read after the
+  first transaction (`0x0002`) is not reliable, because the debugger's Memory window
+  reads a block that includes `SPI1->DR`, and reading `DR` clears `RXNE`.
+- **A byte shifted halfway when NSS rises early.** The reference manual does not say
+  what happens to it. Decision 7 does not depend on it: the CPU primes `DR` at every
+  re-arm, and the aborted and short transactions of the tests never left a frame shifted.
+- **The re-arm time and the torn-frame probability** were not measured (the estimate was
+  tens of microseconds). The logic analyzer gave an upper bound only: the node was ready
+  within the 154 us minimum gap of the captured back-to-back reads, and no torn frame
+  was seen in 30000 reads.
+- **MOSI** was not looked at on the wire: the script sends zeros, and a probe on it
+  disturbed the link.
+- **The three bad frames of the 30-minute run** (reads 672, 1024, 1724) were not seen
+  again.
+- **For Phase 4:** the kernel needs a CRC-16/CCITT-FALSE routine (polynomial 0x1021,
+  start value 0xFFFF, bits not reflected, no final XOR). The kernel's CRC helpers differ
+  in bit order and start value, so the one to use is chosen against the kernel source
+  and checked with the test vector in `frame.h`.
 
 ## Interview angle
 

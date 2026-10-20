@@ -112,7 +112,7 @@ map file).
 - How it works: shrink each stack to the smallest value that has not failed
   (e.g. Idle at 64 words).
 - Pros: saves RAM (256 B on Idle).
-- Cons: saves RAM i do not need to save, and removes the margin that covers
+- Cons: saves RAM I do not need to save, and removes the margin that covers
   paths not yet exercised and the under-reporting above.
 
 ## Decision

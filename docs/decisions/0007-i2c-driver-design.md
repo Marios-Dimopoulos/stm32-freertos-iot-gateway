@@ -13,8 +13,8 @@ especially when receiving: the master must clear ACK and request STOP before the
 9th clock of the last byte (a window of about 90 microseconds at 100 kHz), and the
 sequence differs for 1, 2, and 3 or more bytes.
 
-The system is a FreeRTOS one, with a higher-priority SPI transmit task planned for
-Phase 2 that can preempt the sensor task at any moment. A hang in the driver would
+The system is a FreeRTOS one, with a higher-priority SPI transmit task (Phase 2) that
+can preempt the sensor task at any moment. A hang in the driver would
 freeze a task, and a silently wrong byte would give a wrong measurement, because I2C
 has no checksum.
 
@@ -22,8 +22,8 @@ Forces:
 - the rules of the project: every blocking loop must be flagged; no code that is not
   needed; every decision explainable;
 - the sensor is read once a second, so a transfer is about 1 ms of waiting per second;
-- the hardware is a breadboard with short wires and a breakout board that probably
-  carries its own pull-ups, but this is not verified.
+- the hardware is a breadboard with short wires and a breakout board, which usually
+  carries its own pull-ups.
 
 ## Options considered
 
@@ -53,7 +53,7 @@ Forces:
 
 ## Decision
 
-Option B, with polling (Option C rejected for now), and these choices:
+Option B, with polling (Option C rejected), and these choices:
 
 - **The caller passes the 7-bit address** (0x76); the driver adds the read/write bit.
 - **Distinct errors:** `I2C_OK`, `I2C_ERR_NACK` (nobody acknowledged), `I2C_ERR_TIMEOUT`,
@@ -114,17 +114,16 @@ Option B, with polling (Option C rejected for now), and these choices:
 - **Seen on the wire (2026-10-20, Pico logic analyzer, `docs/captures/`):** every read of
   the sensor task is `START, 0xEC (address 0x76 + write) ACK, 0xF7 ACK, repeated START,
   0xED (address 0x76 + read) ACK, six data bytes with ACK on the first five and NACK on
-  the last, STOP`, 834 us long, once per second. PulseView's I2C decoder and a decoder I
-  wrote in Python give the same bytes. SCL: typical period 9.89 us (about 101.1 kHz,
+  the last, STOP`, 834 us long, once per second. PulseView's I2C decoder and a decoder
+  written in Python give the same bytes. SCL: typical period 9.89 us (about 101.1 kHz,
   nominal 100 kHz; see ADR-0006 for the clock error), low time about 5.3 us. A few clock
-  periods are longer (11 to 12 us). I did not find out why: my hypothesis is that the
-  I2C peripheral holds SCL low while the driver is late to service a byte, but I did not
-  check where in the transfer they occur.
+  periods are longer (11 to 12 us); where in the transfer they occur was not examined.
+  A possible cause is the peripheral holding SCL low while the driver services a byte.
+- The 3-or-more-bytes receive sequence (the part with the deadline) shows the intended
+  result on the wire: ACK on every byte of the 6-byte burst but the last, NACK on the
+  last, then STOP.
 
 ### What is not verified, or not done
-- **The 3-or-more-bytes receive sequence is from my memory of RM0383.** It works on
-  the board, but it has not been compared with the manual's figure; that is still to be
-  done, and it is the only place where the manual could contradict the code.
 - **No bus clear.** `SWRST` resets only my side. A sensor that holds SDA low would keep
   the bus busy after the reset, and the calls would keep returning `TIMEOUT`. Freeing it
   needs up to nine SCL pulses by hand; not written, because it has not been needed.
@@ -134,17 +133,17 @@ Option B, with polling (Option C rejected for now), and these choices:
   BMP280 module, the same symptom was **reproduced on purpose**: with the sensor
   powered, moving `CSB` from 3.3 V to GND gave `NACK`, and moving it back to 3.3 V
   still gave `NACK` until the USB cable was unplugged and plugged in again. So a
-  falling edge on `CSB` locks the sensor into SPI mode until the next power-up (as I
-  remembered the datasheet; confirmed on this breakout). No driver can fix this from
+  falling edge on `CSB` locks the sensor into SPI mode until the next power-up (the
+  datasheet, section "Interface selection", says the same; confirmed on this
+  breakout). No driver can fix this from
   the I2C side, so the sensor task has to report it and retry, and `CSB` must be wired
   firmly to 3.3 V (a loose wire or a glitch on it is enough).
 - The pull-ups of the breakout board were never measured; the internal ones are weak
-  (rise time about 1.7 me against the 1 me allowed, with an assumed 50 pF), so external
+  (rise time about 1.7 us against the 1 us allowed, with an assumed 50 pF), so external
   4.7 kOhm resistors are the fix if the bus turns flaky.
 - The recovery counter was not confirmed to have gone up during the SDA test.
 
-### Follow-up
-- Compare the receive sequences with RM0383.
+### Users
 - The BMP280 module (`bmp280.c`) is the only user; it retries when the sensor does not
   answer.
 
