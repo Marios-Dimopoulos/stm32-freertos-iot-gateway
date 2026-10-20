@@ -4,16 +4,20 @@
  * Steps, in the order they must run (RM0383, chapters "Reset and
  * clock control" and "Embedded Flash memory interface"):
  *
- *   a) FLASH->ACR   flash wait states = 2, prefetch + caches on, read back  <- DONE
- *   b) RCC->CFGR    bus prescalers: AHB /1, APB1 /2, APB2 /1               <- DONE
- *   c) RCC->PLLCFGR M = 8, N = 168, P = /4, source HSI (PLL still OFF)      <- DONE
- *   d) RCC->CR      PLLON, wait for PLLRDY (bounded wait)                   <- DONE
- *   e) RCC->CFGR    SW = PLL, wait for SWS = PLL (bounded wait)             <- DONE
+ *   a) FLASH->ACR   flash wait states = 2, prefetch + caches on, read back
+ *   b) RCC->CFGR    bus prescalers: AHB /1, APB1 /2, APB2 /1
+ *   c) RCC->PLLCFGR M = 8, N = 168, P = /4, source HSI (PLL still OFF)
+ *   d) RCC->CR      PLLON, wait for PLLRDY (bounded wait)
+ *   e) RCC->CFGR    SW = PLL, wait for SWS = PLL (bounded wait)
  *   f) main()       SystemCoreClockUpdate() reads the result
  *
  * Steps a) and b) deliberately come first: they are harmless at 16 MHz, and
  * doing them first means that the one dangerous moment, the switch in e),
  * happens with everything already prepared.
+ *
+ * Accuracy: the PLL multiplies the HSI, so the 84 MHz is only as exact as the
+ * HSI. Measured with a logic analyzer (ADR-0006), the clock runs about 1.1% fast
+ * on this chip: the 1000-tick sensor period lasts 988 to 989 ms.
  */
 
 #include "clock.h"
@@ -106,8 +110,8 @@ static clock_status_t prvFlashInit( void )
  * Why this step comes BEFORE the clock is raised: the prescalers apply to the
  * bus clock from the moment they are written. Setting APB1 to /2 first means
  * APB1 is 8 MHz now (16 / 2) and 42 MHz after the switch, and so never above
- * its limit, not even for a moment. Nothing uses APB1 yet (USART2 and I2C1
- * come later), so this changes nothing observable today. ST's HAL takes a
+ * its limit, not even for a moment. USART2 and I2C1 sit on APB1 and are enabled
+ * only after this step, so they never see an out-of-spec clock. ST's HAL takes a
  * more conservative route (it sets the highest dividers first and the final
  * ones after the switch); that is only needed when the final dividers could
  * be out of spec in the old state, which is not our case.
@@ -172,10 +176,10 @@ static void prvBusPrescalersInit( void )
  *                  as it is (reset value, a legal one), which is why the
  *                  register is changed with a read-modify-write.
  *
- * The PLL must be OFF when this register is written; writes while it runs
- * are ignored (as I understand the manual). After reset it is off, and step
- * d) turns it on only afterwards. The write is read back and compared, so an
- * ignored write is reported as an error instead of going unnoticed.
+ * The PLL must be OFF when this register is written. After reset it is off,
+ * and step d) turns it on only afterwards. The write is read back and
+ * compared, so a write that did not take effect is reported as an error
+ * instead of going unnoticed.
  *
  * Expected RCC->PLLCFGR afterwards (RCC base 0x40023800 + 0x04 = 0x40023804):
  * the low 20 bits must read 0x12A08, which decodes as
@@ -183,8 +187,8 @@ static void prvBusPrescalersInit( void )
  *   N = (0x12A08 >> 6) & 0x1FF    = 0x0A8 = 168
  *   P = (0x12A08 >> 16) & 3       = 01    -> /4
  *   PLLSRC (bit 22)               = 0     -> HSI
- * With the reset value I remember (0x24003010) the whole register would then
- * read 0x24012A08; the upper digits (PLLQ and a reserved bit) are not ours.
+ * Read on the board, the whole register is 0x24012A08; the upper digits (PLLQ
+ * and a reserved bit) keep their reset value and are not ours.
  */
 #define CLOCK_PLL_M            ( 8U )
 #define CLOCK_PLL_N            ( 168U )
@@ -193,7 +197,7 @@ static void prvBusPrescalersInit( void )
 /* The HSI frequency the PLL input is derived from. system_stm32f4xx.c has its
  * own HSI_VALUE with the same number, but that macro is private to that file
  * (it is not in any header), so the figure is repeated here. It is nominal:
- * the real HSI is only accurate to about 1%. */
+ * the real HSI of this chip measured about 1.1% fast (ADR-0006). */
 #define CLOCK_HSI_HZ           ( 16000000UL )
 
 #define CLOCK_PLL_VCO_IN_HZ    ( CLOCK_HSI_HZ / CLOCK_PLL_M )
@@ -249,16 +253,15 @@ static clock_status_t prvPllConfigure( void )
  * Why `|=` and not `=` on RCC->CR: this register also holds the HSI switch
  * (HSION), the HSI trim value and the other oscillators' bits. A plain
  * assignment of just PLLON would write 0 to HSION, i.e. try to switch off the
- * very oscillator we are running on. (As I understand the manual the hardware
- * refuses that while the HSI is the system clock, but we do not rely on it.)
- * The read-modify-write sets one bit and keeps the rest. The read-only
+ * very oscillator we are running on. The read-modify-write sets one bit and
+ * keeps the rest. The read-only
  * *RDY bits come back as ones in the read; writing them back is ignored.
  *
  * The wait is BOUNDED, like the flash read-back: a counter of loop passes, not
  * a real time (no timer exists yet; SysTick belongs to FreeRTOS and its
  * interrupt must not be touched before the scheduler starts). The PLL's lock
  * time is on the order of 100 microseconds. One pass is about 10 CPU cycles at 16 MHz (about
- * 0.6 microseconds, a rough estimate, not measured), so 10000 passes are
+ * 0.6 microseconds, an estimate), so 10000 passes are
  * roughly 6 ms: dozens of times the expected lock time. If it is still not
  * locked by then something is wrong, and waiting longer will not help; an
  * unbounded `while( !PLLRDY )` would instead freeze the board before the
@@ -266,8 +269,8 @@ static clock_status_t prvPllConfigure( void )
  *
  * On a timeout the PLL is switched off again, so the chip is left in a clean
  * state (HSI, PLL off, still fully working), and an error is returned. This
- * failure path is NOT tested yet: it needs a deliberately broken PLL, which
- * the build-time checks above make hard to produce.
+ * failure path has not been exercised on the board: it needs a deliberately
+ * broken PLL, which the build-time checks above make hard to produce.
  *
  * Expected RCC->CR afterwards (0x40023800): bits 25 and 24 set, plus the HSI
  * bits that were already there. Reset value is 0x00000083 (HSION, HSIRDY and
@@ -317,7 +320,7 @@ static clock_status_t prvPllStart( void )
  * does so without glitches, when the new clock is ready) and then reports it
  * in SWS. Until SWS reads "PLL", the CPU is still on the HSI. So after
  * writing SW we wait for SWS, with a bounded loop like the others (10000
- * passes, about 6 ms at 16 MHz by the rough estimate used above; the switch
+ * passes, about 6 ms at 16 MHz by the estimate used above; the switch
  * itself should take only a few clock cycles).
  *
  * After SWS confirms, instructions are being fetched at 84 MHz. That is the

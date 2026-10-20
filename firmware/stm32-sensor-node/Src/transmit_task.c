@@ -25,11 +25,16 @@
  *
  * WHY IT WAITS FOREVER (portMAX_DELAY). The rhythm of the system is the Pi's polling.
  * A timeout would only make sense if the task had something to do without a
- * transaction, and nothing needs that yet.
+ * transaction, and nothing needs that.
  *
  * PRIORITY 2, ABOVE THE SENSOR TASK (priority 1): the refill must finish before the
  * Pi's next chip select, so when the interrupt wakes this task it must run at once,
  * even if the sensor task is in the middle of an I2C transfer.
+ *
+ * HOW MUCH TIME IT HAS (logic analyzer, 2026-10-20, ADR-0010). With back-to-back reads
+ * from Python, NSS stays high for 154 us at the least (209 us typical) between two
+ * transactions, and 30000 such reads were all good, so the refill completes inside that
+ * time. The refill time itself was not measured.
  */
 
 #include "FreeRTOS.h"

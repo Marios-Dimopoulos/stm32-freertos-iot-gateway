@@ -46,7 +46,8 @@
  * in main() before the scheduler starts (the fault is then on the MSP), and again inside
  * a task (the fault is then on the PSP). Remove it afterwards. Then read xFaultRecord:
  * the PC is the address of that load, CFSR has the PRECISERR bit (bit 9) and BFARVALID
- * (bit 15), BFAR is 0x30000000, HFSR has FORCED (bit 30).
+ * (bit 15), BFAR is 0x30000000, HFSR has FORCED (bit 30). Done on the board with a
+ * deliberate bus fault: the record was as described here.
  */
 
 #include "stm32f4xx.h"

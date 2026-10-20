@@ -1,8 +1,7 @@
 /*
  * bmp280.c — Bosch BMP280 temperature and pressure sensor (I2C1, address 0x76).
  *
- * Design decisions (agreed before writing; to be recorded in an ADR when the module
- * is complete):
+ * Design decisions (ADR-0009):
  *   - NORMAL mode: the sensor measures continuously by itself and we read whenever
  *     we like (simpler than forced mode, and the IIR filter works best this way);
  *   - settings of the original reference code: temperature and pressure
@@ -18,15 +17,19 @@
  *   - ONE task owns the sensor (and the bus): no mutex, no handle, the state lives
  *     in this file.
  *
- * Steps, in the order they are built and checked on the board:
+ * Steps, in the order they were built and checked on the board:
  *
- *   1) soft reset, wait, chip ID                                        <- DONE
- *   2) read the 24 trimming bytes and unpack them                       <- DONE
- *   3) write config and ctrl_meas (no read-back)                        <- DONE
- *   4) the 6-byte burst and the two 20-bit raw values ("no data" check)  <- DONE
- *   5) temperature compensation                                          <- DONE
- *   6) pressure compensation                                             <- DONE
+ *   1) soft reset, wait, chip ID
+ *   2) read the 24 trimming bytes and unpack them
+ *   3) write config and ctrl_meas (no read-back)
+ *   4) the 6-byte burst and the two 20-bit raw values ("no data" check)
+ *   5) temperature compensation
+ *   6) pressure compensation
  *   7) status handling in the sensor task, and the formatter for the output
+ *
+ * On the wire (logic analyzer, 2026-10-20) every read is: START, 0xEC, 0xF7,
+ * repeated START, 0xED, six data bytes (ACK on the first five, NACK on the last),
+ * STOP, 834 us long, once per second.
  */
 
 #include "FreeRTOS.h"
@@ -173,7 +176,7 @@ static bmp280_status_t prvStatusFromI2cToBmp280( i2c_status_t xStatus )
  * How to check it on the board: a breakpoint at the end of bmp280_init() (inside
  * this file, because the variable is static), then watch xCalib and ucTrimming.
  *   - dig_T1 = ucTrimming[1] * 256 + ucTrimming[0], and so on for the others;
- *   - typical magnitudes (Bosch's example set, from memory; every chip differs):
+ *   - typical magnitudes (every chip differs):
  *     T1 about 27000, T2 about 26000, T3 a small negative number, P1 about 36000,
  *     P2 about -10000, P6 a small negative number, P9 about 6000;
  *   - all zeros or all -1 would mean the read did not do what we think; a negative
@@ -265,8 +268,8 @@ static void prvUnpackTrimming( const uint8_t * pucBytes )
  *     not on our once-a-second reads.
  *
  * THE ORDER: config FIRST, ctrl_meas SECOND. Writing mode = normal in ctrl_meas
- * starts the measurements, and as I remember the datasheet, writes to config can be
- * ignored while the sensor is in normal mode. The two registers are neighbours, but a
+ * starts the measurements, and the datasheet says that writes to config in normal
+ * mode may be ignored (in sleep mode they are not). The two registers are neighbours, but a
  * single two-byte write from 0xF4 would write ctrl_meas first, which is the wrong
  * order, so they are two separate one-byte writes.
  *
@@ -374,10 +377,11 @@ bmp280_status_t bmp280_init( void )
  *
  *   0xF7 press_msb  0xF8 press_lsb  0xF9 press_xlsb | 0xFA temp_msb  0xFB temp_lsb  0xFC temp_xlsb
  *
- * They are read in ONE transaction of 6 bytes. As I remember the datasheet, the
- * sensor freezes a copy of the result when the burst starts, so a measurement that
- * finishes in the middle of the read cannot give a new pressure with an old
- * temperature. Six separate reads would not have that guarantee.
+ * They are read in ONE transaction of 6 bytes. The datasheet (section "Data register
+ * shadowing") guarantees consistent data only for a single burst read: a measurement
+ * that finishes in the middle of the read is held back until the burst ends, so it
+ * cannot give a new pressure with an old temperature. Six separate reads would not
+ * have that guarantee.
  *
  * THE RAW VALUES. Each is 20 bits spread over three bytes; the lowest byte (xlsb)
  * only uses its UPPER 4 bits, hence the shift right by 4:
@@ -425,15 +429,14 @@ bmp280_status_t bmp280_init( void )
  * The two functions are PURE: they use only their arguments (the calibration is
  * passed in), so they can be tested without the sensor.
  *
- * How the formulas were checked: I transcribed them into Python (with C's integer
- * semantics) and fed them the example set that I remember from Bosch's datasheet
+ * How the formulas were checked: they were transcribed into Python (with C's integer
+ * semantics) and fed an example set of calibration values and raw readings
  * (dig_T1 27504, dig_T2 26435, dig_T3 -1000, dig_P1 36477, dig_P2 -10685, dig_P3 3024,
  * dig_P4 2855, dig_P5 140, dig_P6 -7, dig_P7 15500, dig_P8 -14600, dig_P9 6000,
- * adc_T 519888, adc_P 415148). Result: 2508 (25.08 C) and 100653.25 Pa, matching the
- * datasheet's 25.08 C and 100653.27 Pa to within 0.02 Pa; the example numbers are from
- * memory, and the C code itself has not been run on a PC. On the board: the
- * temperature must be a plausible room temperature, the pressure about 100 kPa at
- * low altitude, and a finger on the sensor must raise the temperature.
+ * adc_T 519888, adc_P 415148). Result: 2508 (25.08 C) and 100653.25 Pa. The C code
+ * itself was not run on a PC. On the board: the temperature is a plausible room
+ * temperature, the pressure about 100 kPa at low altitude, and the raw values on the
+ * I2C wire change slowly from one second to the next, as a live sensor should.
  */
 #define BMP280_REG_DATA            ( 0xF7U )
 #define BMP280_DATA_BYTES          ( 6U )

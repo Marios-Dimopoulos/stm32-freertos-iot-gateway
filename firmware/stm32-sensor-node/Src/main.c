@@ -95,7 +95,7 @@ int main( void )
     i2c_init();
 
     /* SPI1 as a slave towards the gateway (see spi.c): clock, pins PA4 to PA7 and the
-     * peripheral's configuration. It is left DISABLED: it will be enabled by the code
+     * peripheral's configuration. It is left DISABLED: it is enabled by the code
      * that arms the DMA, because a slave must have its data ready before the master's
      * first clock edge. Nothing happens on those pins until then. */
     spi_init();

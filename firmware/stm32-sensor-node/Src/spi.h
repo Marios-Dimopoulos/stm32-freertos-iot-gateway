@@ -3,7 +3,7 @@
  * data link of Phase 2 (ADR-0010).
  *
  * PA4 = NSS (chip select, from the Pi), PA5 = SCK (from the Pi), PA6 = MISO (our
- * output: the frame goes out here), PA7 = MOSI (from the Pi; nothing uses it yet).
+ * output: the frame goes out here), PA7 = MOSI (from the Pi; nothing uses it).
  */
 
 #ifndef SPI_H

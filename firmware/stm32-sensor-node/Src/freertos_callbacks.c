@@ -13,8 +13,8 @@
  *   vApplicationStackOverflowHook()  <- configCHECK_FOR_STACK_OVERFLOW 2
  *
  * Without them the project builds but FAILS AT THE LINK STEP with
- * "undefined symbol" errors. That is expected until this file is part of the
- * Keil project (group "Application").
+ * "undefined symbol" errors. This file is part of the Keil project (group
+ * "Application").
  *
  * Kept in its own file so main.c only contains application logic.
  */

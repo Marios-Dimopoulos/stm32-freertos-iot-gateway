@@ -14,7 +14,7 @@ typedef enum
     BMP280_ERR_TIMEOUT,     /* I2C: a hardware flag did not arrive in time (stuck bus) */
     BMP280_ERR_BUS,         /* I2C: bus error or arbitration lost */
     BMP280_ERR_ID,          /* the chip ID is not 0x58: another chip, or the sensor is not in I2C mode */
-    BMP280_ERR_NO_DATA      /* the data registers still hold the "no measurement yet" value (used from step 4) */
+    BMP280_ERR_NO_DATA      /* the data registers still hold the "no measurement yet" value (returned by bmp280_read) */
 } bmp280_status_t;
 
 /*

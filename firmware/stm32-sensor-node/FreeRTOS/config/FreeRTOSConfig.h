@@ -225,7 +225,7 @@ extern uint32_t SystemCoreClock;
  *     of every delay: 1 ms instead of 10 ms.
  *   - The cost is one SysTick interrupt per ms. When no task needs waking,
  *     the handler is short; the expected overhead is well under 1% of the
- *     CPU at 84 MHz (to be measured, not assumed, once the system runs).
+ *     CPU at 84 MHz (an estimate).
  *   - Lower tick rates mainly help battery-powered designs (fewer wakeups).
  *     This node is USB-powered.
  *
@@ -330,18 +330,17 @@ extern uint32_t SystemCoreClock;
  *                out whenever IT decides, so this task's deadline is imposed
  *                from outside and it must never wait behind other work.
  *   priority 1   Sensor task (Phase 1) — reads the BMP280 over I2C1 at a
- *                period i choose. Running a few ms late changes nothing
- *                (temperature/pressure do not move that fast). During
- *                bring-up it also prints readings over USART2; that blocking
- *                debug output can always be preempted by priority 2.
+ *                period I choose. Running a few ms late changes nothing
+ *                (temperature/pressure do not move that fast). It also prints
+ *                readings over USART2 (interrupt-driven, so it never waits for
+ *                the line); it can always be preempted by priority 2.
  *   priority 0   Idle task (created by the kernel).
  *
- * Why not more levels: no other task is planned. The MPU-6050 IMU was
+ * Why not more levels: there is no other task. The MPU-6050 IMU was
  * dropped from the design, and debug logging is done directly from the
  * sensor task (no dedicated logging task), so neither adds an urgency class.
- * Level 2 has no task until Phase 2; it is defined now because the transmit
- * task is a committed part of the plan and its priority relative to the
- * sensor task is already a justified design decision.
+ * Level 2 belongs to the transmit task; its priority relative to the
+ * sensor task is a justified design decision (ADR-0010).
  *
  * Changing this later is a one-line edit; nothing else depends on the exact
  * number. Upper limit: 32, because of
@@ -680,8 +679,9 @@ extern uint32_t SystemCoreClock;
  *
  * Alternatives considered:
  *   - Calling a function with __FILE__ / __LINE__ so the location can be
- *     printed: useful without a debugger, but there is no UART output yet.
- *     Upgrading later means changing only this macro.
+ *     printed: useful without a debugger, but an assert can fire where the
+ *     UART cannot work (interrupts are masked, or the UART is not initialised
+ *     yet). Adding it would mean changing only this macro.
  *   - A BKPT instruction: halts an attached debugger automatically, but
  *     with no debugger attached it escalates to a HardFault, disguising the
  *     assert as a different kind of crash.
@@ -689,7 +689,7 @@ extern uint32_t SystemCoreClock;
  * Production note: a shipped product must not hang forever. There, the
  * handler would record the failure and reset the device (typically via a
  * watchdog). For a development board with a debugger attached, freezing is
- * exactly what i want.
+ * exactly what I want.
  */
 #define configASSERT( x )    if( ( x ) == 0 ) { portDISABLE_INTERRUPTS(); for( ;; ); }
 

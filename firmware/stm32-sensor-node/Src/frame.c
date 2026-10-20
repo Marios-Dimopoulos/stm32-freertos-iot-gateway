@@ -5,7 +5,7 @@
  * WHY EVERY BYTE IS PLACED BY HAND AND NOT WITH A STRUCT. A C struct would be shorter,
  * but three things about it are decided by the compiler and not by us: the padding
  * between fields, the alignment, and the byte order in memory. The frame is a contract
- * with another machine (the Pi, and a kernel driver written later), so each byte goes
+ * with another machine (the Pi, and the kernel driver of Phase 4), so each byte goes
  * to a numbered position, least significant byte first. It is also the same layout on
  * any compiler and any chip.
  *

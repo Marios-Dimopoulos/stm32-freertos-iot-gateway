@@ -1,20 +1,24 @@
 /*
- * uart.c — USART2 driver (TX only for now).
+ * uart.c — USART2 driver (TX only).
  *
  * The USART2 peripheral shares the ST-LINK's virtual COM port: PA2 (TX) goes
  * to the ST-LINK chip, which forwards it over the USB cable to the PC, where
  * Tera Term shows it.
  *
- * Steps, in the order they are built and checked on the board:
+ * Steps, in the order they were built and checked on the board:
  *
- *   1) USART2 clock + PA2 as alternate function 7                   <- DONE
- *   2) baud rate (USART2->BRR) and enable (CR1: UE, TE)             <- DONE
- *   3) send one byte (wait for TXE, write DR)                       <- DONE
- *   4) interrupt-driven send with a ring buffer                      <- DONE
+ *   1) USART2 clock + PA2 as alternate function 7
+ *   2) baud rate (USART2->BRR) and enable (CR1: UE, TE)
+ *   3) send one byte (wait for TXE, write DR)
+ *   4) interrupt-driven send with a ring buffer
  *        4a) the buffer, the TX interrupt
- *        4b) whole-message write with a drop policy and a drop counter
- *   5) a small decimal formatter, no printf and no malloc           <- DONE
- * 
+ *        4b) whole-message write with a drop policy
+ *   5) a small decimal formatter, no printf and no malloc (format.c)
+ *
+ * The baud rate comes from the APB1 clock (42 MHz), which is about 1.1% fast (ADR-0006),
+ * so the real baud rate is roughly 1% above 115200: well inside what a UART tolerates.
+ * The bit time on the wire was not measured: PA2 reaches only the ST-LINK on the
+ * Nucleo's default solder bridges (SB62 and SB63 open), not the header pins.
  */
 
 #include "FreeRTOS.h"
@@ -82,8 +86,8 @@
  * disturbed). As with any configuration register, pin set-up belongs in one-time
  * initialisation, not in running tasks.
  *
- * Expected values afterwards (the reset values are quoted from memory of the
- * manual; only the bits of PA2 are ours):
+ * Expected values afterwards (the reset values are those of the GPIO and RCC register
+ * maps in RM0383; only the bits of PA2 are ours):
  *   RCC->APB1ENR   (0x40023840) bit 17 set         -> 0x00020000
  *   GPIOA->MODER   (0x40020000)                    -> 0xA8000020
  *     reset 0xA8000000 (PA13-PA15 as alternate function for SWD),
@@ -237,20 +241,19 @@ static void prvUartConfigure( void )
  * FreeRTOS line, level 5). Interrupts at level 5 or numerically higher are held
  * back for the few instructions of the section.
  *
- * WHO CALLS uart_write() TODAY: ONLY THE SENSOR TASK (sensor_task.c). The transmit task
- * never prints. (An earlier version of this comment said that the transmit task would
- * be a second caller; it is not.) That decides which of the reasons below is active:
+ * WHO CALLS uart_write(): ONLY THE SENSOR TASK (sensor_task.c). The transmit task
+ * never prints. That decides which of the reasons below is active:
  *
  *   1) THE SHARED CR1 REGISTER (the only race that exists with a single caller). The
  *      task sets TXEIE in USART2->CR1 and the ISR clears it; each is a
  *      read-modify-write, and CR1 is a register that both sides change, so an
- *      interrupt could split the task's update. My own analysis (not proven
- *      formally) is that this race is BENIGN here: the ISR only ever changes TXEIE,
+ *      interrupt could split the task's update. The analysis is that this race
+ *      is BENIGN here: the ISR only ever changes TXEIE,
  *      and a stale write can at worst leave TXEIE set once more than needed, which
  *      causes one extra interrupt that finds the buffer empty and turns it off
  *      again. The protection costs a few microseconds, so it is kept: a shared
  *      register is easier to defend when its updates are never split.
- *   2) TASK AGAINST TASK (does NOT happen today; the rule for any future second
+ *   2) TASK AGAINST TASK (does NOT happen; the rule for any second
  *      caller). If a second task ever called uart_write(), a higher-priority task
  *      could preempt a lower one at any instruction. Without the section: task A
  *      reads ulTxHead, task B preempts it, reads the SAME ulTxHead, copies its
@@ -265,7 +268,7 @@ static void prvUartConfigure( void )
  *
  * WHAT IT COSTS. While the section runs, every interrupt at level 5 or numerically
  * higher is held back: SysTick, and the NSS interrupt of the SPI link (level 6). The
- * copy takes about 10 cycles per byte (an estimate, not measured): a line of 38 to 52
+ * copy takes about 10 cycles per byte (an estimate): a line of 38 to 52
  * bytes about 5 to 6 microseconds, the longest possible message (256 bytes) about 30.
  * So the NSS handler can be late by that much. That is small next to the Pi's gap
  * between transactions, but it is delay added to a time-critical handler, and it is

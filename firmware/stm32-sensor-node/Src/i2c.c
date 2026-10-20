@@ -1,16 +1,21 @@
 /*
  * i2c.c — I2C1 master driver (BMP280 on PB8 = SCL, PB9 = SDA).
  *
- * Steps, in the order they are built and checked on the board:
+ * Steps, in the order they were built and checked on the board:
  *
- *   1) clocks, peripheral reset, pins (PB8/PB9 = AF4, open-drain)      <- DONE
- *   2) timing (CR2.FREQ, CCR, TRISE) and enable (CR1.PE)               <- DONE
- *   3) START + address, tell ACK from NACK, waits bounded by the RTOS tick       <- DONE
+ *   1) clocks, peripheral reset, pins (PB8/PB9 = AF4, open-drain)
+ *   2) timing (CR2.FREQ, CCR, TRISE) and enable (CR1.PE)
+ *   3) START + address, tell ACK from NACK, waits bounded by the RTOS tick
  *      (first exercised through a probe function, removed once write/read
  *      existed: every real transaction already reports a NACK itself)
- *   4) write to a register                                              <- DONE
- *   5) read from a register (1 byte, then N >= 3 bytes) -> chip ID 0x58   <- DONE
- *   6) error handling and recovery (the tick-based timeouts were done in step 3)   <- DONE
+ *   4) write to a register
+ *   5) read from a register (1 byte, then N >= 3 bytes) -> chip ID 0x58
+ *   6) error handling and recovery (the tick-based timeouts were done in step 3)
+ *
+ * Measured on the wire with a logic analyzer (2026-10-20, ADR-0007): SCL runs at a
+ * typical 101.1 kHz (mean 100.7 kHz) for the 100 kHz that is set. The clock is about
+ * 1.1% fast because the HSI is (ADR-0006); a few clock periods are longer (11 to 12
+ * us instead of 10).
  */
 
 #include "FreeRTOS.h"
@@ -30,12 +35,11 @@
  * ignored (an STM32F4 erratum). See uart.c.
  *
  * Peripheral reset. I2C1->CR1 bit SWRST puts the whole peripheral back to its
- * initial state; it must be set and then cleared again. As I understand the
- * reference manual, the I2C lines must be released and the bus free when the
- * reset bit is cleared, so the reset is done BEFORE the pins are handed to the
- * peripheral: at that point they are plain inputs (their reset state), and
- * nothing of ours drives them. This also leaves the peripheral in a known state
- * after a debugger reset in the middle of a transfer.
+ * initial state; it must be set and then cleared again. The reset is done
+ * BEFORE the pins are handed to the peripheral: at that point they are plain
+ * inputs (their reset state), so the lines are released and nothing of ours
+ * drives them while the peripheral is reset. This also leaves the peripheral in
+ * a known state after a debugger reset in the middle of a transfer.
  *
  * The pins. An I2C line is OPEN-DRAIN: a device can only pull the line low; it
  * never drives it high. A resistor to 3.3 V (a pull-up) lifts the line to 1 when
@@ -45,19 +49,19 @@
  *           actively drive the line high and fight with the slave).
  *   PUPDR   01 = internal pull-up ON, as a BACKUP. Most BMP280 breakout boards
  *           carry their own pull-ups (4.7-10 kOhm); in parallel with these the
- *           internal ones (about 40 kOhm, from memory) are harmless. If the board
+ *           internal ones (tens of kOhm) are harmless. If the board
  *           has none, they at least give the bus a chance to work, but they are
  *           weak: with about 50 pF of wiring the rise time would be about 1.7
  *           microseconds, against the 1 microsecond allowed in standard mode.
  *           If the bus is flaky, add external 4.7 kOhm resistors from SDA and
  *           SCL to 3.3 V.
  *   OSPEEDR 11 = very high. The speed setting shapes the FALLING edge of an
- *           open-drain output; the I2C specification limits the fall time, and
- *           ST's own examples use the highest setting for I2C pins (from memory).
- *           The rising edge is set by the pull-up, so there is no EMI concern.
+ *           open-drain output; the I2C specification limits the fall time, so the
+ *           highest setting is used. The rising edge is set by the pull-up, so
+ *           there is no EMI concern.
  *   AFR[1]  alternate function 4 = I2C1 on PB8 (bits 3:0) and PB9 (bits 7:4);
  *           pins 8-15 are in AFR[1] (AFR[0] has pins 0-7). From the alternate
- *           function table of the datasheet, as I remember it.
+ *           function table of the datasheet; the working bus confirms it.
  *   MODER   10 = alternate function: the pin is handed to the peripheral.
  *
  * ORDER matters: open-drain and the pull-up first, then the function number, and
@@ -71,8 +75,8 @@
  * Nothing is enabled yet: the peripheral is still off (PE = 0), so both lines
  * stay released.
  *
- * Expected values afterwards (reset values quoted from memory; only the bits of
- * PB8 and PB9 are ours):
+ * Expected values afterwards (the reset values are those of the GPIO and RCC
+ * register maps in RM0383; only the bits of PB8 and PB9 are ours):
  *   RCC->AHB1ENR     (0x40023830)  0x00000003   GPIOA + GPIOB clocks
  *   RCC->APB1ENR     (0x40023840)  0x00220000   USART2 (bit 17) + I2C1 (bit 21)
  *   GPIOB->MODER     (0x40020400)  0x000A0280   PB8, PB9 = 10 (reset 0x280: PB3, PB4)
@@ -565,7 +569,8 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
  * of the last byte. The window is about one byte time, roughly 90 microseconds at
  * 100 kHz. The sequence depends on how many bytes are read. The
  * one-byte case also matches the teacher's i2c_fixed.c, which wraps the same
- * operations in __disable_irq(). They are to be checked against the manual.
+ * operations in __disable_irq(). Seen on the wire (2026-10-20): ACK on every byte
+ * of the 6-byte burst but the last, NACK on the last, then STOP.
  *
  * N = 1 (the chip ID):
  *   after ADDR is set (the read address was acknowledged), and with the clock still
@@ -593,7 +598,8 @@ i2c_status_t i2c_write_reg( uint8_t ucDevice, uint8_t ucRegister,
  * transfer is not at risk from a preemption: if software is late reading a byte
  * (RXNE with BTF), the peripheral holds SCL low until DR is read.
  *
- * Expected results with the BMP280 (values from my memory of its datasheet):
+ * Expected results with the BMP280 (chip_id register and data register reset values
+ * of its datasheet):
  *   1 byte from 0xD0         0x58   (the chip ID)
  *   6 bytes from 0xF7        80 00 00 80 00 00 right after a reset (no measurement
  *                            yet: pressure and temperature "skipped" values)

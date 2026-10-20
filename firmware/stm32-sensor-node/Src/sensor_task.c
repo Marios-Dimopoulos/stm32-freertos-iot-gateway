@@ -73,12 +73,14 @@
  * would be destroyed if they were locals of main(): the scheduler resets the main
  * stack when it starts).
  *
- * Priority 1 is the level planned for the sensor task (priority 0 is Idle, priority 2
- * is reserved for the Phase 2 transmit task).
+ * Priority 1 is the sensor task's level (priority 0 is Idle, priority 2 is the
+ * transmit task).
  *
  * THE PERIOD. The sensor measures by itself many times per second (standby 0.5 ms,
  * x16 oversampling, IIR filter), so reading once per second is far from its limit,
- * and plenty for a slowly changing temperature and pressure.
+ * and plenty for a slowly changing temperature and pressure. The period is 1000 ticks
+ * of the 1 kHz tick; because the clock is about 1.1% fast (ADR-0006), a logic analyzer
+ * measured 988 to 989 ms from one read to the next.
  */
 #define SENSOR_TASK_STACK_WORDS      ( 256 )
 #define SENSOR_TASK_PRIORITY         ( 1 )
@@ -90,14 +92,14 @@ static StaticTask_t xSensorTaskTCB;
 /*
  * THE LATEST FRAME (ADR-0010). A queue of length 1 that holds the most recent frame.
  * Each period the task overwrites its content with xQueueOverwrite(), so it never fills
- * up and the task never waits. Whoever reads it (the transmit task, in a later step)
+ * up and the task never waits. Whoever reads it (the transmit task)
  * gets the newest frame, or the one before if a new one is not there yet, never a mix: the
  * kernel copies the item inside a critical section (queue.c), so a task that preempts
  * this one sees the old frame or the new one, not a half-written one.
  *
  * The task builds the frame in its own local array first and hands over the finished
- * frame with ONE call. The queue is private to this file: the readers will get an
- * accessor function with the transmit task, not the handle.
+ * frame with ONE call. The queue is private to this file: the readers get an
+ * accessor function, not the handle.
  *
  * With static allocation (ADR-0001) the queue's memory is ours: the kernel's record of
  * the queue (StaticQueue_t) and the storage for its items (length 1 x FRAME_SIZE bytes).

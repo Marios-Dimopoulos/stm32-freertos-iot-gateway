@@ -1,20 +1,26 @@
 /*
  * spi.c — SPI1 as a slave, towards the Raspberry Pi (ADR-0010).
  *
- * Steps, in the order they are built and checked on the board:
+ * Steps, in the order they were built and checked on the board:
  *
- *   1) clock, pins, SPI1 configured as a slave, left disabled        <- DONE
- *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled       <- DONE
+ *   1) clock, pins, SPI1 configured as a slave, left disabled
+ *   2) DMA2 stream 3 feeding SPI1->DR, armed once, SPI enabled
  *   3) re-arming after every transaction (EXTI on NSS + the transmit task)
- *        3a) the interrupt on NSS rising, counting                     <- DONE
- *        3b) the handler wakes the transmit task                       <- DONE
- *        3c) spi_load_frame(), and the task's real work                <- THIS STEP
+ *        3a) the interrupt on NSS rising, counting
+ *        3b) the handler wakes the transmit task
+ *        3c) spi_load_frame(), and the task's real work
  *
  * WHY A SLAVE. The Pi's Linux SPI driver (Phase 4) sits behind a master controller, so
  * the Pi clocks and the STM32 answers (ADR-0010, decision 1). In slave mode the clock
  * comes from the master, and the baud-rate bits BR[2:0] of CR1 do not affect the
  * transfer rate (RM0383 p. 555). The 6 MHz limit of the project is therefore enforced
  * on the Pi's side, not here.
+ *
+ * On the wire (logic analyzer, 2026-10-20, ADR-0010): NSS is low during exactly 112 SCK
+ * clocks, MISO is sampled on the rising edge (SPI mode 0), and the frame decodes with a
+ * valid CRC. The Pi's clock measured 1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4 and
+ * 6 MHz requested, so the limit holds. Between back-to-back reads from Python NSS stays
+ * high for 154 us at least; 30000 such reads were all good.
  */
 
 #include "FreeRTOS.h"
@@ -100,8 +106,9 @@
  *   SPI1->CR2      (0x40013004) -> 0x0002
  *   SPI1->SR       (0x40013008) -> 0x0002      TXE set (not meaningful while disabled)
  *
- * NOT KNOWN: what level MISO has while the pin is connected to SPI1 but the SPI is
- * disabled; I did not find it in the manual. Nothing is connected in this step.
+ * The level of MISO while SPI1 is disabled is not relied on: the Pi reads MISO only
+ * while NSS is low, and the SPI is enabled (spi_start) before the first transaction.
+ * On the wire MISO idles low between transactions.
  */
 #define SPI_PIN_ALTERNATE_FUNCTION    ( 5U )    /* AF5 = SPI1 on PA4..PA7 */
 
@@ -223,7 +230,7 @@ void spi_init( void )
  * THE CR VALUE (0x06020440 before EN, 0x06020441 with EN):
  *   CHSEL = 3        channel 3 = the SPI1_TX request line
  *   PL    = 10       priority "high". Only this stream is active, so it makes no
- *                    difference today; it is stated because this is the time-critical
+ *                    difference; it is stated because this is the time-critical
  *                    transfer of the system
  *   MSIZE = 00       memory item = 1 byte
  *   PSIZE = 00       peripheral item = 1 byte (SPI frames are 8 bits, DFF = 0)
@@ -231,7 +238,7 @@ void spi_init( void )
  *   PINC  = 0        the peripheral address stays: it is always SPI1->DR
  *   CIRC  = 0        NORMAL mode (see above)
  *   DIR   = 01       memory to peripheral
- *   TCIE, HTIE, TEIE, DMEIE = 0   no interrupts. The transmit task will be woken by the
+ *   TCIE, HTIE, TEIE, DMEIE = 0   no interrupts. The transmit task is woken by the
  *                    NSS edge (step 3), not by the DMA (ADR-0010, decision 6)
  * The stream is in DIRECT mode (the reset state of FCR, DMDIS = 0): each request moves
  * one item, no FIFO; nothing needs more.
@@ -246,9 +253,9 @@ void spi_init( void )
  * set, and the stream is already enabled for bytes 1 to 13.
  *
  * ONE BOUNDED WAIT, FLAGGED: waiting for EN to read 0 is a busy loop, limited to a
- * number of passes. Today the stream has just come out of reset, so EN is already 0
- * and the loop does not run; it matters for step 3, where the stream may be in the
- * middle of a transfer. If it ever times out the function reports it and changes
+ * number of passes. At start-up the stream has just come out of reset, so EN is already 0
+ * and the loop does not run; it matters for the re-arm (step 3), where the stream may
+ * be in the middle of a transfer. If it ever times out the function reports it and changes
  * nothing.
  *
  * Expected values after spi_start() (DMA2 base 0x40026400; stream 3 starts at +0x58):
@@ -383,7 +390,7 @@ static spi_status_t prvDmaReloadAndEnable( const uint8_t * pucFrame )
  *   NVIC          priority 6 THEN enable, never the other way (after reset every
  *                            interrupt is at level 0, above the FreeRTOS line, ADR-0004)
  *
- * PRIORITY 6. The handler will call a ...FromISR() function (the next piece), so it
+ * PRIORITY 6. The handler calls a ...FromISR() function (the transmit task's), so it
  * must be at level 5 or numerically higher (ADR-0004). 6 is just below the line: more
  * urgent than the UART (10), because the re-arm has to finish before the Pi's next
  * chip select. Checked at build time, as in uart.c.
@@ -415,8 +422,11 @@ static spi_status_t prvDmaReloadAndEnable( const uint8_t * pucFrame )
  * What it does not do: it does not remove the noise, and it does not help against a
  * spike that is still there when the handler looks, nor against a real loss of the
  * contact (then the SPI peripheral itself loses the frame, and the CRC finds it).
- * ulNssGlitchCount is also the instrument that tells how often it happens without a
- * logic analyzer.
+ * ulNssGlitchCount counts how often it happens (7 in 3000 and 15 in 1800 transactions
+ * in the long runs). The logic analyzer saw spikes of one sample (50 ns) on NSS exactly
+ * at SCK's falling edge with a probe wiring that disturbed the link, and none in about
+ * 40 frames with a clean wiring; whether the counted spikes have the same cause is not
+ * settled (ADR-0010).
  *
  * BEFORE THE SCHEDULER RUNS: the interrupt is enabled while the kernel's BASEPRI is
  * still raised (it is only lowered by the SVC handler that starts the first task, see
