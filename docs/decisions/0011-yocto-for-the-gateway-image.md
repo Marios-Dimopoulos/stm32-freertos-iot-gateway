@@ -82,8 +82,20 @@ would reach a booting Pi sooner; the speed was not the goal.
   example image on 4 cores. My image will be far smaller, and I raised WSL's memory from
   7.6 GB to 12 GB (`.wslconfig`), but running on WSL2 with 16 GB of RAM is a known risk:
   a slower build, or a build killed for lack of memory, would be recorded here.
-- Not verified: the build time and disk figures I have read ("hours", "tens of GB") are
-  from memory; I will record the real numbers after the first build.
+- Measured (build statistics in `tmp/buildstats` and `du`, read 2026-10-19), on 8 logical
+  CPUs with 12 GB of RAM given to WSL:
+  - First long run: 15112 s (**4 h 12 min**), 5281 task records, ended with the `perl`
+    quality-check failure (ADR-0014). The run that stopped on the Wi-Fi license (ADR-0013)
+    ended within seconds and has no record.
+  - Last run: 523 s (**8 min 43 s**); 5291 of 5695 tasks were reused from the cache.
+  - Disk: the build folder is **63 GB**: `tmp` 50 GB (47 GB of it `tmp/work`),
+    `downloads` 8.8 GB, `sstate-cache` 4.2 GB. The WSL disk had 874 GB free.
+  - Result: `core-image-base`, 2008 packages, a root filesystem folder of 142 MB, and a
+    compressed image (`.wic.bz2`) of 79 MB.
+  - No out-of-memory kill happened, so the WSL2 risk above did not materialise on this
+    build. The laptop was heavily loaded during the long run, which I did not measure.
+- Not verified: how long a build from scratch takes on a free machine (the 4 h 12 min was
+  one run with the laptop in use, and the cache was filling during it).
 - Follow-up: the first steps are the environment in WSL2, then a first minimal image that
   only has to boot (serial console, then Wi-Fi and ssh), with the choices of Yocto release,
   the `meta-raspberrypi` branch and the bootloader recorded in further ADRs as they come up.
