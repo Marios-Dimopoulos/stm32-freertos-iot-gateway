@@ -45,17 +45,19 @@ and the numbers are in **ADR-0010**.
 - The sensor failing travels in the frame: with SDA unplugged the Pi gets frames
   with status `NACK` and zeros, then `NO_READING`, then `OK` when it is back.
 
-**What is not verified:** nothing about the real signals (no logic analyzer in use
-yet: the cause of the NSS spikes, the real minimum gap between transactions and
-the true clock frequency are not measured); the first read after an idle time
-returns a stale frame (see the known gaps).
+**What is not verified:** the SPI signals (the logic analyzer is working and has been
+used only on I2C so far: the cause of the NSS spikes, the real minimum gap between
+transactions, the re-arm time and the SPI clock are not measured, nor is the UART
+bit time); the first read after an idle time returns a stale frame (see the known gaps).
+The I2C read and the clock error (about 1.1% fast) are measured on the wire.
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), twelve ADRs (`docs/decisions/`), the
-test script `tools/spi_frame_test.py`, the README, and this document.
-**What does not exist:** the logic analyzer captures (an analyzer is on order),
-and the whole Linux side (Phases 3 and 4).
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), fourteen ADRs (`docs/decisions/`), the
+test script `tools/spi_frame_test.py`, the README, this document, and two I2C captures
+(`docs/captures/`).
+**What does not exist:** the SPI, UART and NSS captures, and the running Linux side
+(Phase 3 has a built image that was never booted; Phase 4 has not started).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -291,13 +293,14 @@ register-level drivers instead of using a vendor library is ADR-0008.
 
 ### Known gaps (real current state, not bugs)
 
-- **Nothing about the real signals has been measured.** No logic analyzer has been
-  used yet (one is on order), so these are open: the true clock frequency (the
-  HSI is about 1% accurate); the real **minimum gap** between two SPI transactions
-  (no failure was seen down to back-to-back reads from Python, whose own overhead is
-  probably 100 to 300 microseconds, not measured; a kernel driver or a C program may
-  be much faster, so the Phase 4 driver has to enforce a delay); the re-arm time;
-  the 1 s sensor period (only checked by the lines in Tera Term).
+- **The SPI signals have not been measured.** The logic analyzer (a Raspberry Pi Pico
+  with sigrok-pico) works and has been used on I2C only (ADR-0006, ADR-0007): the clock
+  runs about 1.1% fast, so the "1 s" sensor period is 0.988 to 0.989 s. These are still
+  open: the real **minimum gap** between two SPI transactions (no failure was seen down
+  to back-to-back reads from Python, whose own overhead is probably 100 to 300
+  microseconds, not measured; a kernel driver or a C program may be much faster, so the
+  Phase 4 driver has to enforce a delay); the re-arm time; the SPI clock; the UART bit
+  time.
 - **Spikes on NSS** (ADR-0010, decision 8): 7 in 3000 transactions in one run and 15
   in 1800 in the 30-minute run with the wires still (0.2% to 0.8%), many when the
   wires are moved. They are ignored by the
@@ -354,9 +357,13 @@ register-level drivers instead of using a vendor library is ADR-0008.
   (decision 7); NSS spikes are ignored (decision 8).
 - ADR-0011: the gateway image is built with Yocto (not Buildroot): the industry standard,
   and its layers keep my driver and recipes separate from the Raspberry Pi support.
-  Phase 3 has started (decision only; nothing built yet).
+  Phase 3 has started.
 - ADR-0012: Yocto Wrynose 6.0 (LTS); BitBake 2.18, openembedded-core, meta-yocto and
   meta-raspberrypi cloned by hand into `~/yocto/` in WSL, outside the repo.
+- ADR-0013: the `synaptics-killswitch` license flag is accepted so that the Pi Zero 2 W's
+  Wi-Fi firmware is built into the image (the gateway needs Wi-Fi).
+- ADR-0014: the `buildpaths` quality check is switched off for the `perl` recipe only
+  (a workaround; the cause is not found; perl is not in the image).
 
 ## System design (implemented: this is what runs)
 
@@ -441,12 +448,13 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 1. **The tests of the plan are done**: the long run and the aborted runs with
    `tools/spi_frame_test.py` (ADR-0010) and the stack measurement (ADR-0005).
-2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware is on
-   order; PulseView on the PC). Capture NSS, SCK, MISO, MOSI, SCL, SDA and the
-   USART2 TX in one trace, triggered on NSS falling, to: see the spikes on NSS and
-   find their cause; measure the re-arm time and so the real minimum gap; check the
-   SPI clock; check the UART bit time against the HSI clock error. The captures
-   go in `docs/captures/`; that is what Phase 2 promised.
+2. **The logic analyzer** (a Raspberry Pi Pico with the sigrok-pico firmware, read in
+   PulseView). Done: I2C (two captures in `docs/captures/`). Left, one capture session
+   per signal group because of the few jumper wires: the UART bit time (PA2 only); one
+   SPI frame (NSS, SCK, MISO, MOSI); the SPI clock at 1, 4 and 6 MHz; the gap between
+   transactions; the re-arm time (needs a marker pin in the firmware, to be decided);
+   and the spikes on NSS and their cause, before and after better wiring. The
+   captures go in `docs/captures/`; that is what Phase 2 promised.
 3. **Wiring**: shorter jumpers, the SPI wires direct between the Pi header and the
    Nucleo (no breadboard in the path), a firm ground next to SCK. The counter
    `ulNssGlitchCount` is the way to measure the improvement.
@@ -466,14 +474,15 @@ transaction is detected on the NSS pin (ADR-0010, decision 6).
 
 ### Phases 3 and 4
 
-Not started. No decisions yet beyond the plan (Yocto or Buildroot is undecided). For
-Phase 3 a USB-to-UART adapter (3.3 V) is on order: the serial console is how a custom
-image that does not boot is debugged. Phase 4 has two requirements that come from
-Phase 2: the kernel driver must leave a minimum delay between SPI transfers, and it
+Phase 3: the image is built but has never been flashed or booted (see the next section).
+It is waiting for a microSD card and for the USB-to-UART adapter (3.3 V), which is on
+order: the serial console is the only way into this image (it has no SSH server), and it
+is how a custom image that does not boot is debugged. Phase 4 has not started. It has two
+requirements that come from Phase 2: the kernel driver must leave a minimum delay between SPI transfers, and it
 must decide what to do about the stale first read (read twice, or refresh the buffer
 on the node).
 
-## Gateway image (Phase 3, started; nothing built yet)
+## Gateway image (Phase 3: built, never booted)
 
 The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 24.04,
 12 GB of RAM given to WSL through `.wslconfig`). The repos are cloned by hand into
@@ -486,8 +495,67 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 | `meta-yocto` | `wrynose` | `7c25b11156553` | 2026-09-30 |
 | `meta-raspberrypi` | `wrynose` | `919588393f41` | 2026-10-10 |
 
-Next: the build configuration (`bblayers.conf`, `local.conf`) for the machine
-`raspberrypi0-2w-64`, then a first minimal image that only has to boot.
+### Build configuration
+
+The configuration lives in `~/yocto/build/conf/` in WSL and is **not in this repo yet**.
+`bblayers.conf` lists three layers: `openembedded-core/meta`, `meta-yocto/meta-poky` and
+`meta-raspberrypi`. `local.conf` adds, on top of the template:
+
+```
+MACHINE = "raspberrypi0-2w-64"
+DISTRO = "poky"
+ENABLE_UART = "1"
+IMAGE_FEATURES += "empty-root-password allow-empty-password allow-root-login"
+LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"       (ADR-0013)
+INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
+```
+
+### Build result (`bitbake core-image-base`, 2026-10-18)
+
+- First long run 4 h 12 min (ended on the perl check, ADR-0014); last run 8 min 43 s with
+  5291 of 5695 tasks reused from the cache. Build folder 63 GB. Details in ADR-0011.
+- Output in `build/tmp/deploy/images/raspberrypi0-2w-64/`: the image
+  `core-image-base-raspberrypi0-2w-64.rootfs.wic.bz2` (79 MB compressed) with a `.bmap`
+  file, the kernel (Linux 6.18.33), the device tree `bcm2710-rpi-zero-2.dtb` and
+  `bootfiles/`.
+
+### What is in the image
+
+Read from the package manifest (2008 packages), the root filesystem folder (142 MB) and
+the boot files in `deploy/`, **not** from a running board:
+
+- Boot partition (FAT): the Pi firmware, `config.txt`, `cmdline.txt`, the kernel and the
+  device tree. `ENABLE_UART = "1"` produced `enable_uart=1` in `config.txt` and
+  `console=serial0,115200` in `cmdline.txt`. `cmdline.txt` also has
+  `root=/dev/mmcblk0p2 rootfstype=ext4 rootwait`.
+- Root partition (ext4): busybox (provides `ls` and the other basic commands; there is no
+  `coreutils`), **sysvinit** as init (no systemd), `wpa-supplicant`, `iw`, the Wi-Fi firmware
+  `linux-firmware-rpidistro-bcm43436`, and the kernel modules (including `spidev`).
+- `/etc/inittab` starts a login prompt on `ttyS0` at 115200 baud. With the empty root
+  password, `root` logs in without a password.
+- Not in the image: an SSH server (neither OpenSSH nor Dropbear), perl, systemd.
+
+### Not verified / known problems
+
+- The image has never been flashed or booted. Whether `serial0` (in `cmdline.txt`) and
+  `ttyS0` (in `inittab`) are the same port on this image is not checked; the first boot
+  will show it.
+- Wi-Fi: the tools and the firmware are there, but no network name or password is
+  configured (`/etc/wpa_supplicant.conf` exists; I did not read it) and there is no SSH
+  server, so the image cannot be reached over the network yet.
+- SPI is not enabled for the board: `ENABLE_SPI_BUS` is not set and no device-tree entry
+  exists for our device (needed for Phase 4).
+- The empty root password is a development shortcut and must be removed before the image
+  is final.
+- `perl` is built although it is not in the image; why is not known (ADR-0014).
+- The image carries things a headless sensor gateway does not need: graphics and audio
+  lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`, `dtparam=audio=on`) and the services
+  `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono` and `neard` in `/etc/init.d`.
+- There is no layer of our own yet, and `local.conf` and `bblayers.conf` are not in the
+  repo, so the build cannot yet be reproduced from this repo alone.
+
+Next: microSD card and USB-UART adapter, flash, first boot over the serial console; then
+Wi-Fi and SSH, SPI, and our own layer with a smaller image.
 
 ## Open questions / not yet decided
 
@@ -495,10 +563,11 @@ Next: the build configuration (`bblayers.conf`, `local.conf`) for the machine
   analyzer).
 - How to deal with the stale first read after an idle time (ADR-0010, consequences).
 - The real minimum gap between SPI transactions (to be measured).
-- Whether the HSI accuracy (about 1%) stays good enough, or the clock moves to
-  the ST-LINK's 8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). To be
-  decided after the real frequency has been measured (logic analyzer and the
-  MCO pin).
+- Whether the HSI accuracy stays good enough, or the clock moves to the ST-LINK's
+  8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). Measured: about 1.1% fast
+  (ADR-0006), which nothing in the project needs better than so far; to be decided
+  again if a precise timestamp or USB is ever needed, and checked against the UART
+  bit time.
 - Whether a bus clear is ever needed in the I2C driver (only if a sensor is
   seen holding SDA low).
 
@@ -627,3 +696,12 @@ Next: the build configuration (`bblayers.conf`, `local.conf`) for the machine
 - 2026-10-18: Phase 3 started: ADR-0011 chooses Yocto for the gateway image. Nothing built yet.
 - 2026-10-18: ADR-0012: Yocto release (Wrynose) and how the layers are fetched. Nothing built yet.
 - 2026-10-18: the four Yocto repos cloned in WSL (commits in the Gateway image section).
+- 2026-10-18: first `bitbake core-image-base` stopped on the Wi-Fi firmware license; ADR-0013 accepts it. Build started.
+- 2026-10-18: the first long build run (4 h 12 min) failed the `buildpaths` check on `perl`;
+  ADR-0014 skips that one check for that one recipe.
+- 2026-10-18: `bitbake core-image-base` finished: image of 2008 packages, 79 MB compressed,
+  build folder 63 GB. Never flashed or booted. Build figures recorded in ADR-0011.
+- 2026-10-20: the Pico logic analyzer works (sigrok-pico firmware, PulseView nightly).
+  First captures, on I2C: the BMP280 read (address 0x76, register 0xF7, six bytes, ACK
+  and NACK as expected, 834 us) and the clock: about 1.1% fast (SysTick period and SCL
+  agree). Files in `docs/captures/`, results in ADR-0006, ADR-0007 and ADR-0009.

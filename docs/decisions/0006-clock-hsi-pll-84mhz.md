@@ -112,10 +112,21 @@ Design rules of the module:
   `RCC->CR` with `PLLON` and `PLLRDY` set, `RCC->CFGR` = `0x0000100A`
   (`SWS` = PLL), `SystemCoreClock` = 84,000,000, SysTick `LOAD` = 83,999, and
   the blink still about 1 s by eye.
-- **Not verified:** the true frequency measured outside the chip (no logic
-  analyzer yet; the MCO pin could output the clock for that), and the timeout
-  and error paths, which were never triggered (a broken PLL is hard to produce
-  on purpose, and the build-time checks make it harder).
+- **Measured outside the chip (2026-10-20, Pico logic analyzer, `docs/captures/`):**
+  the clock runs about **1.1% fast**. Two measurements, both derived from the same
+  PLL, agree: the sensor task, which waits 1000 ticks (`SENSOR_PERIOD_MS`), starts a
+  BMP280 read every 988.36 ms in one capture and 989.38 ms in another (+1.16% and
+  +1.07%); and the I2C clock, set for 100 kHz (CCR = 210 at 42 MHz), has a typical
+  period of 9.89 us (about 101.1 kHz, +1.1%). The mean SCL period is 9.92 to 9.93 us
+  (+0.7 to +0.8%) because a few clock periods are longer (11 to 12 us). The two sessions
+  differ by 0.1%; the HSI is known to drift with temperature, but I did not test that.
+  This is at the edge of the "about 1%" of the datasheet figure quoted above.
+  Assumption: the Pico's sample clock is accurate (it runs from a crystal; I did not
+  check the firmware's real sample rate).
+- **Not verified:** the frequency measured on the clock itself (the MCO pin could output
+  it), the UART bit time (planned), and the timeout and error paths, which were never
+  triggered (a broken PLL is hard to produce on purpose, and the build-time checks make
+  it harder).
 - A request withdrawn at the exact moment the hardware completes the switch is
   a race that has not been analysed.
 - If the project ever moves to HSE: define `HSE_VALUE=8000000`, enable

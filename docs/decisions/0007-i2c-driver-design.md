@@ -111,6 +111,16 @@ Option B, with polling (Option C rejected for now), and these choices:
   reproduced again: CSB to GND while running gives `NACK`, and putting it back to
   3.3 V still gives `NACK` until the USB cable is unplugged.
 
+- **Seen on the wire (2026-10-20, Pico logic analyzer, `docs/captures/`):** every read of
+  the sensor task is `START, 0xEC (address 0x76 + write) ACK, 0xF7 ACK, repeated START,
+  0xED (address 0x76 + read) ACK, six data bytes with ACK on the first five and NACK on
+  the last, STOP`, 834 us long, once per second. PulseView's I2C decoder and a decoder I
+  wrote in Python give the same bytes. SCL: typical period 9.89 us (about 101.1 kHz,
+  nominal 100 kHz; see ADR-0006 for the clock error), low time about 5.3 us. A few clock
+  periods are longer (11 to 12 us). I did not find out why: my hypothesis is that the
+  I2C peripheral holds SCL low while the driver is late to service a byte, but I did not
+  check where in the transfer they occur.
+
 ### What is not verified, or not done
 - **The 3-or-more-bytes receive sequence is from my memory of RM0383.** It works on
   the board, but it has not been compared with the manual's figure; that is still to be

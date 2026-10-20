@@ -116,6 +116,12 @@ defend than a table of cases that nothing has shown to be needed.
   CSB at GND, and recovery after reconnection.
 - The formulas, transcribed into Python with C's integer rules, reproduce the example
   values I remember from Bosch's datasheet (25.08 C and 100653 Pa).
+- On the wire (2026-10-20, logic analyzer): the burst read starts at register 0xF7 and
+  returns six bytes; the raw pressure (20 bits) and temperature (20 bits), decoded from
+  them by hand, change slowly from one second to the next (pressure about 348234 to
+  348281, temperature about 510082 to 510159), as a live sensor should. The order of the
+  six bytes (pressure first) is as I remember it from the datasheet; I did not check the
+  text.
 
 ### What is not verified, or not done
 - **The register layouts and the codes are from my memory of the datasheet** (the field
