@@ -116,6 +116,10 @@ considered, the one I chose and why, and what I did not verify.
 | 0008 | Own register-level drivers instead of a vendor library |
 | 0009 | BMP280 module: normal mode, integer results, initialise again after every error |
 | 0010 | The SPI link: the Pi as master, a fixed frame with CRC-16, a one-slot latest-frame queue, a transmit task re-arming a normal-mode DMA on the NSS edge; the CPU primes the data register; NSS spikes ignored |
+| 0011 | Yocto for the gateway image, not Buildroot and not the stock Raspberry Pi OS |
+| 0012 | Yocto Wrynose (6.0, LTS), with the layers cloned by hand |
+| 0013 | Accept the `synaptics-killswitch` license flag to get the Wi-Fi firmware |
+| 0014 | Skip the `buildpaths` quality check for the `perl` recipe (a workaround; the cause is not found) |
 
 ## Hardware
 

@@ -18,15 +18,11 @@ Arduino sockets: D2 = NSS (`A2`, PA4), D3 = SCK (`D13`, PA5), D4 = MISO (`D12`, 
 probe wire on it disturbed the link (frames went bad while it was connected). In the clean
 captures the Pico's GND came from the `GND` pin next to `D13`.
 
-Samples: PulseView was asked for 500 k samples but the Pico delivered about 220 k (11 ms at
-20 MHz, 3.7 ms at 60 MHz). The reason was not investigated.
-
 | File | Date | What | Settings |
 |---|---|---|---|
 | `phase1-terminal-output.png` | Phase 1 | Tera Term output of the sensor task | not a capture |
-| `i2c_bmp280_1MHz_5s.sr` | 2026-10-20 | Five BMP280 reads, one per second, no Pi connected | D2 = SCL (PB8), D3 = SDA (PB9); 1 MHz; 5 M samples (5 s); no trigger |
-| `i2c_bmp280_5MHz_1transaction.sr` | 2026-10-20 | One BMP280 read in detail | same channels; 5 MHz; 500 k samples (100 ms); trigger: falling edge on D3; 10% pre-capture |
-
+| `i2c_bmp280_5s.sr` | 2026-10-20 | Five BMP280 reads, one per second, no Pi connected | D2 = SCL (PB8), D3 = SDA (PB9); 1 MHz; 5 M samples (5 s); no trigger |
+| `i2c_bmp280_1transaction.sr` | 2026-10-20 | One BMP280 read in detail | same channels; 5 MHz; 500 k samples (100 ms); trigger: falling edge on D3; 10% pre-capture |
 | `spi_1MHz_clean_3probes.sr` | 2026-10-20 | Two frames, 1 MHz, the clean wiring: no spikes on NSS | D2 NSS, D3 SCK, D4 MISO; 20 MHz; no trigger; Pi: `poll --count 3000 --period 0.005` |
 | `spi_1MHz_probe_spikes.sr` | 2026-10-20 | One frame with 12 spikes on NSS (a similar file, not kept, had 36). Each is one sample (50 ns) wide and on an SCK falling edge. The wiring was an earlier layout: a MOSI probe wire only partly connected, the Pico's ground from elsewhere. Cause not shown; it is the probe wiring that changed between this file and the clean one | same settings; D5 also enabled but not connected |
 | `spi_1MHz_request_625kHz.sr` | 2026-10-20 | Two frames at 625 kHz although 1 MHz was requested (the Pi's SPI clock changed); no spikes | same settings; during this run the MOSI and MISO probe wires had been swapped, as I understood from the session |
