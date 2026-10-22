@@ -59,9 +59,9 @@ as a workaround, not a fix. Options B and C stay open as follow-ups.
 ## Consequences
 
 - Makes easier: the image builds; every other recipe still has the `buildpaths` check.
-- Makes harder: the line in `local.conf` can be forgotten. It currently has no comment;
-  one that points to this ADR still has to be added there (and in the copy of `local.conf`
-  that goes into this repo).
+- Makes harder: the line in `local.conf` can be forgotten. (Updated 2026-10-22: the line
+  now has a comment in the real file and a comment that points to this ADR in the copy in
+  `linux-gateway/conf/local.conf`.)
 - Not verified: why `perl` is built; why `config.h` is regenerated; that the
   image is identical when built in another folder.
 - Follow-up: (1) read the dependency graph and record what needs `perl` (option B);

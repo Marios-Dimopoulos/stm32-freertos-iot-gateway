@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that booted once on the board (serial login works, no network, no SPI); Phase 4 has not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that boots and can be reached over Wi-Fi and SSH (no SPI yet); Phase 4 has not started
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -62,12 +62,12 @@ frequency at 1 to 6 MHz and the gap between back-to-back reads.
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), fourteen ADRs (`docs/decisions/`), the
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), fifteen ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, this document, and the logic analyzer
 captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
-part of the pipeline (the Phase 3 image boots and gives a serial login, but has no
-network and no SPI; Phase 4 has not started).
+part of the pipeline (the Phase 3 image boots, joins Wi-Fi when told to and accepts SSH
+logins, but has no SPI; Phase 4 has not started).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -381,6 +381,9 @@ register-level drivers instead of using a vendor library is ADR-0008.
   Wi-Fi firmware is built into the image (the gateway needs Wi-Fi).
 - ADR-0014: the `buildpaths` quality check is switched off for the `perl` recipe only
   (a workaround; the cause is not found; perl is not in the image).
+- ADR-0015: the Wi-Fi network is typed on the board for now (the password stays out of the
+  repo and the build) and OpenSSH is the SSH server; it also records the first OpenSSH build
+  that shipped seven 0-byte programs.
 
 ## System design (implemented: this is what runs)
 
@@ -481,15 +484,15 @@ driver, and an interview-style question set on Phases 1 and 2 was answered and g
 
 ### Phases 3 and 4
 
-Phase 3: the image is built, flashed and has booted once on the board to a root login on
-the serial console (see the next section). The serial console is still the only way into
-it (no SSH server, no network configured). The next steps are Wi-Fi and SSH, SPI, and a
-smaller image.
+Phase 3: the image is built, flashed and boots on the board to a root login on the serial
+console (see the next section). Wi-Fi is typed by hand on the board and does not start
+at boot, so the serial console is still needed after a reboot; once Wi-Fi is up, SSH
+works. The next steps are Wi-Fi at boot (a layer of my own), SPI, and a smaller image.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
 
-## Gateway image (Phase 3: built, booted once on the board)
+## Gateway image (Phase 3: built, booted, reachable over Wi-Fi and SSH)
 
 The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 24.04,
 12 GB of RAM given to WSL through `.wslconfig`). The repos are cloned by hand into
@@ -506,7 +509,7 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
-active lines with my comments (the 19 active lines were compared with the real file and
+active lines with my comments (the 20 active lines were compared with the real file and
 are identical). `bblayers.conf` lists three layers: `openembedded-core/meta`, `meta-yocto/meta-poky` and
 `meta-raspberrypi`. `local.conf` adds, on top of the template:
 
@@ -517,6 +520,7 @@ ENABLE_UART = "1"
 IMAGE_FEATURES += "empty-root-password allow-empty-password allow-root-login"
 LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"       (ADR-0013)
 INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
+IMAGE_FEATURES += "ssh-server-openssh"                (ADR-0015, added 2026-10-22)
 ```
 
 ### Build result (`bitbake core-image-base`, 2026-10-18)
@@ -527,6 +531,10 @@ INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
   `core-image-base-raspberrypi0-2w-64.rootfs.wic.bz2` (79 MB compressed) with a `.bmap`
   file, the kernel (Linux 6.18.33), the device tree `bcm2710-rpi-zero-2.dtb` and
   `bootfiles/`.
+- 2026-10-22: second build with `ssh-server-openssh` (ADR-0015): 2015 packages, 80.7 MB
+  compressed. The first run of it had seven 0-byte OpenSSH programs in the image; a forced
+  `bitbake -f -c install openssh` and a new `bitbake core-image-base` fixed it (ADR-0015).
+  The image flashed for the SSH test is `...rootfs-20261022155006.wic.bz2`.
 
 ### What is in the image
 
@@ -543,7 +551,16 @@ the boot files in `deploy/` (the first boot below checked part of it on the boar
   `linux-firmware-rpidistro-bcm43436`, and the kernel modules (including `spidev`).
 - `/etc/inittab` starts a login prompt on `ttyS0` at 115200 baud. With the empty root
   password, `root` logs in without a password.
-- Not in the image: an SSH server (neither OpenSSH nor Dropbear), perl, systemd.
+- The first image (2008 packages) had no SSH server; the current one (2015 packages) has
+  OpenSSH (ADR-0015). Not in the image: perl, systemd, and a package manager (no `rpm`, `dnf`,
+  `opkg` or `apt` in the manifest), so every change to the software is a rebuild and a new flash.
+- On the board, `/etc/fstab` ends with `/dev/mmcblk0p1  /boot  vfat  defaults  0  0`. That
+  line is not in the `rootfs/` folder of the build: it is added when the image is made. So
+  partition 1 **is mounted** on `/boot`, read-write. It holds `kernel8.img` (27,052,544 bytes,
+  the same size as the kernel `Image` of the build), the firmware files (all variants of
+  `start*.elf` and `fixup*.dat`, of which this board uses `start.elf` and `fixup.dat`),
+  `config.txt`, `cmdline.txt`, the `.dtb` and `overlays/`. The files read from the board
+  match the ones in `deploy/bootfiles/`.
 
 ### First boot (2026-10-21)
 
@@ -565,9 +582,10 @@ What the boot log shows (times are the kernel's, in seconds):
   root=/dev/mmcblk0p2 rootfstype=ext4 rootwait net.ifnames=0`, after options added by the
   firmware (`coherent_pool`, `8250.nr_uarts=1`, `smsc95xx.macaddr`, `vc_mem.*` and others).
   **The console is `ttyS0`** (the mini UART, `3f215040`), and `/etc/inittab` starts the login
-  on `ttyS0`: **they are the same port.** The `console=serial0` I had read in `deploy/` was
-  not what the kernel received. My hypothesis, not verified, is that the firmware replaces
-  `serial0` by the real port; I did not read the `cmdline.txt` inside the partition.
+  on `ttyS0`: **they are the same port.** The `cmdline.txt` inside partition 1 (read later
+  on the board) says `console=serial0,115200`, and the kernel received `ttyS0`. So the
+  firmware replaces `serial0` by the real port: I did not watch it do that, but nothing else
+  sits between the file and the kernel.
 - Root filesystem: `Waiting for root device /dev/mmcblk0p2` at 3.869 (`rootwait`), the SD
   card found at 3.946, `mmcblk0: p1 p2` at 3.958, ext4 mounted **read-only** at 4.029,
   `Run /sbin/init` at 4.060, remounted read-write at 11.643.
@@ -576,20 +594,62 @@ What the boot log shows (times are the kernel's, in seconds):
 - No U-Boot output before `Booting Linux`, and `RPI_USE_U_BOOT` is not set: the Pi firmware
   loads the kernel directly.
 - Wi-Fi: the `brcmfmac` driver loaded the chip firmware (`BCM43430/2`, version 9.88.4.77) and
-  the Bluetooth chip got its patch. No connection was made.
+  the Bluetooth chip got its patch. No connection was made at that boot (see "Wi-Fi and SSH").
 - Memory: 154,540K of 458,752K available, because 256 MiB are reserved as a CMA pool (for the
   GPU/camera). The clock after boot was `Mar 9 2018` (no battery clock, no network time).
 - Messages that did not stop the boot, causes not investigated: `/usr/bin/psplash: not
   found` (`S00psplash.sh`), `ip: SIOCGIFFLAGS: No such device` twice during network start,
   `dbus: Unknown username "pipewire"`, `brcmf_c_process_txcap_blob: no txcap_blob available`.
 
+### Wi-Fi and SSH (2026-10-22, ADR-0015)
+
+**Wi-Fi, typed on the board** over the serial console. The image has `wpa_supplicant` 2.11,
+`iw` and the busybox DHCP client. `wlan0` is in `/etc/network/interfaces` but is **not**
+`auto`, and `/etc/wpa_supplicant.conf` held only a placeholder. I wrote the file with the
+header lines and `country=GR`, added the network with `wpa_passphrase` (the password typed at
+its prompt; the plain-text comment line it writes is deleted), and ran `ifup wlan0`. Results:
+
+- The scan listed the network and about 13 others, all on 2.4 GHz (2412 to 2462 MHz); mine on
+  2462 MHz (channel 11), signal -34 dBm, receive rate 65 Mbit/s.
+- DHCP gave `192.168.1.4/24` from the router `192.168.1.1`, lease 86,400 s; default route via
+  the router; DNS added from the lease.
+- `ping 192.168.1.1`: 3 of 3, about 5.7 ms. `ping 1.1.1.1`: 3 of 3, about 15 ms. `ping
+  example.com` resolved a name and answered.
+- Warnings: the hook starts `wpa_supplicant` with the old `wext` interface
+  (`wpa-driver wext`); the kernel warned that wireless extensions will stop working for newer
+  hardware, and `wpa_supplicant` printed `ioctl[SIOCSIWENCODEEXT]: Invalid argument` twice.
+  The connection worked; I do not know what the two errors affected.
+- The settings stay across reboots but a reflash erases them, and `wlan0` does not start at
+  boot: after every boot I need the serial console and `ifup wlan0`.
+
+**SSH.** `IMAGE_FEATURES += "ssh-server-openssh"` adds OpenSSH 10.3p1 (`sshd`, `ssh`, `scp`,
+`sftp-server`, `ssh-keygen`; 7 more packages). `sshd_config` has `PermitRootLogin yes` and
+`PermitEmptyPasswords yes` (from the two `allow-*` features), so I set a root password with
+`passwd` after every flash. `S09sshd` starts the server at boot.
+
+**The first OpenSSH image did not work.** `ssh` to the Pi answered `Connection refused`; on
+the board there was no `sshd` process, no host keys and no log line. A trace of
+`/etc/init.d/sshd start` showed that the script exits silently after `test -x
+/usr/sbin/sshd`. In the build, `/usr/sbin/sshd` and six more programs were 0 bytes in the
+`image/` folder of the openssh recipe, while the compiled programs in its source folder were
+complete. The details and my hypothesis (a race in a parallel `make install`, not proven)
+are in ADR-0015. `bitbake -f -c install openssh` and a new `bitbake core-image-base` gave
+complete files (package 654,588 bytes instead of 29,913), and an SSH login from Windows then
+worked.
+
 ### Not verified / known problems
 
-- The `cmdline.txt` and the kernel file name inside partition 1 were not read on the board.
-  They can be read by mounting the partition read-only on the Pi.
-- Wi-Fi: the tools and the firmware are there, but no network name or password is
-  configured (`/etc/wpa_supplicant.conf` exists; I did not read it) and there is no SSH
-  server, so the image cannot be reached over the network yet.
+- I did not compare the SSH host key fingerprint on the board with the one the client
+  showed, and I did not log in with the name `raspberrypi0-2w-64.local` (the error type
+  suggests it resolved).
+- The cause of the 0-byte OpenSSH programs is a hypothesis; I also cannot explain why
+  `test -x /usr/sbin/sshd` was false on the board for an empty file with the executable bit.
+  After every build I should look for zero-byte files in the root filesystem folder.
+- The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
+  `defaults`: a power cut during a write there could corrupt it. For the final image it should
+  be read-only or not mounted.
+- Wi-Fi is typed by hand, does not start at boot, and the SSH server accepts an empty root
+  password (a password is set by hand after each flash); keys are not set up.
 - SPI is not enabled for the board: `ENABLE_SPI_BUS` is not set and no device-tree entry
   exists for our device (needed for Phase 4).
 - The empty root password is a development shortcut and must be removed before the image
@@ -602,7 +662,8 @@ What the boot log shows (times are the kernel's, in seconds):
   `linux-gateway/conf/`, but I have not tried a rebuild from an empty folder with them.
   `bblayers.conf` has absolute paths (`/home/mariosdimopoulos/yocto/...`).
 
-Next: Wi-Fi and SSH, SPI, and our own layer with a smaller image.
+Next: Wi-Fi at boot and `nl80211` (a layer of my own), SPI, a smaller image without the
+empty root password, and SSH keys.
 
 ## Open questions / not yet decided
 
@@ -766,3 +827,9 @@ Next: Wi-Fi and SSH, SPI, and our own layer with a smaller image.
   received). Details in "First boot" in the Gateway image section.
 - 2026-10-21: the Yocto configuration copied into `linux-gateway/conf/` (committed on
   2026-10-22).
+- 2026-10-22: Wi-Fi typed on the board and working (association, DHCP, routing, DNS); the
+  boot partition read on the board (`kernel8.img`, mounted on `/boot` through a line that
+  `wic` adds to `/etc/fstab`); the `serial0`/`ttyS0` question closed.
+- 2026-10-22: OpenSSH added (`ssh-server-openssh`). The first build shipped seven 0-byte
+  programs, the init script exited silently and SSH answered `Connection refused`; a forced
+  reinstall of `openssh` fixed it and an SSH login from Windows worked. ADR-0015.

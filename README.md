@@ -7,9 +7,10 @@ The next step is a custom-built Linux image on the Pi, where a kernel driver han
 the data to an MQTT publisher.
 
 **Status: Phases 1 and 2 work on the board.** The Pi (running the stock Raspberry Pi
-OS as a temporary test jig) reads a valid frame every second. The Phase 3 image has booted
-once on the board (serial login only). **Still to come: Wi-Fi and SSH, SPI and a smaller
-image for Phase 3, and Phase 4.** The logic analyzer captures of
+OS as a temporary test jig) reads a valid frame every second. The Phase 3 image boots on the
+board and I can log in over Wi-Fi and SSH (the Wi-Fi is typed by hand and does not start at
+boot yet). **Still to come: Wi-Fi at boot, SPI and a smaller image for Phase 3, and Phase 4.**
+The logic analyzer captures of
 Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it
 honest: what is verified, and what is not.
@@ -121,6 +122,7 @@ considered, the one I chose and why, and what I did not verify.
 | 0012 | Yocto Wrynose (6.0, LTS), with the layers cloned by hand |
 | 0013 | Accept the `synaptics-killswitch` license flag to get the Wi-Fi firmware |
 | 0014 | Skip the `buildpaths` quality check for the `perl` recipe (a workaround; the cause is not found) |
+| 0015 | Wi-Fi typed on the board for now, OpenSSH as the SSH server, and the first OpenSSH build that shipped seven 0-byte programs |
 
 ## Hardware
 
@@ -214,7 +216,7 @@ poll 1000000 Hz           good    10  shifted    0  bad    0  seq-jumps   1  [OK
 |---|---|---|
 | 1 | Hardware and RTOS: I2C driver, BMP280, FreeRTOS with static allocation | Working on the board |
 | 2 | SPI + DMA transfer to the gateway, checked with a logic analyzer | Working and checked on the wire; the re-arm time and the UART bit time are not measured |
-| 3 | Custom minimal Linux image for the Raspberry Pi Zero 2 W (Yocto, ADR-0011) | The image builds (2008 packages, 79 MB compressed) and boots to a root login on the serial console; no network and no SPI yet |
+| 3 | Custom minimal Linux image for the Raspberry Pi Zero 2 W (Yocto, ADR-0011) | The image builds (2008 packages, 79 MB compressed) and boots; Wi-Fi (typed by hand) and SSH work; no SPI yet |
 | 4 | Linux kernel SPI driver, Device Tree overlay, MQTT publishing | Not started |
 
 Practices that belong to the later phases (a custom Linux image, a kernel driver
