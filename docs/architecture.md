@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a built image that was never booted; Phase 4 has not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that booted once on the board (serial login works, no network, no SPI); Phase 4 has not started
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -65,8 +65,9 @@ FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format
 frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), fourteen ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, this document, and the logic analyzer
 captures of the I2C and SPI links (`docs/captures/`).
-**What does not exist:** a UART capture, a measured re-arm time, and the running Linux
-side (Phase 3 has a built image that was never booted; Phase 4 has not started).
+**What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
+part of the pipeline (the Phase 3 image boots and gives a serial login, but has no
+network and no SPI; Phase 4 has not started).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -480,15 +481,15 @@ driver, and an interview-style question set on Phases 1 and 2 was answered and g
 
 ### Phases 3 and 4
 
-Phase 3: the image is built but has never been flashed or booted (see the next section).
-The USB-to-UART adapter (3.3 V) and a microSD card are at hand; the next step is
-flashing and the first boot over the serial console, which is the only way into this
-image (it has no SSH server) and is how a custom image that does not boot is debugged.
+Phase 3: the image is built, flashed and has booted once on the board to a root login on
+the serial console (see the next section). The serial console is still the only way into
+it (no SSH server, no network configured). The next steps are Wi-Fi and SSH, SPI, and a
+smaller image.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
 
-## Gateway image (Phase 3: built, never booted)
+## Gateway image (Phase 3: built, booted once on the board)
 
 The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 24.04,
 12 GB of RAM given to WSL through `.wslconfig`). The repos are cloned by hand into
@@ -503,8 +504,10 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 
 ### Build configuration
 
-The configuration lives in `~/yocto/build/conf/` in WSL and is **not in this repo yet**.
-`bblayers.conf` lists three layers: `openembedded-core/meta`, `meta-yocto/meta-poky` and
+The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
+`linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
+active lines with my comments (the 19 active lines were compared with the real file and
+are identical). `bblayers.conf` lists three layers: `openembedded-core/meta`, `meta-yocto/meta-poky` and
 `meta-raspberrypi`. `local.conf` adds, on top of the template:
 
 ```
@@ -528,12 +531,13 @@ INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
 ### What is in the image
 
 Read from the package manifest (2008 packages), the root filesystem folder (142 MB) and
-the boot files in `deploy/`, **not** from a running board:
+the boot files in `deploy/` (the first boot below checked part of it on the board):
 
 - Boot partition (FAT): the Pi firmware, `config.txt`, `cmdline.txt`, the kernel and the
   device tree. `ENABLE_UART = "1"` produced `enable_uart=1` in `config.txt` and
-  `console=serial0,115200` in `cmdline.txt`. `cmdline.txt` also has
-  `root=/dev/mmcblk0p2 rootfstype=ext4 rootwait`.
+  `console=serial0,115200` in the `cmdline.txt` of `deploy/bootfiles/`. That is **not** what
+  the kernel received: its command line had `console=ttyS0,115200` (see "First boot").
+  `cmdline.txt` also has `root=/dev/mmcblk0p2 rootfstype=ext4 rootwait`.
 - Root partition (ext4): busybox (provides `ls` and the other basic commands; there is no
   `coreutils`), **sysvinit** as init (no systemd), `wpa-supplicant`, `iw`, the Wi-Fi firmware
   `linux-firmware-rpidistro-bcm43436`, and the kernel modules (including `spidev`).
@@ -541,11 +545,48 @@ the boot files in `deploy/`, **not** from a running board:
   password, `root` logs in without a password.
 - Not in the image: an SSH server (neither OpenSSH nor Dropbear), perl, systemd.
 
+### First boot (2026-10-21)
+
+Flashing: the image was decompressed from the `.wic.bz2` to `gateway.wic` (380 MiB, MBR
+table; partition 1 FAT32 of 130 MiB from sector 8192, partition 2 Linux of 244 MiB from
+sector 278528) and written to a 32 GB microSD with Raspberry Pi Imager ("Use custom",
+without its customisation settings). Windows then showed the two partitions with the same
+sizes as `fdisk` on the image (136,314,880 and 256,271,360 bytes).
+
+Console: an FT232 USB-UART adapter, with its jumper on VCCIO-3V3 (3.3 V signals), on header
+pins 6 (GND), 8 (Pi TX) and 10 (Pi RX); Tera Term at 115200, 8 data bits, no parity, 1 stop
+bit.
+
+What the boot log shows (times are the kernel's, in seconds):
+
+- Kernel `6.18.33-v8`, built with `aarch64-poky-linux-gcc 15.3.0`; machine model
+  "Raspberry Pi Zero 2 W Rev 1.0" (from the device tree); 4 CPUs.
+- The kernel's command line ended with `dwc_otg.lpm_enable=0 console=ttyS0,115200
+  root=/dev/mmcblk0p2 rootfstype=ext4 rootwait net.ifnames=0`, after options added by the
+  firmware (`coherent_pool`, `8250.nr_uarts=1`, `smsc95xx.macaddr`, `vc_mem.*` and others).
+  **The console is `ttyS0`** (the mini UART, `3f215040`), and `/etc/inittab` starts the login
+  on `ttyS0`: **they are the same port.** The `console=serial0` I had read in `deploy/` was
+  not what the kernel received. My hypothesis, not verified, is that the firmware replaces
+  `serial0` by the real port; I did not read the `cmdline.txt` inside the partition.
+- Root filesystem: `Waiting for root device /dev/mmcblk0p2` at 3.869 (`rootwait`), the SD
+  card found at 3.946, `mmcblk0: p1 p2` at 3.958, ext4 mounted **read-only** at 4.029,
+  `Run /sbin/init` at 4.060, remounted read-write at 11.643.
+- `INIT: version 3.14` (sysvinit); login prompt about 13 s after the kernel started; `root`
+  logs in without a password and gets a busybox shell. The banner says Poky 6.0.4.
+- No U-Boot output before `Booting Linux`, and `RPI_USE_U_BOOT` is not set: the Pi firmware
+  loads the kernel directly.
+- Wi-Fi: the `brcmfmac` driver loaded the chip firmware (`BCM43430/2`, version 9.88.4.77) and
+  the Bluetooth chip got its patch. No connection was made.
+- Memory: 154,540K of 458,752K available, because 256 MiB are reserved as a CMA pool (for the
+  GPU/camera). The clock after boot was `Mar 9 2018` (no battery clock, no network time).
+- Messages that did not stop the boot, causes not investigated: `/usr/bin/psplash: not
+  found` (`S00psplash.sh`), `ip: SIOCGIFFLAGS: No such device` twice during network start,
+  `dbus: Unknown username "pipewire"`, `brcmf_c_process_txcap_blob: no txcap_blob available`.
+
 ### Not verified / known problems
 
-- The image has never been flashed or booted. Whether `serial0` (in `cmdline.txt`) and
-  `ttyS0` (in `inittab`) are the same port on this image is not checked; the first boot
-  will show it.
+- The `cmdline.txt` and the kernel file name inside partition 1 were not read on the board.
+  They can be read by mounting the partition read-only on the Pi.
 - Wi-Fi: the tools and the firmware are there, but no network name or password is
   configured (`/etc/wpa_supplicant.conf` exists; I did not read it) and there is no SSH
   server, so the image cannot be reached over the network yet.
@@ -557,11 +598,11 @@ the boot files in `deploy/`, **not** from a running board:
 - The image carries things a headless sensor gateway does not need: graphics and audio
   lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`, `dtparam=audio=on`) and the services
   `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono` and `neard` in `/etc/init.d`.
-- There is no layer of our own yet, and `local.conf` and `bblayers.conf` are not in the
-  repo, so the build cannot yet be reproduced from this repo alone.
+- There is no layer of our own yet. Copies of `local.conf` and `bblayers.conf` are in
+  `linux-gateway/conf/`, but I have not tried a rebuild from an empty folder with them.
+  `bblayers.conf` has absolute paths (`/home/mariosdimopoulos/yocto/...`).
 
-Next: microSD card and USB-UART adapter, flash, first boot over the serial console; then
-Wi-Fi and SSH, SPI, and our own layer with a smaller image.
+Next: Wi-Fi and SSH, SPI, and our own layer with a smaller image.
 
 ## Open questions / not yet decided
 
@@ -708,7 +749,7 @@ Wi-Fi and SSH, SPI, and our own layer with a smaller image.
 - 2026-10-18: the first long build run (4 h 12 min) failed the `buildpaths` check on `perl`;
   ADR-0014 skips that one check for that one recipe.
 - 2026-10-18: `bitbake core-image-base` finished: image of 2008 packages, 79 MB compressed,
-  build folder 63 GB. Never flashed or booted. Build figures recorded in ADR-0011.
+  build folder 63 GB. Build figures recorded in ADR-0011.
 - 2026-10-20: the Pico logic analyzer works (sigrok-pico firmware, PulseView nightly).
   First captures, on I2C: the BMP280 read (address 0x76, register 0xF7, six bytes, ACK
   and NACK as expected, 834 us) and the clock: about 1.1% fast (SysTick period and SCL
@@ -719,3 +760,9 @@ Wi-Fi and SSH, SPI, and our own layer with a smaller image.
   (30000 such reads all good). NSS spikes on SCK falling edges appeared with a disturbing
   probe wiring and not with a clean one. Re-arm time and UART bit time not measured.
   Results in ADR-0010.
+- 2026-10-21: the Phase 3 image flashed to a microSD and booted for the first time: root
+  login on the serial console about 13 s after the kernel started. The console is
+  `ttyS0`, the same port as the login (the `serial0` in `deploy/` was not what the kernel
+  received). Details in "First boot" in the Gateway image section.
+- 2026-10-21: the Yocto configuration copied into `linux-gateway/conf/` (committed on
+  2026-10-22).
