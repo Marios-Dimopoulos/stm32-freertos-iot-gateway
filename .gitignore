@@ -44,10 +44,12 @@ firmware/manual/
 .vscode/
 *.swp
 
-# ---- linux-gateway/ (placeholder — will be filled in when Phase 3 starts) ----
-# Yocto/Buildroot build directories are tens of GB and must never be committed.
-# When that directory is created, add at minimum:
-# linux-gateway/**/build/
-# linux-gateway/**/sstate-cache/
-# linux-gateway/**/downloads/
-# linux-gateway/**/tmp/
+# ---- linux-gateway/ ----
+# Yocto build directories are tens of GB and must never be committed. The real build
+# lives outside the repo (~/yocto/build in WSL); these rules are a safety net in case a
+# build directory is ever created inside it. Only linux-gateway/conf/ and, later, my own
+# layer are tracked.
+linux-gateway/**/build/
+linux-gateway/**/sstate-cache/
+linux-gateway/**/downloads/
+linux-gateway/**/tmp/
