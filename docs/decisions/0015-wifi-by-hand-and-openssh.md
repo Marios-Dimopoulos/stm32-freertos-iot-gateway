@@ -1,6 +1,6 @@
 # ADR-0015: Wi-Fi typed on the board for now, and OpenSSH as the SSH server
 
-**Status:** Accepted (the Wi-Fi part is a stop-gap until I have a layer of my own)
+**Status:** Accepted (the Wi-Fi part was a stop-gap; since 2026-10-23 the network is in the image, see "Update 2026-10-23")
 **Date:** 2026-10-22
 **Phase:** 3
 
@@ -104,6 +104,34 @@ no layer yet. OpenSSH because copying files will matter and the size does not.
 - Not verified: that the SSH host key fingerprint was compared with the one on the board (I
   only know the login worked); that the name `raspberrypi0-2w-64.local` works from Windows (the
   error type suggests it resolved, but I did not log in with it).
+
+## Update 2026-10-23: the network is now in the image, the secret stays outside the repo
+
+I did the Wi-Fi part of the follow-up with a variant of option B, with the key kept out of
+git:
+
+- The folder `~/yocto/secrets/` (mode 700, outside the repo) holds `wpa_supplicant.conf-sane`
+  (mode 600): the three header lines of the original, `country=GR`, and a `network` block with
+  the SSID and the `psk`. I made it once with a short `python3` command that asks for the
+  password without showing it and derives the key the same way `wpa_passphrase` does (PBKDF2
+  with HMAC-SHA1, the SSID as salt, 4096 iterations, 32 bytes). The password was never typed
+  into a chat or a file.
+- The recipe `wpa-supplicant` installs `/etc/wpa_supplicant.conf` from a file with exactly that
+  name, `wpa_supplicant.conf-sane`. My layer has `wpa-supplicant_%.bbappend` with
+  `FILESEXTRAPATHS:prepend := "/home/mariosdimopoulos/yocto/secrets:"`, the same mechanism as
+  for `interfaces` in ADR-0016. The repo has only that path, never the key.
+- Result: `...rootfs-20261023095901.wic.bz2`. I flashed it and powered the Pi on with no serial
+  cable and typed nothing: it joined Wi-Fi by itself and SSH from Windows worked. I also read
+  `config.txt` on the board and it had `dtparam=spi=on` (from `ENABLE_SPI_BUS = "1"`).
+- Weak point: if the folder or the file is missing, BitBake does not fail. It installs the
+  placeholder (`key_mgmt=NONE`) and the Pi would have no network. The board test was my
+  evidence this time; I did not keep the output of a check of the root filesystem folder.
+- The image and the build folder now contain the `psk`, which is as good as the Wi-Fi password.
+  The `.wic.bz2` files must not be shared or uploaded; the SD card can be read by anyone who
+  holds it. A rule in `.gitignore` keeps a `secrets/` folder out of git. The key has to go
+  before the image is a final deliverable.
+- Not done: the password is still not in a form that other people can rebuild from the repo;
+  they need to create their own `secrets/` folder (steps in `linux-gateway/README.md`).
 
 ## Interview angle
 

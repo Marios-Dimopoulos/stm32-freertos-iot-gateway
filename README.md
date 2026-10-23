@@ -8,8 +8,9 @@ the data to an MQTT publisher.
 
 **Status: Phases 1 and 2 work on the board.** The Pi (running the stock Raspberry Pi
 OS as a temporary test jig) reads a valid frame every second. The Phase 3 image boots on the
-board, joins Wi-Fi by itself and I can log in over SSH (only the Wi-Fi password is typed by
-hand after a flash). **Still to come: SPI and a smaller image for Phase 3, and Phase 4.**
+board, joins my Wi-Fi by itself (the key is baked in from a file outside the repo), I can log
+in over SSH, and the SPI controller is on (`/dev/spidev0.0` exists). **Still to come: a
+smaller image for Phase 3, and Phase 4.**
 The logic analyzer captures of
 Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it

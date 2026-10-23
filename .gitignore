@@ -53,3 +53,7 @@ linux-gateway/**/build/
 linux-gateway/**/sstate-cache/
 linux-gateway/**/downloads/
 linux-gateway/**/tmp/
+
+# The Wi-Fi key of the gateway image lives in ~/yocto/secrets/ (outside the repo, see
+# ADR-0015). This is a safety net in case such a folder is ever created inside the repo.
+**/secrets/

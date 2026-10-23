@@ -62,8 +62,10 @@ The two changes in my copy of `interfaces`: `auto wlan0` is added, and `wpa-driv
   deleted) were done by hand. After a reboot, with no `ifup wlan0`, SSH from Windows worked.
   The `wpa_supplicant` process command line (read from `/proc/<pid>/cmdline`) ended with
   `-D nl80211`, and `dmesg` had no line about wireless extensions.
-- The Wi-Fi password still has to be typed after every flash (option C of ADR-0015 is only half
-  done: the start at boot is automatic, the secret is not in the image).
+- When this ADR was written, the Wi-Fi password still had to be typed after every flash (the
+  start at boot was automatic, the secret was not in the image). Since 2026-10-23 a second
+  `.bbappend` in the layer, `wpa-supplicant_%.bbappend`, installs the network from a file
+  outside the repo: see "Update 2026-10-23" in ADR-0015.
 - The layer exists in two places: `~/yocto/meta-gateway` (the one BitBake reads, because
   `bblayers.conf` lists that path) and `linux-gateway/meta-gateway/` (the copy in git). I
   compared them on 2026-10-23 and they were identical; if I edit one, I must copy to the other.
