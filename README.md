@@ -8,8 +8,8 @@ the data to an MQTT publisher.
 
 **Status: Phases 1 and 2 work on the board.** The Pi (running the stock Raspberry Pi
 OS as a temporary test jig) reads a valid frame every second. The Phase 3 image boots on the
-board and I can log in over Wi-Fi and SSH (the Wi-Fi is typed by hand and does not start at
-boot yet). **Still to come: Wi-Fi at boot, SPI and a smaller image for Phase 3, and Phase 4.**
+board, joins Wi-Fi by itself and I can log in over SSH (only the Wi-Fi password is typed by
+hand after a flash). **Still to come: SPI and a smaller image for Phase 3, and Phase 4.**
 The logic analyzer captures of
 Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it
@@ -123,6 +123,7 @@ considered, the one I chose and why, and what I did not verify.
 | 0013 | Accept the `synaptics-killswitch` license flag to get the Wi-Fi firmware |
 | 0014 | Skip the `buildpaths` quality check for the `perl` recipe (a workaround; the cause is not found) |
 | 0015 | Wi-Fi typed on the board for now, OpenSSH as the SSH server, and the first OpenSSH build that shipped seven 0-byte programs |
+| 0016 | A layer of my own (`meta-gateway`) that replaces `/etc/network/interfaces`: Wi-Fi starts at boot, with `nl80211` |
 
 ## Hardware
 
@@ -240,5 +241,5 @@ tools/
   spi_frame_test.py           runs on the Pi: reads and checks the frames
 ```
 
-`linux-gateway/` holds the Yocto configuration of the gateway image (`conf/`) and how to
-rebuild it; my own layer will be added there in Phase 4.
+`linux-gateway/` holds the Yocto configuration of the gateway image (`conf/`), my own layer
+(`meta-gateway/`, ADR-0016) and how to rebuild it.

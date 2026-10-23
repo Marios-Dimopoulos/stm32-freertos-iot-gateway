@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that boots and can be reached over Wi-Fi and SSH (no SPI yet); Phase 4 has not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that boots, joins Wi-Fi by itself and can be reached over SSH (no SPI yet); Phase 4 has not started
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -62,11 +62,11 @@ frequency at 1 to 6 MHz and the gap between back-to-back reads.
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), fifteen ADRs (`docs/decisions/`), the
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), sixteen ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, this document, and the logic analyzer
 captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
-part of the pipeline (the Phase 3 image boots, joins Wi-Fi when told to and accepts SSH
+part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
 logins, but has no SPI; Phase 4 has not started).
 
 **Where to continue:** see "Where to continue" below.
@@ -384,6 +384,8 @@ register-level drivers instead of using a vendor library is ADR-0008.
 - ADR-0015: the Wi-Fi network is typed on the board for now (the password stays out of the
   repo and the build) and OpenSSH is the SSH server; it also records the first OpenSSH build
   that shipped seven 0-byte programs.
+- ADR-0016: a layer of my own, `meta-gateway`, with a `.bbappend` that replaces
+  `/etc/network/interfaces` (`auto wlan0`, `nl80211`), so Wi-Fi starts at boot.
 
 ## System design (implemented: this is what runs)
 
@@ -485,9 +487,9 @@ driver, and an interview-style question set on Phases 1 and 2 was answered and g
 ### Phases 3 and 4
 
 Phase 3: the image is built, flashed and boots on the board to a root login on the serial
-console (see the next section). Wi-Fi is typed by hand on the board and does not start
-at boot, so the serial console is still needed after a reboot; once Wi-Fi is up, SSH
-works. The next steps are Wi-Fi at boot (a layer of my own), SPI, and a smaller image.
+console (see the next section). Wi-Fi starts at boot (ADR-0016); only the network and its
+password are typed by hand on the board after each flash. Once Wi-Fi is up, SSH works. The
+next steps are SPI and a smaller image.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
@@ -510,8 +512,9 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
 active lines with my comments (the 20 active lines were compared with the real file and
-are identical). `bblayers.conf` lists three layers: `openembedded-core/meta`, `meta-yocto/meta-poky` and
-`meta-raspberrypi`. `local.conf` adds, on top of the template:
+are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
+`meta-raspberrypi` and `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
+`linux-gateway/meta-gateway/`). `local.conf` adds, on top of the template:
 
 ```
 MACHINE = "raspberrypi0-2w-64"
@@ -535,6 +538,9 @@ IMAGE_FEATURES += "ssh-server-openssh"                (ADR-0015, added 2026-10-2
   compressed. The first run of it had seven 0-byte OpenSSH programs in the image; a forced
   `bitbake -f -c install openssh` and a new `bitbake core-image-base` fixed it (ADR-0015).
   The image flashed for the SSH test is `...rootfs-20261022155006.wic.bz2`.
+- 2026-10-22: third build, with the layer `meta-gateway` (ADR-0016): 78 MiB compressed,
+  `...rootfs-20261022194428.wic.bz2`; no zero-byte file in the root filesystem folder outside
+  `/etc`, `/var` and `/usr/share`.
 
 ### What is in the image
 
@@ -619,8 +625,8 @@ its prompt; the plain-text comment line it writes is deleted), and ran `ifup wla
   (`wpa-driver wext`); the kernel warned that wireless extensions will stop working for newer
   hardware, and `wpa_supplicant` printed `ioctl[SIOCSIWENCODEEXT]: Invalid argument` twice.
   The connection worked; I do not know what the two errors affected.
-- The settings stay across reboots but a reflash erases them, and `wlan0` does not start at
-  boot: after every boot I need the serial console and `ifup wlan0`.
+- The settings stay across reboots but a reflash erases them. `wlan0` did not start at boot in
+  this first image; the layer `meta-gateway` (below) fixed that.
 
 **SSH.** `IMAGE_FEATURES += "ssh-server-openssh"` adds OpenSSH 10.3p1 (`sshd`, `ssh`, `scp`,
 `sftp-server`, `ssh-keygen`; 7 more packages). `sshd_config` has `PermitRootLogin yes` and
@@ -637,6 +643,20 @@ are in ADR-0015. `bitbake -f -c install openssh` and a new `bitbake core-image-b
 complete files (package 654,588 bytes instead of 29,913), and an SSH login from Windows then
 worked.
 
+### Wi-Fi at boot: the layer `meta-gateway` (2026-10-23, ADR-0016)
+
+The recipe `init-ifupdown` (openembedded-core) installs `/etc/network/interfaces` from a file
+next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bbappend` with
+`FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"` and, in `init-ifupdown/`, my copy of
+`interfaces`: the original plus `auto wlan0`, and `wpa-driver nl80211` instead of `wext`.
+
+- `bitbake-layers show-appends` listed the `.bbappend` under `init-ifupdown_1.0.bb`; the root
+  filesystem folder of the new image had both changes.
+- On the board (after a flash, `passwd` and a hand-written `/etc/wpa_supplicant.conf`): after a
+  reboot, with no `ifup wlan0`, SSH from Windows worked. `/proc/<pid>/cmdline` of
+  `wpa_supplicant` ended with `-D nl80211`, and `dmesg` had no line about wireless extensions.
+- Not checked: whether the `SIOCSIWENCODEEXT` errors are gone from the output of `wpa_supplicant`.
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -648,8 +668,9 @@ worked.
 - The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
   `defaults`: a power cut during a write there could corrupt it. For the final image it should
   be read-only or not mounted.
-- Wi-Fi is typed by hand, does not start at boot, and the SSH server accepts an empty root
-  password (a password is set by hand after each flash); keys are not set up.
+- The Wi-Fi network and password are typed by hand after each flash, and the SSH server
+  accepts an empty root password (a password is set by hand after each flash); keys are not
+  set up.
 - SPI is not enabled for the board: `ENABLE_SPI_BUS` is not set and no device-tree entry
   exists for our device (needed for Phase 4).
 - The empty root password is a development shortcut and must be removed before the image
@@ -658,12 +679,12 @@ worked.
 - The image carries things a headless sensor gateway does not need: graphics and audio
   lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`, `dtparam=audio=on`) and the services
   `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono` and `neard` in `/etc/init.d`.
-- There is no layer of our own yet. Copies of `local.conf` and `bblayers.conf` are in
-  `linux-gateway/conf/`, but I have not tried a rebuild from an empty folder with them.
-  `bblayers.conf` has absolute paths (`/home/mariosdimopoulos/yocto/...`).
+- Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
+  not tried a rebuild from an empty folder with them. `bblayers.conf` has absolute paths
+  (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
+  git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: Wi-Fi at boot and `nl80211` (a layer of my own), SPI, a smaller image without the
-empty root password, and SSH keys.
+Next: SPI, a smaller image without the empty root password, and SSH keys.
 
 ## Open questions / not yet decided
 
@@ -833,3 +854,6 @@ empty root password, and SSH keys.
 - 2026-10-22: OpenSSH added (`ssh-server-openssh`). The first build shipped seven 0-byte
   programs, the init script exited silently and SSH answered `Connection refused`; a forced
   reinstall of `openssh` fixed it and an SSH login from Windows worked. ADR-0015.
+- 2026-10-23: the layer `meta-gateway` (ADR-0016) makes Wi-Fi start at boot with `nl80211`;
+  after a flash and a reboot, SSH from Windows worked with no `ifup wlan0`. The layer and
+  the new `bblayers.conf` are copied into `linux-gateway/`.
