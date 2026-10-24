@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool (no kernel driver yet); Phase 4 has not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool (no kernel driver yet); Phase 4 has not started
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -62,7 +62,7 @@ frequency at 1 to 6 MHz and the gap between back-to-back reads.
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), sixteen ADRs (`docs/decisions/`), the
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), seventeen ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, this document, and the logic analyzer
 captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
@@ -387,6 +387,8 @@ register-level drivers instead of using a vendor library is ADR-0008.
   that shipped seven 0-byte programs.
 - ADR-0016: a layer of my own, `meta-gateway`, with a `.bbappend` that replaces
   `/etc/network/interfaces` (`auto wlan0`, `nl80211`), so Wi-Fi starts at boot.
+- ADR-0017: an image recipe of my own, `gateway-image`, built up from `packagegroup-core-boot`
+  one tested step at a time (142 MB and 2015 packages down to 37 MB and 76).
 
 ## System design (implemented: this is what runs)
 
@@ -491,7 +493,8 @@ Phase 3: the image is built, flashed and boots on the board to a root login on t
 console (see the next section). Wi-Fi starts at boot (ADR-0016) and the network is in the
 image (key kept outside the repo, ADR-0015), so SSH works after a flash with nothing typed.
 SPI is on and the test tool `spi-frame-test` read valid frames from the STM32 (see "SPI and
-the test tool"). The next steps are SSH keys without the empty password, and a smaller image.
+the test tool"). The image is my own minimal recipe (ADR-0017). The next steps are SSH keys
+without the empty password, and finishing the clean-up of the image.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
@@ -513,8 +516,8 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
-active lines with my comments (the 22 active lines were compared with the real file on
-2026-10-23 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
+active lines with my comments (the 21 active lines were compared with the real file on
+2026-10-24 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
 `meta-raspberrypi` and `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
 `linux-gateway/meta-gateway/`). `local.conf` adds, on top of the template:
 
@@ -527,8 +530,11 @@ LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"       (ADR-0013)
 INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
 IMAGE_FEATURES += "ssh-server-openssh"                (ADR-0015, added 2026-10-22)
 ENABLE_SPI_BUS = "1"                                  (added 2026-10-23: `dtparam=spi=on` in config.txt)
-CORE_IMAGE_EXTRA_INSTALL += "spi-frame-test"          (puts my test tool in the image)
 ```
+
+The package list of the current image is not in `local.conf` but in my image recipe
+`meta-gateway/recipes-core/images/gateway-image.bb` (ADR-0017). `IMAGE_FEATURES` still apply
+to every image because they are in `local.conf`.
 
 ### Build result (`bitbake core-image-base`, 2026-10-18)
 
@@ -550,11 +556,18 @@ CORE_IMAGE_EXTRA_INSTALL += "spi-frame-test"          (puts my test tool in the 
   from a folder outside the repo (`...rootfs-20261023095901.wic.bz2`, 78 MiB), and with the
   package `spi-frame-test`. The last one was flashed for the SPI test. These images contain
   the Wi-Fi key: they and the build folder must not be shared.
+- 2026-10-24: `bitbake gateway-image` (ADR-0017), the image recipe of my own. Last build
+  `gateway-image-raspberrypi0-2w-64.rootfs-20261024145944.wic.bz2`: 37 MB root filesystem,
+  76 packages, 35 MiB compressed (`core-image-base`: 142 MB, 2015 packages, 78 MiB). Flashed
+  and tested: boots, `wlan0` up, `/dev/spidev0.0`, 10 of 10 frames. The steps in between are in
+  ADR-0017.
 
 ### What is in the image
 
-Read from the package manifest (2008 packages), the root filesystem folder (142 MB) and
-the boot files in `deploy/` (the first boot below checked part of it on the board):
+This describes the first image, `core-image-base`. The current image, `gateway-image`, is
+described in its own section below. Read from the package manifest (2008 packages), the root
+filesystem folder (142 MB) and the boot files in `deploy/` (the first boot below checked part
+of it on the board):
 
 - Boot partition (FAT): the Pi firmware, `config.txt`, `cmdline.txt`, the kernel and the
   device tree. `ENABLE_UART = "1"` produced `enable_uart=1` in `config.txt` and
@@ -693,6 +706,34 @@ firmware, `spi-frame-test 10` printed 10 lines, all with a valid CRC:
 - Frames 1 to 9: `seq` 26 to 34 (one more per second), `status=0`, `T=21.57 to 21.58 C`,
   `P=1015.69 to 1015.71 hPa`.
 
+A second run on 2026-10-24, on the `gateway-image` build (modules `spi-bcm2835` and `spidev`
+loaded by udev), gave 10 of 10 valid frames again, `seq` 183 to 191, `T=21.90 to 21.91 C`,
+`P=1014.99 to 1015.02 hPa`. Frame 0 was byte for byte the same as in the first run
+(`A5 01 00 00 ... 10 96`, `seq=0`, `status=1`): the first read after a long idle returned the
+frame the node loaded at boot, in both runs. This is for the Phase 4 decision about the stale
+first read; nothing is decided.
+
+### The image recipe `gateway-image` (2026-10-24, ADR-0017)
+
+`meta-gateway/recipes-core/images/gateway-image.bb` inherits `core-image` for the image tasks, but
+replaces its package list: `IMAGE_INSTALL = "packagegroup-core-boot"` plus Wi-Fi (`wpa-supplicant`,
+`iw`, `wireless-regdb-static`, the firmware packages `...bcm43430` and `...bcm43436`, the modules
+`brcmfmac`, `brcmfmac-cyw`, `brcmutil`, `cfg80211`), SPI (`spi-bcm2835`, `spidev`) and
+`spi-frame-test`. `BAD_RECOMMENDATIONS += "kernel-image-*"` keeps the 26 MB kernel copy out of the
+root partition (the kernel is loaded from partition 1), and `IMAGE_LINGUAS = ""` drops the
+language files. The comments in the recipe say why each name is there.
+
+| Image | Root fs | Packages | Compressed |
+|---|---|---|---|
+| `core-image-base` | 142 MB | 2015 | 78 MiB |
+| `gateway-image`, minimal (step 1) | 29 MB | 47 | 32 MB |
+| `gateway-image`, final of 2026-10-24 | 37 MB | 76 | 35 MB |
+
+On the board: boots from the kernel on partition 1, `wlan0` up with an address from the router,
+`/dev/spidev0.0`, `spi-frame-test 10` gave 10 of 10 valid frames. Still in it: `kbd` and `keymaps`
+(hard dependency of `packagegroup-core-boot`), a `getty` on `tty1`, the three `ip: SIOCGIFFLAGS`
+lines at boot, the empty root password, and the Wi-Fi key. Not measured: boot time, memory use.
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -709,20 +750,24 @@ firmware, `spi-frame-test 10` printed 10 lines, all with a valid CRC:
   Wi-Fi can log in as root, and anyone with the SD card can read the key.
 - The SPI controller is enabled and `spidev` makes `/dev/spidev0.0`, but no device-tree entry
   exists for our device (needed for the Phase 4 driver).
-- Only one run of `spi-frame-test` (10 frames) has been made: no speed sweep, no minimum-gap
+- Two runs of `spi-frame-test` (10 frames each) have been made: no speed sweep, no minimum-gap
   test, nothing on the logic analyzer from this image.
 - The empty root password is a development shortcut and must be removed before the image
   is final.
 - `perl` is built although it is not in the image; why is not known (ADR-0014).
-- The image carries things a headless sensor gateway does not need: graphics and audio
-  lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`, `dtparam=audio=on`) and the services
-  `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono` and `neard` in `/etc/init.d`.
+- `core-image-base` carried things a headless sensor gateway does not need (the services
+  `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono`, `neard`); `gateway-image` does not. The
+  boot partition still has graphics and audio lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`,
+  `dtparam=audio=on`) and the kernel still reserves a 256 MiB CMA pool; I have not changed
+  them.
 - Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
   not tried a rebuild from an empty folder with them. `bblayers.conf` has absolute paths
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: SSH keys and no empty root password, a smaller image; then Phase 4.
+Next: SSH keys and no empty root password; the rest of the clean-up of `gateway-image` (`kbd` and
+`keymaps`, the `tty1` getty, `IMAGE_FEATURES` into the recipe, the CMA pool and `config.txt`);
+then Phase 4.
 
 ## Open questions / not yet decided
 
@@ -901,3 +946,9 @@ Next: SSH keys and no empty root password, a smaller image; then Phase 4.
 - 2026-10-24: recipe `spi-frame-test` (C, in `meta-gateway`) added to the image. With the
   Nucleo wired to the Pi, 10 of 10 frames had a valid CRC (`T=21.58 C`, `P=1015.7 hPa`); the
   first frame was the old `seq=0` one.
+- 2026-10-24: ADR-0017: the image recipe `gateway-image`, built up in four tested steps from
+  `packagegroup-core-boot`. Root filesystem 142 MB to 37 MB, packages 2015 to 76, image 78 MiB to
+  35 MiB. Three failures on the way, each found from a log: the firmware symlink package
+  (`...bcm43430`), the exclusion that did nothing because kernel packages are renamed with the
+  version, and the locale packages that were requests and not recommendations. Boots, Wi-Fi up,
+  10 of 10 SPI frames. A second SPI run showed the same first frame (`seq=0`) as the first run.

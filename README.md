@@ -10,8 +10,9 @@ the data to an MQTT publisher.
 OS as a temporary test jig) reads a valid frame every second. The Phase 3 image boots on the
 board, joins my Wi-Fi by itself (the key is baked in from a file outside the repo), I can log
 in over SSH, and a test tool in the image (`spi-frame-test`) reads valid frames from the
-STM32 over SPI. **Still to come: a
-smaller image for Phase 3, and Phase 4.**
+STM32 over SPI. The image is my own recipe, built up from the minimum: 37 MB root filesystem
+and 76 packages, against 142 MB and 2015 for the standard `core-image-base`. **Still to come:
+SSH keys and the rest of the clean-up for Phase 3, and Phase 4.**
 The logic analyzer captures of
 Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it
@@ -126,6 +127,7 @@ considered, the one I chose and why, and what I did not verify.
 | 0014 | Skip the `buildpaths` quality check for the `perl` recipe (a workaround; the cause is not found) |
 | 0015 | Wi-Fi typed on the board for now, OpenSSH as the SSH server, and the first OpenSSH build that shipped seven 0-byte programs |
 | 0016 | A layer of my own (`meta-gateway`) that replaces `/etc/network/interfaces`: Wi-Fi starts at boot, with `nl80211` |
+| 0017 | An image recipe of my own (`gateway-image`), built up from the minimum in tested steps: 142 MB and 2015 packages down to 37 MB and 76 |
 
 ## Hardware
 

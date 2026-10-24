@@ -10,7 +10,7 @@ the build directory (63 GB) live **outside** this repo, in `~/yocto/` in WSL2.
 |---|---|
 | `conf/bblayers.conf` | which layers BitBake reads (four, with `meta-gateway`). An exact copy of the file that built the image. It has absolute paths (`/home/mariosdimopoulos/yocto/...`), so the folders must be at `~/yocto/` for the same user name, or the paths must be edited. |
 | `conf/local.conf` | my settings: machine, distribution, serial console, login features, SSH, SPI and two workarounds. A trimmed copy: the template's comments are dropped and mine say why. Its active lines are identical to the real file. |
-| `meta-gateway/` | my own layer (ADR-0016). Two `.bbappend` files: one for `init-ifupdown` with my copy of `/etc/network/interfaces` (`auto wlan0`, `nl80211`), one for `wpa-supplicant` that points at the secrets folder (below). One recipe of my own, `spi-frame-test` (a C program that reads and checks the STM32 frames through `/dev/spidev0.0`); it is in the image through `CORE_IMAGE_EXTRA_INSTALL` in `local.conf`. |
+| `meta-gateway/` | my own layer (ADR-0016). Two `.bbappend` files: one for `init-ifupdown` with my copy of `/etc/network/interfaces` (`auto wlan0`, `nl80211`), one for `wpa-supplicant` that points at the secrets folder (below). One recipe of my own, `spi-frame-test` (a C program that reads and checks the STM32 frames through `/dev/spidev0.0`), and the image recipe `gateway-image` (ADR-0017): the list of packages of the image, with the reason for each name in its comments. |
 
 `bblayers.conf` points at `~/yocto/meta-gateway`, so BitBake does not read this folder: the
 copy in git and the copy in `~/yocto/` have to be kept the same by hand (they were identical on
@@ -66,8 +66,9 @@ them, so the first time may need a correction.
 3. Copy `meta-gateway/` to `~/yocto/meta-gateway`, create `~/yocto/secrets/` (see above), and
    replace the two generated files in `~/yocto/build/conf/` with `conf/bblayers.conf` and
    `conf/local.conf` from here.
-4. Build: `bitbake core-image-base`. The first build took 4 h 12 min on this machine.
+4. Build: `bitbake gateway-image`. (The first build, of the standard `core-image-base`, took
+   4 h 12 min on this machine; `gateway-image` reuses most of it from the cache.)
 5. The image is in `~/yocto/build/tmp/deploy/images/raspberrypi0-2w-64/`, as
-   `core-image-base-raspberrypi0-2w-64.rootfs-<date>.wic.bz2`.
+   `gateway-image-raspberrypi0-2w-64.rootfs-<date>.wic.bz2`.
 
 The current state of the image is in `docs/architecture.md`.
