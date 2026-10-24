@@ -133,6 +133,36 @@ git:
 - Not done: the password is still not in a form that other people can rebuild from the repo;
   they need to create their own `secrets/` folder (steps in `linux-gateway/README.md`).
 
+## Update 2026-10-24: root has a password, the hash is kept outside the repo
+
+The empty root password is gone. I chose option A of three I looked at: a password for `root`,
+accepted by SSH and by the serial console. The other two were SSH keys only (nothing secret in
+the image, but no login on the serial console, and a lost key means a re-flash) and keys for SSH
+plus a password for the console (the strongest; I can still add it later without undoing this).
+
+- The hash comes from `openssl passwd -6` (SHA-512 crypt), made once in WSL and saved in
+  `~/yocto/secrets/root.hash` (mode 600, outside the repo). The password itself was typed twice at
+  the prompt of `openssl` and is not written anywhere.
+- The image recipe `gateway-image.bb` has a function, `set_root_password`, that runs after the root
+  filesystem is built and writes the hash into the `root` line of `/etc/shadow` with `sed`. I did it
+  this way and not with `EXTRA_USERS_PARAMS` because that would make the hash a variable, and a
+  variable goes into the task hash, `bitbake -e` output and the generated run script. Here the
+  recipe has only the path.
+- The function stops the build if the file is missing or empty, if it does not start with `$6$`, or
+  if the `root` line was not changed. This is different from the Wi-Fi `.bbappend`, which falls back
+  to the placeholder without an error, and it is on purpose: an image without a root password is
+  locked, on the serial console too.
+- `IMAGE_FEATURES` moved from `local.conf` into the recipe: `ssh-server-openssh allow-root-login`.
+  `empty-root-password` and `allow-empty-password` are not listed any more. `allow-root-login` stays
+  because without it OpenSSH refuses `root` with a password.
+- Checked before flashing: `/etc/shadow` of the root filesystem folder had the `$6$` marker on the
+  `root` line (count 1), `sshd_config` had `PermitRootLogin yes` and no `PermitEmptyPasswords yes`,
+  and there were no zero-byte files. Checked on the board: the serial console and SSH both ask for a
+  password and accept mine; an empty password over SSH is refused.
+- Still open: SSH accepts passwords from anyone on the Wi-Fi, so the strength of the password is the
+  only protection. The Wi-Fi key and the root hash are in every image and in the build folder, and
+  anyone who holds the SD card can read them.
+
 ## Interview angle
 
 "I kept the Wi-Fi password out of the repo and the image by typing it on the board for the

@@ -74,3 +74,45 @@ BAD_RECOMMENDATIONS += "kernel-image-*"
 # did not find what. Setting it empty here, in the recipe, wins over that. The console and
 # the logs are in English with the C locale and need no language files.
 IMAGE_LINGUAS = ""
+
+# Features of this image. They were in local.conf until 2026-10-24, where they applied to every
+# image.
+#   ssh-server-openssh  the SSH server (ADR-0015). Note: the first build with it produced 0-byte
+#                       sshd, ssh-keygen and other programs (a race while `make install` ran in
+#                       parallel, as far as I can tell); `bitbake -f -c install openssh` gave
+#                       complete files. Check the new rootfs for zero-byte files.
+#   allow-root-login    PermitRootLogin yes in sshd_config. Without it OpenSSH refuses root with
+#                       a password ("prohibit-password"), and I log in as root.
+# NOT listed on purpose: empty-root-password and allow-empty-password. They made root log in
+# with no password, on the serial console and over SSH.
+IMAGE_FEATURES += "ssh-server-openssh allow-root-login"
+
+# The password of root (follow-up of ADR-0015). Only the hash is in the image (SHA-512 crypt, from
+# `openssl passwd -6`), and the hash is in a file OUTSIDE the repo, like the Wi-Fi key. It is
+# written into /etc/shadow here, after the root filesystem is built, so that it is not a
+# variable: it does not go into the task hash, `bitbake -e` or the generated run script.
+# (Do not build with `bitbake -v`: the verbose log may print the commands.)
+#
+# Unlike the Wi-Fi .bbappend, this stops the build if the file is missing or wrong, because an
+# image without a root password is locked (root cannot log in on the serial console either).
+set_root_password() {
+    hashfile=/home/mariosdimopoulos/yocto/secrets/root.hash
+
+    if [ ! -s "$hashfile" ]; then
+        bbfatal "set_root_password: $hashfile is missing or empty (see linux-gateway/README.md)"
+    fi
+    hash=$(cat "$hashfile")
+    case "$hash" in
+        '$6$'*) ;;
+        *) bbfatal "set_root_password: $hashfile does not start with the SHA-512 crypt marker" ;;
+    esac
+
+    # The characters of such a hash are letters, digits, '.', '/' and '$': none of them is
+    # special in the replacement text of sed or the delimiter '|'.
+    sed -i "s|^root:[^:]*:|root:$hash:|" ${IMAGE_ROOTFS}/etc/shadow
+
+    if ! grep -qF "root:$hash:" ${IMAGE_ROOTFS}/etc/shadow; then
+        bbfatal "set_root_password: the root line of /etc/shadow was not changed"
+    fi
+}
+ROOTFS_POSTPROCESS_COMMAND += "set_root_password;"

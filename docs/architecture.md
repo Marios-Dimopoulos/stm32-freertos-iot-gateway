@@ -493,8 +493,9 @@ Phase 3: the image is built, flashed and boots on the board to a root login on t
 console (see the next section). Wi-Fi starts at boot (ADR-0016) and the network is in the
 image (key kept outside the repo, ADR-0015), so SSH works after a flash with nothing typed.
 SPI is on and the test tool `spi-frame-test` read valid frames from the STM32 (see "SPI and
-the test tool"). The image is my own minimal recipe (ADR-0017). The next steps are SSH keys
-without the empty password, and finishing the clean-up of the image.
+the test tool"). The image is my own minimal recipe (ADR-0017). Root has a password (hash kept
+outside the repo, ADR-0015 update of 2026-10-24); the serial console and SSH both ask for it. The
+next step is finishing the clean-up of the image.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
@@ -516,7 +517,7 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
-active lines with my comments (the 21 active lines were compared with the real file on
+active lines with my comments (the 19 active lines were compared with the real file on
 2026-10-24 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
 `meta-raspberrypi` and `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
 `linux-gateway/meta-gateway/`). `local.conf` adds, on top of the template:
@@ -525,16 +526,16 @@ active lines with my comments (the 21 active lines were compared with the real f
 MACHINE = "raspberrypi0-2w-64"
 DISTRO = "poky"
 ENABLE_UART = "1"
-IMAGE_FEATURES += "empty-root-password allow-empty-password allow-root-login"
 LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"       (ADR-0013)
 INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
-IMAGE_FEATURES += "ssh-server-openssh"                (ADR-0015, added 2026-10-22)
 ENABLE_SPI_BUS = "1"                                  (added 2026-10-23: `dtparam=spi=on` in config.txt)
 ```
 
-The package list of the current image is not in `local.conf` but in my image recipe
-`meta-gateway/recipes-core/images/gateway-image.bb` (ADR-0017). `IMAGE_FEATURES` still apply
-to every image because they are in `local.conf`.
+The package list and the `IMAGE_FEATURES` (`ssh-server-openssh allow-root-login`) of the current
+image are not in `local.conf` but in my image recipe
+`meta-gateway/recipes-core/images/gateway-image.bb` (ADR-0017), together with the function that
+writes the root password hash. Until 2026-10-24 the `IMAGE_FEATURES`, including the two that
+allowed an empty root password, were in `local.conf` and applied to every image.
 
 ### Build result (`bitbake core-image-base`, 2026-10-18)
 
@@ -732,7 +733,8 @@ language files. The comments in the recipe say why each name is there.
 On the board: boots from the kernel on partition 1, `wlan0` up with an address from the router,
 `/dev/spidev0.0`, `spi-frame-test 10` gave 10 of 10 valid frames. Still in it: `kbd` and `keymaps`
 (hard dependency of `packagegroup-core-boot`), a `getty` on `tty1`, the three `ip: SIOCGIFFLAGS`
-lines at boot, the empty root password, and the Wi-Fi key. Not measured: boot time, memory use.
+lines at boot, and the Wi-Fi key and the root password hash (both in every image). Not measured:
+boot time, memory use.
 
 ### Not verified / known problems
 
@@ -745,15 +747,13 @@ lines at boot, the empty root password, and the Wi-Fi key. Not measured: boot ti
 - The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
   `defaults`: a power cut during a write there could corrupt it. For the final image it should
   be read-only or not mounted.
-- The Wi-Fi key is inside every image and in the build folder, and the SSH server accepts an
-  empty root password (I chose not to set a password); keys are not set up. Anyone on the
-  Wi-Fi can log in as root, and anyone with the SD card can read the key.
+- The Wi-Fi key and the root password hash are inside every image and in the build folder.
+  Anyone with the SD card can read them. SSH accepts a password for `root` from anyone on the
+  Wi-Fi, so the password is the only protection; SSH keys are not set up (they can be added later).
 - The SPI controller is enabled and `spidev` makes `/dev/spidev0.0`, but no device-tree entry
   exists for our device (needed for the Phase 4 driver).
 - Two runs of `spi-frame-test` (10 frames each) have been made: no speed sweep, no minimum-gap
   test, nothing on the logic analyzer from this image.
-- The empty root password is a development shortcut and must be removed before the image
-  is final.
 - `perl` is built although it is not in the image; why is not known (ADR-0014).
 - `core-image-base` carried things a headless sensor gateway does not need (the services
   `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono`, `neard`); `gateway-image` does not. The
@@ -765,9 +765,8 @@ lines at boot, the empty root password, and the Wi-Fi key. Not measured: boot ti
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: SSH keys and no empty root password; the rest of the clean-up of `gateway-image` (`kbd` and
-`keymaps`, the `tty1` getty, `IMAGE_FEATURES` into the recipe, the CMA pool and `config.txt`);
-then Phase 4.
+Next: the rest of the clean-up of `gateway-image` (`kbd` and `keymaps`, the `tty1` getty, the
+CMA pool and `config.txt`); then Phase 4.
 
 ## Open questions / not yet decided
 
@@ -952,3 +951,8 @@ then Phase 4.
   (`...bcm43430`), the exclusion that did nothing because kernel packages are renamed with the
   version, and the locale packages that were requests and not recommendations. Boots, Wi-Fi up,
   10 of 10 SPI frames. A second SPI run showed the same first frame (`seq=0`) as the first run.
+- 2026-10-24: root has a password. The hash (`openssl passwd -6`) is in `~/yocto/secrets/root.hash`,
+  outside the repo, and `gateway-image.bb` writes it into `/etc/shadow` after the root filesystem
+  is built; the build stops if the file is missing. `IMAGE_FEATURES` moved from `local.conf` into
+  the recipe, without `empty-root-password` and `allow-empty-password`. On the board the serial
+  console and SSH both ask for the password, and an empty one is refused over SSH.

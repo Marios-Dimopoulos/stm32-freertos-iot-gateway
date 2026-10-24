@@ -43,6 +43,23 @@ If the folder or the file is missing, the build still succeeds and installs the 
 network (`key_mgmt=NONE`), so the Pi has no Wi-Fi. The `.wic.bz2` file and the build folder
 contain the key: do not share them.
 
+## The root password is not in this repo either
+
+The image has a password for `root`, but only its hash, and the hash is in a file outside the repo,
+`~/yocto/secrets/root.hash` (ADR-0015, update of 2026-10-24). The function `set_root_password` in
+`meta-gateway/recipes-core/images/gateway-image.bb` writes it into `/etc/shadow` after the root
+filesystem is built. To make the file, run this in WSL; it asks for the password twice and does not
+show it:
+
+```
+openssl passwd -6 > ~/yocto/secrets/root.hash
+chmod 600 ~/yocto/secrets/root.hash
+```
+
+Unlike the Wi-Fi file, this one is checked: the build stops with a message starting with
+`set_root_password:` if the file is missing, empty, or does not start with `$6$`. The `.wic.bz2` file
+and the build folder contain the hash: do not share them.
+
 ## The four repositories
 
 Cloned by hand on 2026-10-18 (ADR-0012). The commits are the ones that built the image:
@@ -63,7 +80,8 @@ them, so the first time may need a correction.
    into `~/yocto/` and check out the commit of each.
 2. Create the build folder with the Yocto script:
    `source ~/yocto/openembedded-core/oe-init-build-env ~/yocto/build`
-3. Copy `meta-gateway/` to `~/yocto/meta-gateway`, create `~/yocto/secrets/` (see above), and
+3. Copy `meta-gateway/` to `~/yocto/meta-gateway`, create `~/yocto/secrets/` with the two files
+   (see above: the Wi-Fi file and `root.hash`), and
    replace the two generated files in `~/yocto/build/conf/` with `conf/bblayers.conf` and
    `conf/local.conf` from here.
 4. Build: `bitbake gateway-image`. (The first build, of the standard `core-image-base`, took
