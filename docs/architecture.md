@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that boots, joins Wi-Fi by itself and can be reached over SSH (no SPI yet); Phase 4 has not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has an image that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool (no kernel driver yet); Phase 4 has not started
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -67,7 +67,8 @@ test script `tools/spi_frame_test.py`, the README, this document, and the logic 
 captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
 part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
-logins, but has no SPI; Phase 4 has not started).
+logins and reads valid frames over SPI with a user-space test tool, but has no kernel
+driver; Phase 4 has not started).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -487,9 +488,10 @@ driver, and an interview-style question set on Phases 1 and 2 was answered and g
 ### Phases 3 and 4
 
 Phase 3: the image is built, flashed and boots on the board to a root login on the serial
-console (see the next section). Wi-Fi starts at boot (ADR-0016); only the network and its
-password are typed by hand on the board after each flash. Once Wi-Fi is up, SSH works. The
-next steps are SPI and a smaller image.
+console (see the next section). Wi-Fi starts at boot (ADR-0016) and the network is in the
+image (key kept outside the repo, ADR-0015), so SSH works after a flash with nothing typed.
+SPI is on and the test tool `spi-frame-test` read valid frames from the STM32 (see "SPI and
+the test tool"). The next steps are SSH keys without the empty password, and a smaller image.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
@@ -511,8 +513,8 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
-active lines with my comments (the 20 active lines were compared with the real file and
-are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
+active lines with my comments (the 22 active lines were compared with the real file on
+2026-10-23 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
 `meta-raspberrypi` and `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
 `linux-gateway/meta-gateway/`). `local.conf` adds, on top of the template:
 
@@ -524,6 +526,8 @@ IMAGE_FEATURES += "empty-root-password allow-empty-password allow-root-login"
 LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"       (ADR-0013)
 INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
 IMAGE_FEATURES += "ssh-server-openssh"                (ADR-0015, added 2026-10-22)
+ENABLE_SPI_BUS = "1"                                  (added 2026-10-23: `dtparam=spi=on` in config.txt)
+CORE_IMAGE_EXTRA_INSTALL += "spi-frame-test"          (puts my test tool in the image)
 ```
 
 ### Build result (`bitbake core-image-base`, 2026-10-18)
@@ -541,6 +545,11 @@ IMAGE_FEATURES += "ssh-server-openssh"                (ADR-0015, added 2026-10-2
 - 2026-10-22: third build, with the layer `meta-gateway` (ADR-0016): 78 MiB compressed,
   `...rootfs-20261022194428.wic.bz2`; no zero-byte file in the root filesystem folder outside
   `/etc`, `/var` and `/usr/share`.
+- 2026-10-23: builds with `ENABLE_SPI_BUS` (`...rootfs-20261023093302.wic.bz2`; `config.txt`
+  line `dtparam=spi=on` checked in `deploy/bootfiles/` and on the board), with the Wi-Fi key
+  from a folder outside the repo (`...rootfs-20261023095901.wic.bz2`, 78 MiB), and with the
+  package `spi-frame-test`. The last one was flashed for the SPI test. These images contain
+  the Wi-Fi key: they and the build folder must not be shared.
 
 ### What is in the image
 
@@ -657,6 +666,33 @@ next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bba
   `wpa_supplicant` ended with `-D nl80211`, and `dmesg` had no line about wireless extensions.
 - Not checked: whether the `SIOCSIWENCODEEXT` errors are gone from the output of `wpa_supplicant`.
 
+### Wi-Fi network in the image (2026-10-23, ADR-0015 update)
+
+The recipe `wpa-supplicant` installs `/etc/wpa_supplicant.conf` (mode 600) from a file named
+`wpa_supplicant.conf-sane`. My layer has `recipes-connectivity/wpa-supplicant/wpa-supplicant_%.bbappend`
+with `FILESEXTRAPATHS:prepend := "/home/mariosdimopoulos/yocto/secrets:"`. The folder
+`~/yocto/secrets/` is outside the repo and holds my `wpa_supplicant.conf-sane` (country, SSID and
+the derived `psk`; `.gitignore` has a rule for any `secrets/` folder). With the image flashed, the
+Pi joined Wi-Fi at boot and SSH worked with nothing typed on the board. If the folder is missing
+the build does not fail and the placeholder network is installed.
+
+### SPI and the test tool (2026-10-24)
+
+`ENABLE_SPI_BUS = "1"` makes `config.txt` contain `dtparam=spi=on`; on the board `/dev/spidev0.0`
+and `/dev/spidev0.1` exist. The image has no Python, so I wrote `spi-frame-test` in C
+(`linux-gateway/meta-gateway/recipes-test/spi-frame-test/`): one SPI transfer of 14 bytes at
+1 MHz in mode 0 through `spidev`, then the checks of `tools/spi_frame_test.py` (marker `A5`,
+CRC-16). It is a bring-up tool, not the Phase 4 driver.
+
+Wired as in the README table (Pi pins 24, 23, 21, 19, 25), the Nucleo running the Phase 2
+firmware, `spi-frame-test 10` printed 10 lines, all with a valid CRC:
+
+- Frame 0: `seq=0 status=1` (NO_READING), `T=0.00 P=0.00`. The next frame has `seq=26`.
+  This is consistent with the stale first read of ADR-0010 (an old frame on the first read after
+  a long idle); I did not measure the mechanism in this run.
+- Frames 1 to 9: `seq` 26 to 34 (one more per second), `status=0`, `T=21.57 to 21.58 C`,
+  `P=1015.69 to 1015.71 hPa`.
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -668,11 +704,13 @@ next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bba
 - The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
   `defaults`: a power cut during a write there could corrupt it. For the final image it should
   be read-only or not mounted.
-- The Wi-Fi network and password are typed by hand after each flash, and the SSH server
-  accepts an empty root password (a password is set by hand after each flash); keys are not
-  set up.
-- SPI is not enabled for the board: `ENABLE_SPI_BUS` is not set and no device-tree entry
-  exists for our device (needed for Phase 4).
+- The Wi-Fi key is inside every image and in the build folder, and the SSH server accepts an
+  empty root password (I chose not to set a password); keys are not set up. Anyone on the
+  Wi-Fi can log in as root, and anyone with the SD card can read the key.
+- The SPI controller is enabled and `spidev` makes `/dev/spidev0.0`, but no device-tree entry
+  exists for our device (needed for the Phase 4 driver).
+- Only one run of `spi-frame-test` (10 frames) has been made: no speed sweep, no minimum-gap
+  test, nothing on the logic analyzer from this image.
 - The empty root password is a development shortcut and must be removed before the image
   is final.
 - `perl` is built although it is not in the image; why is not known (ADR-0014).
@@ -684,7 +722,7 @@ next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bba
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: SPI, a smaller image without the empty root password, and SSH keys.
+Next: SSH keys and no empty root password, a smaller image; then Phase 4.
 
 ## Open questions / not yet decided
 
@@ -857,3 +895,9 @@ Next: SPI, a smaller image without the empty root password, and SSH keys.
 - 2026-10-23: the layer `meta-gateway` (ADR-0016) makes Wi-Fi start at boot with `nl80211`;
   after a flash and a reboot, SSH from Windows worked with no `ifup wlan0`. The layer and
   the new `bblayers.conf` are copied into `linux-gateway/`.
+- 2026-10-23: `ENABLE_SPI_BUS` (`dtparam=spi=on`), and the Wi-Fi network baked into the image
+  from `~/yocto/secrets/` (outside the repo, `.gitignore` rule for `secrets/`). The Pi joined
+  Wi-Fi and accepted SSH with nothing typed on the board.
+- 2026-10-24: recipe `spi-frame-test` (C, in `meta-gateway`) added to the image. With the
+  Nucleo wired to the Pi, 10 of 10 frames had a valid CRC (`T=21.58 C`, `P=1015.7 hPa`); the
+  first frame was the old `seq=0` one.

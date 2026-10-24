@@ -10,7 +10,7 @@ the build directory (63 GB) live **outside** this repo, in `~/yocto/` in WSL2.
 |---|---|
 | `conf/bblayers.conf` | which layers BitBake reads (four, with `meta-gateway`). An exact copy of the file that built the image. It has absolute paths (`/home/mariosdimopoulos/yocto/...`), so the folders must be at `~/yocto/` for the same user name, or the paths must be edited. |
 | `conf/local.conf` | my settings: machine, distribution, serial console, login features, SSH, SPI and two workarounds. A trimmed copy: the template's comments are dropped and mine say why. Its active lines are identical to the real file. |
-| `meta-gateway/` | my own layer (ADR-0016). Two `.bbappend` files: one for `init-ifupdown` with my copy of `/etc/network/interfaces` (`auto wlan0`, `nl80211`), one for `wpa-supplicant` that points at the secrets folder (below). |
+| `meta-gateway/` | my own layer (ADR-0016). Two `.bbappend` files: one for `init-ifupdown` with my copy of `/etc/network/interfaces` (`auto wlan0`, `nl80211`), one for `wpa-supplicant` that points at the secrets folder (below). One recipe of my own, `spi-frame-test` (a C program that reads and checks the STM32 frames through `/dev/spidev0.0`); it is in the image through `CORE_IMAGE_EXTRA_INSTALL` in `local.conf`. |
 
 `bblayers.conf` points at `~/yocto/meta-gateway`, so BitBake does not read this folder: the
 copy in git and the copy in `~/yocto/` have to be kept the same by hand (they were identical on
