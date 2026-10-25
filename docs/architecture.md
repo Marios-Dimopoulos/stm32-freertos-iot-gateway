@@ -495,7 +495,7 @@ image (key kept outside the repo, ADR-0015), so SSH works after a flash with not
 SPI is on and the test tool `spi-frame-test` read valid frames from the STM32 (see "SPI and
 the test tool"). The image is my own minimal recipe (ADR-0017). Root has a password (hash kept
 outside the repo, ADR-0015 update of 2026-10-24); the serial console and SSH both ask for it. The
-next step is finishing the clean-up of the image.
+clean-up of the image is done as far as I decided (ADR-0017 update of 2026-10-25); Phase 4 is next.
 Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
 driver must leave a minimum delay between SPI transfers, and it must decide what to do
 about the stale first read (read twice, or refresh the buffer on the node).
@@ -517,8 +517,8 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
-active lines with my comments (the 19 active lines were compared with the real file on
-2026-10-24 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
+active lines with my comments (the 20 active lines were compared with the real file on
+2026-10-25 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
 `meta-raspberrypi` and `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
 `linux-gateway/meta-gateway/`). `local.conf` adds, on top of the template:
 
@@ -529,6 +529,7 @@ ENABLE_UART = "1"
 LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"       (ADR-0013)
 INSANE_SKIP:perl += "buildpaths"                      (ADR-0014)
 ENABLE_SPI_BUS = "1"                                  (added 2026-10-23: `dtparam=spi=on` in config.txt)
+USE_VT = "0"                                          (added 2026-10-25: no getty on tty1)
 ```
 
 The package list and the `IMAGE_FEATURES` (`ssh-server-openssh allow-root-login`) of the current
@@ -731,8 +732,9 @@ language files. The comments in the recipe say why each name is there.
 | `gateway-image`, final of 2026-10-24 | 37 MB | 76 | 35 MB |
 
 On the board: boots from the kernel on partition 1, `wlan0` up with an address from the router,
-`/dev/spidev0.0`, `spi-frame-test 10` gave 10 of 10 valid frames. Still in it: `kbd` and `keymaps`
-(hard dependency of `packagegroup-core-boot`), a `getty` on `tty1`, the three `ip: SIOCGIFFLAGS`
+`/dev/spidev0.0`, `spi-frame-test 10` gave 10 of 10 valid frames. The `getty` on `tty1` was removed
+on 2026-10-25 (`USE_VT = "0"`); one `getty` runs, on `ttyS0`. Still in it: `kbd` and `keymaps` (1.7
+MB, hard dependency of `packagegroup-core-boot`, left on purpose), the three `ip: SIOCGIFFLAGS`
 lines at boot, and the Wi-Fi key and the root password hash (both in every image). Not measured:
 boot time, memory use.
 
@@ -758,15 +760,17 @@ boot time, memory use.
 - `core-image-base` carried things a headless sensor gateway does not need (the services
   `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono`, `neard`); `gateway-image` does not. The
   boot partition still has graphics and audio lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`,
-  `dtparam=audio=on`) and the kernel still reserves a 256 MiB CMA pool; I have not changed
-  them.
+  `dtparam=audio=on`) and the kernel still reserves a 256 MiB CMA pool. Switching the graphics
+  off with `DISABLE_VC4GRAPHICS = "1"` failed the build in `cairo` (the `meta-raspberrypi`
+  `cairo_%.bbappend` adds an `egl` option that `cairo` 1.18.4 does not have), so I left it as it
+  is (ADR-0017 update of 2026-10-25).
 - Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
   not tried a rebuild from an empty folder with them. `bblayers.conf` has absolute paths
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: the rest of the clean-up of `gateway-image` (`kbd` and `keymaps`, the `tty1` getty, the
-CMA pool and `config.txt`); then Phase 4.
+Next: the Phase 3 quiz, then Phase 4. Open from Phase 3, optional: the graphics overlay and the CMA
+pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys.
 
 ## Open questions / not yet decided
 
@@ -956,3 +960,7 @@ CMA pool and `config.txt`); then Phase 4.
   is built; the build stops if the file is missing. `IMAGE_FEATURES` moved from `local.conf` into
   the recipe, without `empty-root-password` and `allow-empty-password`. On the board the serial
   console and SSH both ask for the password, and an empty one is refused over SSH.
+- 2026-10-25: `USE_VT = "0"` removes the `getty` on `tty1` (checked in `inittab` and with `ps`).
+  `DISABLE_VC4GRAPHICS = "1"` was tried and undone: `cairo` failed a QA check because of an
+  out-of-date `cairo_%.bbappend` in `meta-raspberrypi`. `kbd` and `keymaps` (1.7 MB) left on
+  purpose. Image `...rootfs-20261025113045.wic.bz2` (37 MB, 76 packages, 35 MiB). ADR-0017.

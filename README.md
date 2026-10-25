@@ -12,8 +12,7 @@ board, joins my Wi-Fi by itself (the key is baked in from a file outside the rep
 in over SSH, and a test tool in the image (`spi-frame-test`) reads valid frames from the
 STM32 over SPI. The image is my own recipe, built up from the minimum: 37 MB root filesystem
 and 76 packages, against 142 MB and 2015 for the standard `core-image-base`. Root has a
-password (only its hash is in the image, kept outside the repo). **Still to come: the rest of
-the clean-up for Phase 3, and Phase 4.**
+password (only its hash is in the image, kept outside the repo). **Still to come: Phase 4.**
 The logic analyzer captures of
 Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it

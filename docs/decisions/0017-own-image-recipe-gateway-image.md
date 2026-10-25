@@ -102,6 +102,33 @@ What is not done:
 - Not measured: boot time and memory use of the final image (the step-1 image showed about 37 MB
   used, as `free` printed it, in KiB).
 
+## Update 2026-10-25: the last clean-up, and what I decided not to do
+
+- **The `tty1` login is gone.** `sysvinit-inittab` adds a `getty` on the HDMI console when `USE_VT`
+  is `"1"` (its default, line 61 of the recipe; the test is on line 33). `USE_VT = "0"` in
+  `local.conf` removed it. Checked: `/etc/inittab` of the root filesystem has only the `ttyS0`
+  line, and on the board `ps` shows one `getty`. The size did not change (37 MB, 76 packages,
+  image `...rootfs-20261025113045.wic.bz2`, 35 MiB); it removes a running process.
+- **`DISABLE_VC4GRAPHICS = "1"` was tried and undone.** The build failed in
+  `cairo-1.18.4 do_configure` with `QA Issue: invalid PACKAGECONFIG(s): egl`. The cause is in
+  the vendor layer: `meta-raspberrypi/recipes-graphics/cairo/cairo_%.bbappend`, line 3, appends
+  ` egl ${PACKAGECONFIG_GLESV2}` when the machine does **not** have the feature `vc4graphics`,
+  and `cairo_1.18.4.bb` of `openembedded-core` defines only `xlib`, `xcb` and `trace`. So the
+  vendor `.bbappend` is out of date for this core version. I do not know why `cairo` is part of
+  the build of a headless image. A fix would be a `cairo_%.bbappend` in my layer with
+  `PACKAGECONFIG:remove = "egl glesv2"`; I did not do it, because the gain is the graphics line in
+  `config.txt` and possibly the 256 MiB CMA reservation (the source of that reservation is not
+  found; "the `vc4` overlay does it" is only a hypothesis), and other recipes might break the same
+  way.
+- **`kbd` and `keymaps` stay.** Measured with `PKGSIZE` in the package data: 1,691,087 and 392
+  bytes (about 1.7 MB, under 5% of the 37 MB). Removing them means `MACHINE_FEATURES:remove =
+  "keyboard"` (they come from `packagegroup-core-boot`, line 24), a variable that many recipes
+  read, so the rebuild would be large for a small gain.
+- Test on the board: one `getty` (`ttyS0`), `wlan0` with an address, `/dev/spidev0.0`; without the
+  Nucleo powered, `spi-frame-test` printed `BAD` frames of all zeros (a dead or missing slave reads as
+  `00` or `FF`, see `frame.h`), and with it powered the result was reported as good (I did not see
+  that output).
+
 ## Interview angle
 
 "The default image pulled in many things a headless gateway never uses, and I could not remove
