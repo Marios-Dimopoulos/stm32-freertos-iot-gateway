@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool (no kernel driver yet); Phase 4 has not started
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my first kernel module (an empty skeleton) builds in a recipe, goes into the image and loads on the board; the SPI driver itself is not written yet
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -68,7 +68,7 @@ captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
 part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
 logins and reads valid frames over SPI with a user-space test tool, but has no kernel
-driver; Phase 4 has not started).
+driver; Phase 4 has started with an empty kernel module, step 4.2).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -495,10 +495,11 @@ image (key kept outside the repo, ADR-0015), so SSH works after a flash with not
 SPI is on and the test tool `spi-frame-test` read valid frames from the STM32 (see "SPI and
 the test tool"). The image is my own minimal recipe (ADR-0017). Root has a password (hash kept
 outside the repo, ADR-0015 update of 2026-10-24); the serial console and SSH both ask for it. The
-clean-up of the image is done as far as I decided (ADR-0017 update of 2026-10-25); Phase 4 is next.
-Phase 4 has not started. It has two requirements that come from Phase 2: the kernel
-driver must leave a minimum delay between SPI transfers, and it must decide what to do
-about the stale first read (read twice, or refresh the buffer on the node).
+clean-up of the image is done as far as I decided (ADR-0017 update of 2026-10-25).
+
+Phase 4 has started (see "Phase 4: the kernel driver"). It has two requirements that come from
+Phase 2: the kernel driver must leave a minimum delay between SPI transfers, and it must decide
+what to do about the stale first read (read twice, or refresh the buffer on the node).
 
 ## Gateway image (Phase 3: built, booted, reachable over Wi-Fi and SSH)
 
@@ -721,7 +722,8 @@ first read; nothing is decided.
 replaces its package list: `IMAGE_INSTALL = "packagegroup-core-boot"` plus Wi-Fi (`wpa-supplicant`,
 `iw`, `wireless-regdb-static`, the firmware packages `...bcm43430` and `...bcm43436`, the modules
 `brcmfmac`, `brcmfmac-cyw`, `brcmutil`, `cfg80211`), SPI (`spi-bcm2835`, `spidev`) and
-`spi-frame-test`. `BAD_RECOMMENDATIONS += "kernel-image-*"` keeps the 26 MB kernel copy out of the
+`spi-frame-test`, and (since 2026-10-25) my kernel module `stm32-node`. `BAD_RECOMMENDATIONS +=
+"kernel-image-*"` keeps the 26 MB kernel copy out of the
 root partition (the kernel is loaded from partition 1), and `IMAGE_LINGUAS = ""` drops the
 language files. The comments in the recipe say why each name is there.
 
@@ -737,6 +739,43 @@ on 2026-10-25 (`USE_VT = "0"`); one `getty` runs, on `ttyS0`. Still in it: `kbd`
 MB, hard dependency of `packagegroup-core-boot`, left on purpose), the three `ip: SIOCGIFFLAGS`
 lines at boot, and the Wi-Fi key and the root password hash (both in every image). Not measured:
 boot time, memory use.
+
+### Phase 4: the kernel driver
+
+**Plan** (agreed 2026-10-25): 4.1 design decisions (not yet written as an ADR); 4.2 an empty kernel
+module in a recipe; 4.3 the SPI driver with `probe`/`remove` and the device-tree overlay; 4.4 one
+SPI transfer, marker and CRC check; 4.5 the character device `/dev/stm32_sensor_node`, the minimum
+gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
+
+**Facts found while planning:**
+- No Mosquitto recipe exists in `openembedded-core`, `meta-yocto` or `meta-raspberrypi`: it is in
+  `meta-openembedded` (a fifth repository), so MQTT needs its own decision.
+- The Pi's base device tree has two `spidev` nodes under `spi@7e204000` (`spidev@0`, `spidev@1`,
+  `compatible = "spidev"`). The STM32 is wired to chip select 0, which `spidev@0` occupies, so the
+  overlay must disable that node and add ours at `reg = <0>`. The labels `spi0`, `spidev0` and
+  `spidev1` exist in the running tree (`/proc/device-tree/__symbols__`). `/boot/overlays` has no
+  SPI overlay in this image (`ls | grep spi` printed nothing; I did not look at what it holds).
+- The interface to user space is assumed to be a character device with the raw 14-byte frame
+  (option A of the 4.1 choice); text output and an IIO device were the alternatives. Not yet
+  recorded in an ADR.
+
+**Step 4.2 (2026-10-25): the empty module.** `meta-gateway/recipes-kernel/stm32-node/` has the recipe
+(`inherit module`, GPL-2.0-only), a `Makefile` with `obj-m := stm32_node.o`, and `stm32_node.c` with
+`module_init`/`module_exit` that print `loaded` and `unloaded`.
+- The first `bitbake stm32-node` compiled the **whole kernel** (`linux-raspberrypi do_compile`, over 14
+  minutes; 42 of 1028 tasks ran), because a module is built against the kernel's build tree and that
+  tree was not in the work folder. Why the cache did not cover it, I do not know.
+- The module is installed as `/lib/modules/6.18.33-v8/updates/stm32_node.ko.xz` (compressed like the
+  other modules; the folder is `updates`, not `extra` as I first wrote in a comment) in the package
+  `kernel-module-stm32-node-6.18.33-v8`.
+- Putting `kernel-module-stm32-node` on the image list failed in `do_rootfs` (`No match for argument`,
+  `neither a recipe nor a generated package`), although the package data lists it as an alias. The
+  recipe name `stm32-node` on the list works: the `module` class makes that package empty and
+  dependent on the real one. I do not know why the alias fails for my module and works for `spidev`.
+- On the board (`gateway-image-...rootfs-20261025162512.wic.bz2`): `modprobe stm32_node` printed
+  `stm32_node: loading out-of-tree module taints kernel.` and `stm32_node: loaded`; `lsmod` showed 12288
+  bytes; `rmmod` printed `stm32_node: unloaded`. The taint line is the normal flag for a module that is
+  not in the kernel tree.
 
 ### Not verified / known problems
 
@@ -769,7 +808,8 @@ boot time, memory use.
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: the Phase 3 quiz, then Phase 4. Open from Phase 3, optional: the graphics overlay and the CMA
+Next: step 4.3 of Phase 4 (the SPI driver with `probe`/`remove` and the overlay). The Phase 3 quiz was
+answered for questions 1 and 2 only. Open from Phase 3, optional: the graphics overlay and the CMA
 pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys.
 
 ## Open questions / not yet decided
@@ -964,3 +1004,7 @@ pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys
   `DISABLE_VC4GRAPHICS = "1"` was tried and undone: `cairo` failed a QA check because of an
   out-of-date `cairo_%.bbappend` in `meta-raspberrypi`. `kbd` and `keymaps` (1.7 MB) left on
   purpose. Image `...rootfs-20261025113045.wic.bz2` (37 MB, 76 packages, 35 MiB). ADR-0017.
+- 2026-10-25: Phase 4 started. Plan in steps 4.1 to 4.7. Step 4.2 done: the empty kernel module
+  `stm32_node` builds in a recipe of `meta-gateway`, goes into the image (as `stm32-node`) and
+  `modprobe`/`rmmod` print `loaded`/`unloaded` on the board. The first build compiled the whole kernel
+  (over 14 minutes). Found: no Mosquitto recipe in our repositories; `spidev@0` occupies chip select 0.

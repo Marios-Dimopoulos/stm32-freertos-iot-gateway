@@ -49,7 +49,16 @@ IMAGE_INSTALL = "\
     kernel-module-spi-bcm2835 \
     kernel-module-spidev \
     spi-frame-test \
+    stm32-node \
     "
+# Phase 4, step 4.2: my own kernel module (recipe stm32-node in this layer). For now it only
+# prints a line when it is loaded and unloaded.
+# The name on the list is the RECIPE, not kernel-module-stm32-node: with that name do_rootfs
+# failed ("No match for argument: kernel-module-stm32-node", "neither a recipe nor a generated
+# package"), although the package data does list it as an alias of the real package
+# kernel-module-stm32-node-6.18.33-v8. The `module` class makes the package of the recipe an
+# empty one that only depends on the real module package, and that is the name to list. (Why
+# the alias fails for my module and works for spidev, I do not know.)
 
 # Packages that something only RECOMMENDS (RRECOMMENDS) and that I do not want. A hard
 # dependency (RDEPENDS) cannot be removed this way, and the build then fails with the name of
