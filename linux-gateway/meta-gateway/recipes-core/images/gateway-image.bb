@@ -96,6 +96,14 @@ IMAGE_LINGUAS = ""
 # with no password, on the serial console and over SSH.
 IMAGE_FEATURES += "ssh-server-openssh allow-root-login"
 
+# Phase 4, step 4.3: the device-tree overlay of the STM32 node goes into the boot partition (the
+# FAT one) as overlays/stm32-node.dtbo. IMAGE_BOOT_FILES is the list of files that `wic` copies
+# into that partition, each as `<file in the deploy folder>;<destination>`. The recipe
+# stm32-node-overlay deploys the file; the second line makes the image wait for it. The
+# `dtoverlay=stm32-node` line in config.txt comes from rpi-config_%.bbappend in this layer.
+IMAGE_BOOT_FILES:append = " devicetree/stm32-node.dtbo;overlays/stm32-node.dtbo"
+do_image_wic[depends] += "stm32-node-overlay:do_deploy"
+
 # The password of root (follow-up of ADR-0015). Only the hash is in the image (SHA-512 crypt, from
 # `openssl passwd -6`), and the hash is in a file OUTSIDE the repo, like the Wi-Fi key. It is
 # written into /etc/shadow here, after the root filesystem is built, so that it is not a

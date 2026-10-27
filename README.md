@@ -12,9 +12,10 @@ board, joins my Wi-Fi by itself (the key is baked in from a file outside the rep
 in over SSH, and a test tool in the image (`spi-frame-test`) reads valid frames from the
 STM32 over SPI. The image is my own recipe, built up from the minimum: 37 MB root filesystem
 and 76 packages, against 142 MB and 2015 for the standard `core-image-base`. Root has a
-password (only its hash is in the image, kept outside the repo). **Phase 4 has started:** my first
-kernel module (an empty skeleton) is built by a recipe, is in the image and loads on the board; the SPI
-driver, the device-tree overlay and MQTT are still to come.
+password (only its hash is in the image, kept outside the repo). **Phase 4 has started:** my kernel
+module is an SPI driver, built by a recipe and attached to the STM32 by a device-tree overlay: at boot
+the kernel matches the two and calls its `probe`. The SPI transfer, the character device and MQTT are
+still to come.
 The logic analyzer captures of
 Phase 2 are done, apart from the re-arm time and the UART bit time.
 The file `docs/architecture.md` describes the real current state, and I keep it

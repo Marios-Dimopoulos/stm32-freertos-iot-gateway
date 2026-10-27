@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my first kernel module (an empty skeleton) builds in a recipe, goes into the image and loads on the board; the SPI driver itself is not written yet
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); it does no SPI transfer yet
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -68,7 +68,8 @@ captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
 part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
 logins and reads valid frames over SPI with a user-space test tool, but has no kernel
-driver; Phase 4 has started with an empty kernel module, step 4.2).
+driver; Phase 4 has started: an SPI driver skeleton whose `probe` runs through a device-tree overlay,
+steps 4.2 and 4.3).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -753,8 +754,9 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
 - The Pi's base device tree has two `spidev` nodes under `spi@7e204000` (`spidev@0`, `spidev@1`,
   `compatible = "spidev"`). The STM32 is wired to chip select 0, which `spidev@0` occupies, so the
   overlay must disable that node and add ours at `reg = <0>`. The labels `spi0`, `spidev0` and
-  `spidev1` exist in the running tree (`/proc/device-tree/__symbols__`). `/boot/overlays` has no
-  SPI overlay in this image (`ls | grep spi` printed nothing; I did not look at what it holds).
+  `spidev1` exist in the running tree (`/proc/device-tree/__symbols__`). `/boot/overlays` holds 77
+  files, none with `spi` in its name: they are the fixed list `RPI_KERNEL_DEVICETREE_OVERLAYS` of
+  `rpi-base.inc`, built from the kernel's own source, so there is no ready-made SPI overlay.
 - The interface to user space is assumed to be a character device with the raw 14-byte frame
   (option A of the 4.1 choice); text output and an IIO device were the alternatives. Not yet
   recorded in an ADR.
@@ -776,6 +778,37 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   `stm32_node: loading out-of-tree module taints kernel.` and `stm32_node: loaded`; `lsmod` showed 12288
   bytes; `rmmod` printed `stm32_node: unloaded`. The taint line is the normal flag for a module that is
   not in the kernel tree.
+
+**Step 4.3 (2026-10-25): the module becomes an SPI driver, and an overlay attaches it.**
+- `stm32_node.c` uses `module_spi_driver()` to register an `spi_driver` with an `of_match_table`
+  (`mdimopoulos,stm32-sensor-node`), an `spi_device_id` table (`stm32-sensor-node`), a `probe` and a
+  `remove` that only print a line with `dev_info()`. No SPI transfer yet.
+- New recipe `recipes-bsp/stm32-node-overlay/` (`inherit devicetree`) compiles `stm32-node.dts`, an
+  overlay (it has the line `/plugin/;`) with two fragments: `spidev0` gets `status = "disabled"`, and a
+  node `stm32@0` is added under `spi0` with the `compatible` above, `reg = <0>` and
+  `spi-max-frequency = <1000000>`. In the recipe: `COMPATIBLE_MACHINE` (the class refuses every machine
+  by default), `PROVIDES:remove = "virtual/dtb"` (an overlay is not the base tree) and
+  `KERNEL_INCLUDE = ""` (no dependency on the kernel configure step; the overlay includes nothing). The
+  class deploys `devicetree/stm32-node.dtbo` into `deploy/images/raspberrypi0-2w-64/`.
+- How it reaches the board: the kernel's overlays cannot include mine (fixed list, kernel source). So
+  `gateway-image.bb` has `IMAGE_BOOT_FILES:append = " devicetree/stm32-node.dtbo;overlays/stm32-node.dtbo"`
+  and `do_image_wic[depends] += "stm32-node-overlay:do_deploy"`, and `rpi-config_%.bbappend` sets
+  `RPI_EXTRA_CONFIG:append` so that `config.txt` gets the line `dtoverlay=stm32-node`. The `\n` in that
+  value became a real new line (checked in `deploy/.../bootfiles/config.txt`).
+- Builds: `bitbake stm32-node-overlay` alone, 853 tasks, all succeeded; `bitbake gateway-image`, 5105
+  tasks, all succeeded.
+- On the board, all as expected: `/boot/overlays/stm32-node.dtbo` (793 bytes); `dtoverlay=stm32-node` in
+  `/boot/config.txt`; a node `stm32@0` under `spi@7e204000` with the right `compatible`; `spidev@0` has
+  `status` = `disabled` and `/dev/spidev0.0` is gone (`/dev/spidev0.1` stays); `stm32_node` was loaded by
+  udev at 4.7 s with no `modprobe`; `dmesg`: `stm32_node spi0.0: probe: chip select 0, max clock 1000000
+  Hz, mode 4`.
+- **Open: `mode 4`.** I expected 0. The mode is a set of bit flags; as I remember the kernel's layout,
+  `0x04` is `SPI_CS_HIGH` (chip select active high), which does not fit an active-low NSS. Hypothesis:
+  the SPI core sets it because the Pi's device tree lists the chip-select GPIO as active-low, and the
+  two inversions cancel. Not verified; the real test is a transfer in step 4.4, and `probe` should set
+  the mode explicitly.
+- The folder `System Volume Information` in `/boot` is created by Windows when the card is opened
+  there; it is not part of the image.
 
 ### Not verified / known problems
 
@@ -808,7 +841,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: step 4.3 of Phase 4 (the SPI driver with `probe`/`remove` and the overlay). The Phase 3 quiz was
+Next: step 4.4 of Phase 4 (one SPI transfer in the driver, with the marker and CRC check, and the
+mode question above). The Phase 3 quiz was
 answered for questions 1 and 2 only. Open from Phase 3, optional: the graphics overlay and the CMA
 pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys.
 
@@ -1008,3 +1042,8 @@ pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys
   `stm32_node` builds in a recipe of `meta-gateway`, goes into the image (as `stm32-node`) and
   `modprobe`/`rmmod` print `loaded`/`unloaded` on the board. The first build compiled the whole kernel
   (over 14 minutes). Found: no Mosquitto recipe in our repositories; `spidev@0` occupies chip select 0.
+- 2026-10-25: Phase 4 step 4.3 done. `stm32_node` is an SPI driver (`probe`/`remove`, no transfer). A
+  device-tree overlay (`stm32-node.dtbo`, built by the recipe `stm32-node-overlay`, placed in
+  `/boot/overlays` through `IMAGE_BOOT_FILES`, loaded by `dtoverlay=stm32-node` from an `rpi-config`
+  `.bbappend`) disables `spidev@0` and adds `stm32@0` on chip select 0. On the board the kernel matched
+  the two names and called `probe` by itself at boot. Open: `probe` printed `mode 4`.

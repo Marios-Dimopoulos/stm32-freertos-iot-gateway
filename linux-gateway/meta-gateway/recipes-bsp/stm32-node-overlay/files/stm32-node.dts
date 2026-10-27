@@ -1,0 +1,53 @@
+/*
+ * Device-tree overlay: adds the STM32 sensor node to the Raspberry Pi's SPI bus.
+ *
+ * An overlay is applied on top of the Pi's base device tree by the firmware at boot, when
+ * config.txt has the line `dtoverlay=stm32-node`. Each fragment says: go to this node of the
+ * base tree (`target`) and apply these changes (`__overlay__`).
+ *
+ * The STM32 is wired to chip select 0 (CE0, Pi pin 24). The base tree already has a node there,
+ * spidev@0, which makes /dev/spidev0.0. Two drivers cannot have the same chip select, so the first
+ * fragment turns that node off and the second adds ours.
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	/* Turn off the spidev node on chip select 0. `spidev0` is a label of the base tree (it is
+	 * listed in /proc/device-tree/__symbols__ on the board). spidev@1 stays. */
+	fragment@0 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	/* Add our device under the SPI controller (`spi0`, the node spi@7e204000). */
+	fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			/* How the children of this controller write their `reg`: one cell, the chip
+			 * select number, and no size. The base node has these already; they are
+			 * repeated here so the overlay does not depend on it. */
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			stm32_sensor_node: stm32@0 {
+				/* The name the driver matches (of_match_table in stm32_node.c). */
+				compatible = "mdimopoulos,stm32-sensor-node";
+
+				/* Chip select 0. */
+				reg = <0>;
+
+				/* 1 MHz, the speed used so far; the project limit is 6 MHz. SPI mode 0
+				 * is the default (no spi-cpol or spi-cpha property), which is what the
+				 * STM32 slave expects. */
+				spi-max-frequency = <1000000>;
+
+				status = "okay";
+			};
+		};
+	};
+};
