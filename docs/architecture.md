@@ -831,9 +831,9 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
 - `perl` is built although it is not in the image; why is not known (ADR-0014).
 - `core-image-base` carried things a headless sensor gateway does not need (the services
   `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono`, `neard`); `gateway-image` does not. The
-  boot partition still has graphics and audio lines in `config.txt` (`dtoverlay=vc4-fkms-v3d`,
-  `dtparam=audio=on`) and the kernel still reserves a 256 MiB CMA pool. Switching the graphics
-  off with `DISABLE_VC4GRAPHICS = "1"` failed the build in `cairo` (the `meta-raspberrypi`
+  boot partition still has an audio line in `config.txt` (`dtparam=audio=on`). The graphics
+  overlay and the 256 MiB CMA pool are gone since 2026-10-27 (see the change log). Switching the
+  graphics off with `DISABLE_VC4GRAPHICS = "1"` failed the build in `cairo` (the `meta-raspberrypi`
   `cairo_%.bbappend` adds an `egl` option that `cairo` 1.18.4 does not have), so I left it as it
   is (ADR-0017 update of 2026-10-25).
 - Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
@@ -843,8 +843,7 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
 
 Next: step 4.4 of Phase 4 (one SPI transfer in the driver, with the marker and CRC check, and the
 mode question above). The Phase 3 quiz was
-answered for questions 1 and 2 only. Open from Phase 3, optional: the graphics overlay and the CMA
-pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys.
+answered for questions 1 and 2 only. Open from Phase 3, optional: `kbd`, a read-only root, SSH keys.
 
 ## Open questions / not yet decided
 
@@ -1047,3 +1046,10 @@ pool (needs a `cairo` workaround in my layer), `kbd`, a read-only root, SSH keys
   `/boot/overlays` through `IMAGE_BOOT_FILES`, loaded by `dtoverlay=stm32-node` from an `rpi-config`
   `.bbappend`) disables `spidev@0` and adds `stm32@0` on chip select 0. On the board the kernel matched
   the two names and called `probe` by itself at boot. Open: `probe` printed `mode 4`.
+- 2026-10-27: the graphics overlay and most of the CMA pool are gone. The 256 MiB came from
+  `dtoverlay=vc4-fkms-v3d`: its `fragment@0` sets `size = 0x10000000` on the CMA node, while the base
+  device tree of the Zero 2 W has 64 MiB (both read with `dtc` from the build files). `rpi-config_%.bbappend`
+  now sets `VC4GRAPHICS = "0"`, a variable of that recipe only (not `DISABLE_VC4GRAPHICS`), so `cairo` is
+  not affected. On the board: CMA 64 MiB, `Memory:` 350,660K of 458,752K available (was 154,540K),
+  `MemAvailable` 354,656 kB, `/dev/spidev0.1` only, `probe` line unchanged. The remaining 64 MiB is
+  unused; a smaller `cma=` on the command line was not tried. ADR-0017 update.

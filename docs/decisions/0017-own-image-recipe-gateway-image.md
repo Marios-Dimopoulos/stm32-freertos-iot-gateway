@@ -142,3 +142,21 @@ filesystem went from 142 MB to 37 MB and the packages from 2015 to 76."
 
 (Measured with the same method before and after: `du -sh` of the root filesystem folder, the
 number of lines of the package manifest, `ls -lh` of the `.wic.bz2`.)
+
+## Update 2026-10-27: the graphics overlay and the CMA pool
+
+The hypothesis above was right. The base device tree of the Zero 2 W has `linux,cma` with `size =
+0x4000000` (64 MiB); the overlay `vc4-fkms-v3d.dtbo` has a fragment that sets `size = 0x10000000`
+(256 MiB) on the same node (both read with `dtc -I dtb -O dts` on the files in `deploy/`). The kernel
+command line had no `cma=`.
+
+`rpi-config` writes `dtoverlay=${VC4DTBO}` only when its own variable `VC4GRAPHICS` is `1`. That
+variable is computed from `MACHINE_FEATURES`, but `rpi-config_%.bbappend` in `meta-gateway` sets it to
+`"0"`, so only the `config.txt` line disappears. `MACHINE_FEATURES` is not touched, so `cairo` does
+not change, and the `cairo` workaround I considered is not needed.
+
+Result on the board: CMA pool 64 MiB (was 256), `Memory: 350660K/458752K available` (was
+154540K), `MemAvailable` 354,656 kB; the `probe` line of `stm32_node` and the SPI nodes are as before.
+The build ran 5105 tasks, 5097 not rerun; only the boot files changed. Not done: the remaining 64 MiB
+(a `cma=` on the command line); nothing uses it, but I did not test whether the Pi firmware
+accepts a smaller value.
