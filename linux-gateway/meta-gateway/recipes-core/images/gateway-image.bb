@@ -90,11 +90,13 @@ IMAGE_LINGUAS = ""
 #                       sshd, ssh-keygen and other programs (a race while `make install` ran in
 #                       parallel, as far as I can tell); `bitbake -f -c install openssh` gave
 #                       complete files. Check the new rootfs for zero-byte files.
-#   allow-root-login    PermitRootLogin yes in sshd_config. Without it OpenSSH refuses root with
-#                       a password ("prohibit-password"), and I log in as root.
 # NOT listed on purpose: empty-root-password and allow-empty-password. They made root log in
 # with no password, on the serial console and over SSH.
-IMAGE_FEATURES += "ssh-server-openssh allow-root-login"
+# NOT listed any more: allow-root-login (PermitRootLogin yes in sshd_config). Since I log in with
+# a key (function install_root_ssh_key below), the default of OpenSSH, "prohibit-password", is
+# enough: root may log in over SSH with a key and never with a password, even if password login
+# were switched on again by mistake.
+IMAGE_FEATURES += "ssh-server-openssh"
 
 # Phase 4, step 4.3: the device-tree overlay of the STM32 node goes into the boot partition (the
 # FAT one) as overlays/stm32-node.dtbo. IMAGE_BOOT_FILES is the list of files that `wic` copies
@@ -133,3 +135,37 @@ set_root_password() {
     fi
 }
 ROOTFS_POSTPROCESS_COMMAND += "set_root_password;"
+
+# SSH login for root with a key, and no password login over SSH (follow-up of ADR-0015: the
+# password was the only protection against anyone on the Wi-Fi). The file is the PUBLIC key
+# (the private half stays on my PC), so it is not secret and lives in the repo. The serial
+# console still asks for the root password, so it stays a way in if the key does not work.
+#
+# sshd ignores authorized_keys if the file or its folders can be written by someone else, so the
+# modes are set here: 700 for the folder and 600 for the file. This runs under pseudo, so the
+# owner is root.
+#
+# PasswordAuthentication is a commented-out line in sshd_config (the default is yes), so sed
+# replaces it, and the check after it stops the build if the line was not there.
+install_root_ssh_key() {
+    keyfile=${THISDIR}/files/root_authorized_keys
+
+    if [ ! -s "$keyfile" ]; then
+        bbfatal "install_root_ssh_key: $keyfile is missing or empty"
+    fi
+    case "$(cat "$keyfile")" in
+        'ssh-ed25519 '*) ;;
+        *) bbfatal "install_root_ssh_key: $keyfile does not start with ssh-ed25519" ;;
+    esac
+
+    install -d -m 0700 ${IMAGE_ROOTFS}/home/root/.ssh
+    install -m 0600 "$keyfile" ${IMAGE_ROOTFS}/home/root/.ssh/authorized_keys
+
+    sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' ${IMAGE_ROOTFS}/etc/ssh/sshd_config
+    if ! grep -q '^PasswordAuthentication no$' ${IMAGE_ROOTFS}/etc/ssh/sshd_config; then
+        bbfatal "install_root_ssh_key: PasswordAuthentication was not set in sshd_config"
+    fi
+}
+ROOTFS_POSTPROCESS_COMMAND += "install_root_ssh_key;"
+# A new key in the file must rebuild the root filesystem; the function body only has the path.
+do_rootfs[file-checksums] += "${THISDIR}/files/root_authorized_keys:True"

@@ -163,6 +163,33 @@ plus a password for the console (the strongest; I can still add it later without
   only protection. The Wi-Fi key and the root hash are in every image and in the build folder, and
   anyone who holds the SD card can read them.
 
+## Update 2026-10-27: SSH login with a key, no password over SSH
+
+The open point above is closed. I made an ed25519 key pair on my PC (`ssh-keygen`, empty
+passphrase, so that no password or passphrase is typed on each login). The public half is in the
+repo (`meta-gateway/recipes-core/images/files/root_authorized_keys`): it is not secret. The private
+half stays in `~/.ssh` on my PC and is never in the repo or in chat.
+
+- **How it gets into the image:** the function `install_root_ssh_key` in `gateway-image.bb`, a root
+  filesystem post-processing step like `set_root_password`. It creates `/home/root/.ssh` (700) and
+  `authorized_keys` (600), because sshd ignores the file if others can write it, and replaces the
+  commented `PasswordAuthentication` line of `sshd_config` with `PasswordAuthentication no`. The build
+  stops if the key file is missing, is not an `ssh-ed25519` line, or the `sshd_config` line was not
+  set. `do_rootfs[file-checksums]` makes a changed key rebuild the root filesystem.
+- **Options not taken:** a separate recipe for the key plus a `.bbappend` of `openssh` with my own
+  copy of `sshd_config` (cleaner in Yocto terms, but a full copy of an upstream file that drifts
+  with each release); keeping the password enabled next to the key (still open to guessing from the
+  Wi-Fi).
+- **`allow-root-login` removed** from `IMAGE_FEATURES`: root now logs in over SSH with a key only
+  (`PermitRootLogin prohibit-password`, the OpenSSH default), so even if password login were switched
+  on again, root could not use a password.
+- **Serial console unchanged:** it still asks for the root password, which is the way in if the key
+  fails.
+- **Tested:** logging in with the key file given to ssh worked with no password prompt, and `ssh -o PubkeyAuthentication=no root@<ip>` gave `Permission denied (publickey)`. Plain `ssh root@<ip>` fails (the key is not named `id_ed25519`, so ssh does not try it) until the key file is given with `-i` or in `~/.ssh/config`.
+- **Still open:** the private key has no passphrase, so whoever copies the file can log in; the
+  Wi-Fi key and the root hash are still in every image; the host keys of `sshd` are new after each
+  flash (my client warns that the key changed).
+
 ## Interview angle
 
 "I kept the Wi-Fi password out of the repo and the image by typing it on the board for the

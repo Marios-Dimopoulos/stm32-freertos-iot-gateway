@@ -822,8 +822,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   `defaults`: a power cut during a write there could corrupt it. For the final image it should
   be read-only or not mounted.
 - The Wi-Fi key and the root password hash are inside every image and in the build folder.
-  Anyone with the SD card can read them. SSH accepts a password for `root` from anyone on the
-  Wi-Fi, so the password is the only protection; SSH keys are not set up (they can be added later).
+  Anyone with the SD card can read them. SSH is key-only since 2026-10-27 (see the change log); the
+  private key is on my PC without a passphrase, so whoever copies that file can log in.
 - The SPI controller is enabled and `spidev` makes `/dev/spidev0.0`, but no device-tree entry
   exists for our device (needed for the Phase 4 driver).
 - Two runs of `spi-frame-test` (10 frames each) have been made: no speed sweep, no minimum-gap
@@ -843,7 +843,7 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
 
 Next: step 4.4 of Phase 4 (one SPI transfer in the driver, with the marker and CRC check, and the
 mode question above). The Phase 3 quiz was
-answered for questions 1 and 2 only. Open from Phase 3, optional: `kbd`, a read-only root, SSH keys.
+answered for questions 1 and 2 only. Open from Phase 3, optional: `kbd`, a read-only root.
 
 ## Open questions / not yet decided
 
@@ -1053,3 +1053,13 @@ answered for questions 1 and 2 only. Open from Phase 3, optional: `kbd`, a read-
   not affected. On the board: CMA 64 MiB, `Memory:` 350,660K of 458,752K available (was 154,540K),
   `MemAvailable` 354,656 kB, `/dev/spidev0.1` only, `probe` line unchanged. The remaining 64 MiB is
   unused; a smaller `cma=` on the command line was not tried. ADR-0017 update.
+- 2026-10-27: SSH login with a key. `gateway-image.bb` has a function `install_root_ssh_key` (a root
+  filesystem post-processing step, like `set_root_password`) that installs the public key from
+  `meta-gateway/recipes-core/images/files/root_authorized_keys` as `/home/root/.ssh/authorized_keys`
+  (folder 700, file 600) and sets `PasswordAuthentication no` in `sshd_config`; the build stops if
+  that line is not changed. The feature `allow-root-login` is removed, so `PermitRootLogin` is
+  OpenSSH's default, `prohibit-password`. Tested: `ssh root@<ip>` logs in with no password prompt
+  (ssh is given the key file `id_ed25519_gateway`; plain `ssh root@<ip>` does not find it, because the
+  name is not one of the default ones); without the key, `Permission denied (publickey)`. The serial
+  console still asks for the root password.
+  ADR-0015 update.
