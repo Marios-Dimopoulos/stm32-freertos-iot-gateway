@@ -820,7 +820,7 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   After every build I should look for zero-byte files in the root filesystem folder.
 - The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
   `defaults`: a power cut during a write there could corrupt it. For the final image it should
-  be read-only or not mounted.
+  be read-only or not mounted (decided on 2026-10-27 not to do it in this project).
 - The Wi-Fi key and the root password hash are inside every image and in the build folder.
   Anyone with the SD card can read them. SSH is key-only since 2026-10-27 (see the change log); the
   private key is on my PC without a passphrase, so whoever copies that file can log in.
@@ -843,7 +843,7 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
 
 Next: step 4.4 of Phase 4 (one SPI transfer in the driver, with the marker and CRC check, and the
 mode question above). The Phase 3 quiz was
-answered for questions 1 and 2 only. Open from Phase 3, optional: `kbd`, a read-only root.
+answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, read-only root not done (see the change log).
 
 ## Open questions / not yet decided
 
@@ -1063,3 +1063,10 @@ answered for questions 1 and 2 only. Open from Phase 3, optional: `kbd`, a read-
   name is not one of the default ones); without the key, `Permission denied (publickey)`. The serial
   console still asks for the root password.
   ADR-0015 update.
+- 2026-10-27: read-only root not done, on purpose. Looked at: `IMAGE_FEATURES += "read-only-rootfs"`
+  makes `/` `ro` in `fstab` and `inittab`; `/run`, `/var/volatile`, `/var/log` and `/tmp` are already in
+  RAM. The cost is `sshd`: without host keys in the image it uses `sshd_config_readonly` (a separate
+  copy, where my `PasswordAuthentication no` would be missing) and makes new host keys in RAM at every
+  boot, so the client's host-key check is worth nothing. Keeping the check needs fixed host keys in the
+  image (a secret in every image) or a writable partition (custom `wic` layout). Neither is needed by
+  this project, so the root stays writable and `/boot` stays mounted read-write. A product would need it.
