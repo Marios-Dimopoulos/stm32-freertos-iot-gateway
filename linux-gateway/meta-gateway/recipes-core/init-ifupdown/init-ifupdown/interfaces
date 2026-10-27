@@ -7,12 +7,16 @@ iface lo inet loopback
 # Wireless interfaces
 # I added `auto wlan0` so the Wi-Fi starts at boot (the original starts only lo and eth0).
 # I changed `wpa-driver wext` to `wpa-driver nl80211`: wext is the old kernel interface and gave ioctl errors (ADR-0015).
+# I added `post-up iw dev wlan0 set power_save off` (2026-10-26): with the driver's default (power save on) the Pi
+# stopped answering the PC (ARP unanswered, "Connection reset" in ssh) until it had transmitted something; with it
+# turned off by hand the connection held. The setting is lost at every reboot, so it is applied here after each ifup.
 auto wlan0
 iface wlan0 inet dhcp
 	wireless_mode managed
 	wireless_essid any
 	wpa-driver nl80211
 	wpa-conf /etc/wpa_supplicant.conf
+	post-up iw dev wlan0 set power_save off
 
 iface atml0 inet dhcp
 
