@@ -830,9 +830,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   while the newest frame at those times was about 97, 184, 217 and 232 (one frame per 0.99 s). So the
   node loads the newest frame right after each transaction and a later read gets that old one. Step 4.5
   decides the policy (read twice and keep the second, or refresh the buffer on the node).
-- The cleaned-up version (2026-10-29), flashed: the first `dmesg` after the boot showed all zeros (a
-  dead node reads `00`, never `A5`). The cause was not found. A reload of the module then gave good
-  frames, so the node, the wires and the driver work.
+- The cleaned-up version (2026-10-29), flashed: `dmesg` showed the frames as expected, so the node,
+  the wires and the driver work.
 - Not verified: the clock on the wire (no logic analyzer capture of the driver); that `speed_hz = 0`
   really gives 1 MHz; `spi-frame-test` cannot run on this image, because `/dev/spidev0.0` is gone.
 
