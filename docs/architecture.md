@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); it does no SPI transfer yet
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); in `probe` it does one SPI transfer and checks the frame (step 4.4), and nothing else yet
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -67,9 +67,9 @@ test script `tools/spi_frame_test.py`, the README, this document, and the logic 
 captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
 part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
-logins and reads valid frames over SPI with a user-space test tool, but has no kernel
-driver; Phase 4 has started: an SPI driver skeleton whose `probe` runs through a device-tree overlay,
-steps 4.2 and 4.3).
+logins and reads valid frames over SPI with a user-space test tool, but has no finished kernel
+driver; Phase 4 has started: an SPI driver whose `probe` runs through a device-tree overlay and reads
+and checks one frame (steps 4.2 to 4.4), with no character device yet).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -802,13 +802,36 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   `status` = `disabled` and `/dev/spidev0.0` is gone (`/dev/spidev0.1` stays); `stm32_node` was loaded by
   udev at 4.7 s with no `modprobe`; `dmesg`: `stm32_node spi0.0: probe: chip select 0, max clock 1000000
   Hz, mode 4`.
-- **Open: `mode 4`.** I expected 0. The mode is a set of bit flags; as I remember the kernel's layout,
-  `0x04` is `SPI_CS_HIGH` (chip select active high), which does not fit an active-low NSS. Hypothesis:
-  the SPI core sets it because the Pi's device tree lists the chip-select GPIO as active-low, and the
-  two inversions cancel. Not verified; the real test is a transfer in step 4.4, and `probe` should set
-  the mode explicitly.
+- `mode 4` in that line: answered in step 4.4 below.
 - The folder `System Volume Information` in `/boot` is created by Windows when the card is opened
   there; it is not part of the image.
+
+**Step 4.4 (2026-10-27): one SPI transfer in `probe`.**
+- `stm32_node_probe` allocates a 14-byte `tx` buffer (zeros) and a 14-byte `rx` buffer with
+  `devm_kzalloc()` (DMA-safe memory, not the stack), does one blocking `spi_sync_transfer()` of 14 bytes
+  (`speed_hz` 0, so the SPI core uses the 1 MHz of the device-tree node), prints the bytes with `%*ph`,
+  checks the marker `0xA5` and the CRC-16/CCITT-FALSE (my own `crc16()`, the code of `spi-frame-test.c`)
+  and prints seq and status. It does not decode the temperature and pressure: the driver checks the
+  frame and the program that reads it decides what it means (decided 2026-10-29; the first version
+  printed them, with the kernel's integer-only formatting, and was hard to read). If the node does not
+  answer, `probe` prints a warning and still returns 0; only a failed
+  allocation fails it. The blocking call is on purpose: 14 bytes are not a bulk transfer.
+- **`mode 4` explained.** In `include/uapi/linux/spi/spi.h` bit 0 is `SPI_CPHA`, bit 1 `SPI_CPOL` and
+  bit 2 `SPI_CS_HIGH`, so 4 is `CS_HIGH` alone: the clock is mode 0. `drivers/spi/spi.c` (`spi_setup`)
+  sets `CS_HIGH` itself when the controller uses a GPIO descriptor for chip select, because the
+  descriptor holds the active-low polarity. The good CRCs below show that the clock mode and the
+  chip-select polarity are right. Not found: the `cs-gpios` line of the Pi's device tree (my grep of
+  the `.dtsi` files found none), so how `spi-bcm2835` gets its chip-select GPIO is not confirmed.
+- On the board (image `...rootfs-20261027144216.wic.bz2`, STM32 running): udev loaded the module at
+  4.64 s with no `modprobe`; `dmesg` showed `good frame: seq=97 status=0 T=20.17 C P=1011.35 hPa`, and
+  the bytes decode by hand to the same numbers. Four more `rmmod`/`modprobe` rounds: all 5 frames good.
+- **The stale first read, seen from the driver.** Each read returned the frame of about one read
+  earlier: reads at 4.7 s, 90.3 s, 123.1 s, 138.6 s and 148.3 s returned seq 97, 97, 183, 217 and 232,
+  while the newest frame at those times was about 97, 184, 217 and 232 (one frame per 0.99 s). So the
+  node loads the newest frame right after each transaction and a later read gets that old one. Step 4.5
+  decides the policy (read twice and keep the second, or refresh the buffer on the node).
+- Not verified: the clock on the wire (no logic analyzer capture of the driver); that `speed_hz = 0`
+  really gives 1 MHz; `spi-frame-test` cannot run on this image, because `/dev/spidev0.0` is gone.
 
 ### Not verified / known problems
 
@@ -841,8 +864,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: step 4.4 of Phase 4 (one SPI transfer in the driver, with the marker and CRC check, and the
-mode question above). The Phase 3 quiz was
+Next: step 4.5 of Phase 4 (the character device, the minimum gap between transfers and the policy for
+the stale first read, which step 4.4 measured). The Phase 3 quiz was
 answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, read-only root not done (see the change log).
 
 ## Open questions / not yet decided
@@ -1070,3 +1093,9 @@ answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, rea
   boot, so the client's host-key check is worth nothing. Keeping the check needs fixed host keys in the
   image (a secret in every image) or a writable partition (custom `wic` layout). Neither is needed by
   this project, so the root stays writable and `/boot` stays mounted read-write. A product would need it.
+- 2026-10-27: Phase 4 step 4.4 done. `probe` of `stm32_node` does one 14-byte SPI transfer, checks the
+  marker and the CRC and prints the frame; 5 of 5 frames good on the board. `mode 4` is the
+  `SPI_CS_HIGH` flag that the SPI core sets for a GPIO chip select, not a clock mode. The stale first
+  read is confirmed with numbers (each read returns the frame of about the previous read). Also done
+  today: graphics overlay and CMA pool (256 to 64 MiB), SSH key login with password login off, read-only
+  root looked at and not done.
