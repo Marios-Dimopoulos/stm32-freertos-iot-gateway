@@ -862,6 +862,23 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   `read()` never returns 0; `dd bs=14 count=1` reads one frame.
 - Not tested: that `rmmod` refuses while a program holds the file open (`.owner`).
 
+**Step 4.5b (2026-10-29): the minimum gap.**
+- `stm32_node_read_frame()` takes a mutex (`frame_lock`), computes how long ago the previous
+  transfer ended (`ktime_us_delta(ktime_get(), last_transfer_end)`) and, if that is less than
+  `MIN_GAP_US` = 200, sleeps the missing time with `usleep_range()`; then it does the transfer and
+  stores the end time. The mutex makes two simultaneous readers take turns, each with its own gap. A
+  program that reads once a second never waits.
+- Why 200 us: Phase 2 saw gaps of 154 to 228 us between back-to-back reads from Python and 30000 such
+  reads were good, so 154 us is known to work; 200 us is a margin I chose above it. The re-arm time
+  of the node was never measured (only that upper bound).
+- On the board: 500 reads one after another (500 `dd` processes), `ok=500 fail=0`; 8 readers at
+  once, 10 reads each, no failure. **Not verified:** that the driver really leaves 200 us on the wire
+  (it needs a logic analyzer capture of NSS with a reader fast enough to reach the limit); the tests
+  show only that nothing broke.
+- **The first read after the node restarts is the placeholder:** `a5 01 00 00 ... 10 96`, that is
+  `seq=0`, `status=1` (`NO_READING`), T and P zero, a valid CRC. The next read was `seq=36`. This is
+  the stale first read of ADR-0010 in its worst form; step 4.5c decides what to do about it.
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -893,7 +910,7 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: steps 4.5b and 4.5c of Phase 4 (the minimum gap between transfers, and the policy for the stale
+Next: step 4.5c of Phase 4 (the policy for the stale
 first read, which step 4.4 measured). The Phase 3 quiz was
 answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, read-only root not done (see the change log).
 
@@ -1132,3 +1149,7 @@ answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, rea
   `/dev/stm32_sensor_node` does one SPI transfer and returns the checked 14-byte frame (errors:
   `-EINVAL` for less than 14 bytes, `-EIO` for a bad frame). Tested on the board, including `-EIO` with the STM32 not connected. ADR-0018
   is written (kernel driver instead of `spidev`, raw frame, decoding in user space).
+- 2026-10-29: Phase 4 step 4.5b done. `stm32_node_read_frame()` waits until 200 us have passed since the
+  end of the previous transfer (mutex + `usleep_range()`). Built and tested on the board: 500
+  back-to-back reads and 8 concurrent readers, no failure; the 200 us on the wire are not measured.
+  The first read after a node restart returned the placeholder frame (`seq=0`, `status=1`).

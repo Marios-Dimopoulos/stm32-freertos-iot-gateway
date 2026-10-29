@@ -9,20 +9,27 @@
  * Step 4.4 did ONE SPI transfer of 14 bytes in probe and checked the marker and the CRC of the
  * frame. That proved that the kernel can talk to the node.
  *
- * Step 4.5a (this file): the transfer moved from probe into read(). probe now creates the file
+ * Step 4.5a: the transfer moved from probe into read(). probe now creates the file
  * /dev/stm32_sensor_node (a "misc device", the simplest kind of character device), and every
  * read() of that file does one SPI transfer, checks the frame and gives the 14 raw bytes to the
  * program, or an error if the frame is bad. The program decodes the temperature and the pressure
- * (ADR-0018). The minimum gap between transfers (4.5b) and the policy for the stale first read
- * (4.5c) are not here yet.
+ * (ADR-0018).
+ *
+ * Step 4.5b (this file): before each transfer the driver waits until at least MIN_GAP_US have
+ * passed since the end of the previous one, so that a fast reader cannot start a transaction
+ * before the node has loaded the next frame. The policy for the stale first read (4.5c) is not
+ * here yet.
  *
  * The frame layout and the CRC are in firmware/stm32-sensor-node/Src/frame.h and
  * docs/decisions/0010-spi-link-design.md. The same checks are done in user space by
  * spi-frame-test.c (recipes-test), which is the code this file was written from.
  */
+#include <linux/delay.h>
 #include <linux/fs.h>
+#include <linux/ktime.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
 #include <linux/uaccess.h>
@@ -65,8 +72,30 @@ static u16 crc16(const u8 *data, int length)
 }
 
 /*
+ * The least time the node needs between the end of one transaction and the start of the next, to
+ * load the next frame into its DMA (the "re-arm", ADR-0010). Phase 2 saw gaps of 154 to 228 us
+ * between back-to-back reads from Python, and 30000 such reads were good, so 154 us is known to
+ * work. 200 us is a margin I chose above that: the re-arm time itself was never measured (only
+ * this upper bound), and a C program or this driver can read much faster than Python.
+ */
+#define MIN_GAP_US	200
+
+/* When the last transfer ended. It starts at 0, so the first read after the module is loaded
+ * does not wait. */
+static ktime_t last_transfer_end;
+
+/* Two programs can call read() at the same moment. Without a lock both would see the same
+ * last_transfer_end and transfer at once, or too close together; with it they take turns, and
+ * each one waits for its own gap. */
+static DEFINE_MUTEX(frame_lock);
+
+/*
  * Reads one frame from the node. Returns 0 if the SPI transfer itself worked (the bytes are then
  * in rx, good or not) and a negative error number if the transfer failed.
+ *
+ * Before the transfer it waits until MIN_GAP_US have passed since the end of the previous one.
+ * The wait is only paid when a read comes too soon; a program that reads once a second never
+ * waits.
  *
  * The Pi is the SPI master, so the node only sends when the Pi clocks it. A single transfer of 14
  * bytes keeps NSS low for the whole time: the node's DMA sends the whole frame in that one
@@ -83,11 +112,29 @@ static int stm32_node_read_frame(struct spi_device *spi, const u8 *tx, u8 *rx)
 		.rx_buf = rx,
 		.len = FRAME_SIZE,
 	};
+	s64 since_us;
+	int ret;
+
+	mutex_lock(&frame_lock);
+
+	/* ktime_get() is the kernel's monotonic clock; ktime_us_delta(a, b) is a - b in
+	 * microseconds. usleep_range(min, max) sleeps between min and max microseconds; the extra 50
+	 * lets the kernel group wake-ups, which costs less than an exact sleep. */
+	since_us = ktime_us_delta(ktime_get(), last_transfer_end);
+	if (since_us < MIN_GAP_US)
+		usleep_range(MIN_GAP_US - since_us, MIN_GAP_US - since_us + 50);
 
 	/* Blocking call, on purpose and for now: 14 bytes at 1 MHz take about 112 us, so this is
 	 * not a bulk transfer, and read() may sleep. The SPI core and the controller driver choose
 	 * by themselves whether to use DMA for a transfer. */
-	return spi_sync_transfer(spi, &xfer, 1);
+	ret = spi_sync_transfer(spi, &xfer, 1);
+
+	/* Taken after the transfer returns, which is slightly after NSS went high, so the real gap
+	 * is never shorter than MIN_GAP_US. */
+	last_transfer_end = ktime_get();
+
+	mutex_unlock(&frame_lock);
+	return ret;
 }
 
 /*
