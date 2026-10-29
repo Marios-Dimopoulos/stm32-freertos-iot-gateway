@@ -390,6 +390,9 @@ register-level drivers instead of using a vendor library is ADR-0008.
   `/etc/network/interfaces` (`auto wlan0`, `nl80211`), so Wi-Fi starts at boot.
 - ADR-0017: an image recipe of my own, `gateway-image`, built up from `packagegroup-core-boot`
   one tested step at a time (142 MB and 2015 packages down to 37 MB and 76).
+- ADR-0018: a kernel SPI driver (not `spidev`) with a character device that returns the raw 14-byte
+  frame; the driver checks the marker and CRC, the reading program decodes the values; `probe` does
+  not fail when the node does not answer.
 
 ## System design (implemented: this is what runs)
 
@@ -743,7 +746,7 @@ boot time, memory use.
 
 ### Phase 4: the kernel driver
 
-**Plan** (agreed 2026-10-25): 4.1 design decisions (not yet written as an ADR); 4.2 an empty kernel
+**Plan** (agreed 2026-10-25): 4.1 design decisions (ADR-0018); 4.2 an empty kernel
 module in a recipe; 4.3 the SPI driver with `probe`/`remove` and the device-tree overlay; 4.4 one
 SPI transfer, marker and CRC check; 4.5 the character device `/dev/stm32_sensor_node`, the minimum
 gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
@@ -758,8 +761,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   files, none with `spi` in its name: they are the fixed list `RPI_KERNEL_DEVICETREE_OVERLAYS` of
   `rpi-base.inc`, built from the kernel's own source, so there is no ready-made SPI overlay.
 - The interface to user space is assumed to be a character device with the raw 14-byte frame
-  (option A of the 4.1 choice); text output and an IIO device were the alternatives. Not yet
-  recorded in an ADR.
+  (option A of the 4.1 choice); text output and an IIO device were the alternatives. Recorded in
+  ADR-0018 (2026-10-29).
 
 **Step 4.2 (2026-10-25): the empty module.** `meta-gateway/recipes-kernel/stm32-node/` has the recipe
 (`inherit module`, GPL-2.0-only), a `Makefile` with `obj-m := stm32_node.o`, and `stm32_node.c` with
