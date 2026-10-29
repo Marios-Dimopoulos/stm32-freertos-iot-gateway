@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); in `probe` it does one SPI transfer and checks the frame (step 4.4), and nothing else yet
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does one SPI transfer, checks the marker and CRC and returns the 14 raw bytes (step 4.5a), with no minimum gap and no stale-read policy yet
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -68,8 +68,8 @@ captures of the I2C and SPI links (`docs/captures/`).
 **What does not exist:** a UART capture, a measured re-arm time, and a gateway that is
 part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
 logins and reads valid frames over SPI with a user-space test tool, but has no finished kernel
-driver; Phase 4 has started: an SPI driver whose `probe` runs through a device-tree overlay and reads
-and checks one frame (steps 4.2 to 4.4), with no character device yet).
+driver; Phase 4 has started: an SPI driver whose `probe` runs through a device-tree overlay, and a
+character device `/dev/stm32_sensor_node` whose `read()` returns one checked 14-byte frame (steps 4.2 to 4.5a).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -838,6 +838,30 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
 - Not verified: the clock on the wire (no logic analyzer capture of the driver); that `speed_hz = 0`
   really gives 1 MHz; `spi-frame-test` cannot run on this image, because `/dev/spidev0.0` is gone.
 
+**Step 4.5a (2026-10-29): the character device.** (ADR-0018)
+- `probe` no longer talks to the node. It saves the `spi_device` in a global pointer `node_spi` (one
+  node only; with two, a struct found with `container_of()` would be needed, because `read()` is
+  called with fixed arguments and `probe`'s local variables are gone) and calls `misc_register()` on
+  a `miscdevice` named `stm32_sensor_node`; `remove` calls `misc_deregister()` first and then clears
+  the pointer. A misc device is the simplest character device: the kernel makes the `/dev` file and
+  calls the `.read` of the `file_operations` table (`.owner = THIS_MODULE`).
+- `stm32_node_read()` returns `-ENODEV` if the device is gone, `-EINVAL` if the program asks for fewer
+  than 14 bytes, then allocates `tx` and `rx` with `kzalloc()` (freed at the end through one `out:`
+  label), does the transfer, returns `-EIO` for a wrong marker or CRC, copies the frame with
+  `copy_to_user()` (`-EFAULT` on a bad address) and returns 14. The driver checks the frame; the
+  program decodes it.
+- On the board: `/dev/stm32_sensor_node` exists (`crw------- root`, major 10, minor 265); three
+  reads with `dd bs=14 count=1 | hexdump -C` gave frames starting `a5`, with sequence 72, 74 and 96
+  (19.65 C, 1014.58 hPa decoded by hand from the first); `bs=4` gives `Invalid argument`; `rmmod`
+  removes the file and `modprobe` makes it again.
+- **The `-EIO` path, seen with the node off:** the first reads on the new image returned
+  `Input/output error` because the STM32 was not connected and not running (told by me, not seen
+  in a log: the driver does not say whether the marker or the CRC was wrong). Five reads in a loop,
+  back to back, were all good once it was running.
+- BusyBox has no `od -A`/`-t`; `hexdump -C` is in the image. `cat` on the file never ends, because
+  `read()` never returns 0; `dd bs=14 count=1` reads one frame.
+- Not tested: that `rmmod` refuses while a program holds the file open (`.owner`).
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -869,8 +893,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: step 4.5 of Phase 4 (the character device, the minimum gap between transfers and the policy for
-the stale first read, which step 4.4 measured). The Phase 3 quiz was
+Next: steps 4.5b and 4.5c of Phase 4 (the minimum gap between transfers, and the policy for the stale
+first read, which step 4.4 measured). The Phase 3 quiz was
 answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, read-only root not done (see the change log).
 
 ## Open questions / not yet decided
@@ -1104,3 +1128,7 @@ answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, rea
   read is confirmed with numbers (each read returns the frame of about the previous read). Also done
   today: graphics overlay and CMA pool (256 to 64 MiB), SSH key login with password login off, read-only
   root looked at and not done.
+- 2026-10-29: Phase 4 step 4.5a done. `probe` registers a misc device; `read()` of
+  `/dev/stm32_sensor_node` does one SPI transfer and returns the checked 14-byte frame (errors:
+  `-EINVAL` for less than 14 bytes, `-EIO` for a bad frame). Tested on the board, including `-EIO` with the STM32 not connected. ADR-0018
+  is written (kernel driver instead of `spidev`, raw frame, decoding in user space).

@@ -6,17 +6,26 @@
  * matches (probe) and detaches when the device or the driver goes away (remove). The device comes
  * from the device-tree overlay, which adds a node with the compatible string below on chip select 0.
  *
- * Step 4.4 (this file): probe does ONE SPI transfer of 14 bytes, checks the marker and the CRC of
- * the frame, and prints the result in the kernel log. That proves that the kernel can talk to the
- * node. The character device, the minimum gap between transfers and the policy for the stale first
- * read come in step 4.5; until then nothing else uses the transfer.
+ * Step 4.4 did ONE SPI transfer of 14 bytes in probe and checked the marker and the CRC of the
+ * frame. That proved that the kernel can talk to the node.
+ *
+ * Step 4.5a (this file): the transfer moved from probe into read(). probe now creates the file
+ * /dev/stm32_sensor_node (a "misc device", the simplest kind of character device), and every
+ * read() of that file does one SPI transfer, checks the frame and gives the 14 raw bytes to the
+ * program, or an error if the frame is bad. The program decodes the temperature and the pressure
+ * (ADR-0018). The minimum gap between transfers (4.5b) and the policy for the stale first read
+ * (4.5c) are not here yet.
  *
  * The frame layout and the CRC are in firmware/stm32-sensor-node/Src/frame.h and
  * docs/decisions/0010-spi-link-design.md. The same checks are done in user space by
  * spi-frame-test.c (recipes-test), which is the code this file was written from.
  */
+#include <linux/fs.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/spi/spi.h>
+#include <linux/uaccess.h>
 
 /* Puts the module name in front of every pr_*() line. dev_info() below prints the device name
  * instead ("stm32_node spi0.0: ..."), so this only affects pr_*(). */
@@ -31,11 +40,10 @@
 
 /* Offsets in the frame. Numbers are little-endian, as the STM32 wrote them. */
 #define OFFSET_MARKER	0
-#define OFFSET_STATUS	1
-#define OFFSET_SEQUENCE	2	/* 2 bytes */
 #define OFFSET_CRC	12	/* 2 bytes */
-/* Bytes 4 to 11 (temperature and pressure) are not decoded here: the program that reads the frame
- * does it (docs/decisions: the driver checks the frame, user space decides what it means). */
+/* Bytes 1 to 11 (status, sequence, temperature and pressure) are not decoded here: the program
+ * that reads the frame does it (ADR-0018: the driver checks the frame, user space decides what it
+ * means). */
 
 /*
  * CRC-16/CCITT-FALSE: polynomial 0x1021, start 0xFFFF, no reflection, no final XOR. It is the same
@@ -77,10 +85,106 @@ static int stm32_node_read_frame(struct spi_device *spi, const u8 *tx, u8 *rx)
 	};
 
 	/* Blocking call, on purpose and for now: 14 bytes at 1 MHz take about 112 us, so this is
-	 * not a bulk transfer, and probe may sleep. The SPI core and the controller driver choose
+	 * not a bulk transfer, and read() may sleep. The SPI core and the controller driver choose
 	 * by themselves whether to use DMA for a transfer. */
 	return spi_sync_transfer(spi, &xfer, 1);
 }
+
+/*
+ * The SPI device, saved by probe so that read() can find it. The kernel calls read() with fixed
+ * arguments (the open file, the program's buffer, the size, the position), so nothing in them
+ * tells read() which SPI device to use, and probe's local variables are gone after it returns.
+ * A global pointer is enough because this project has exactly one STM32 node; with two nodes
+ * they would overwrite each other, and the usual fix would be a struct that holds the device and
+ * the misc device together, found again with container_of().
+ */
+static struct spi_device *node_spi;
+
+/*
+ * Called by the kernel when a program calls read() on /dev/stm32_sensor_node. buf is an address
+ * in the PROGRAM's memory (that is what __user says), count is how many bytes it asked for.
+ *
+ * Returns the number of bytes read (14) or a negative error number, which the program sees as
+ * read() returning -1 with errno set:
+ *   -ENODEV  the SPI device is gone (the driver was removed while the file was open)
+ *   -EINVAL  the program asked for fewer than 14 bytes; only a whole frame is returned
+ *   -ENOMEM  no memory for the buffers
+ *   -EIO     the node did not answer with a good frame (wrong marker, which is what a dead or
+ *            missing node gives, or wrong CRC). The program cannot tell the two apart.
+ *   -EFAULT  buf is not a valid address in the program
+ *   others   the SPI transfer itself failed
+ */
+static ssize_t stm32_node_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+{
+	u8 *tx, *rx;
+	int ret;
+
+	if (!node_spi)
+		return -ENODEV;
+	if (count < FRAME_SIZE)
+		return -EINVAL;
+
+	/* The buffers come from kzalloc(), not from the stack: a buffer that a controller may use
+	 * with DMA has to be DMA-safe memory, and kernel stacks are not (they can be mapped in a way
+	 * that has no physical address). Separate allocations keep tx and rx on different cache
+	 * lines. They are freed at the end of this call. The tx buffer is all zeros, because the
+	 * node ignores what the master sends. */
+	tx = kzalloc(FRAME_SIZE, GFP_KERNEL);
+	rx = kzalloc(FRAME_SIZE, GFP_KERNEL);
+	if (!tx || !rx) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ret = stm32_node_read_frame(node_spi, tx, rx);
+	if (ret)
+		goto out;
+
+	if (rx[OFFSET_MARKER] != FRAME_MARKER) {
+		/* A dead or missing node reads as all 00 or all FF, never 0xA5 (frame.h). */
+		ret = -EIO;
+		goto out;
+	}
+	/* The node stored its CRC in two bytes, low byte first (little-endian), so the 16-bit
+	 * number is the first byte plus the second one shifted left by 8 bits. */
+	if (crc16(rx, CRC_BYTES) != (rx[OFFSET_CRC] | (rx[OFFSET_CRC + 1] << 8))) {
+		ret = -EIO;
+		goto out;
+	}
+
+	/* The kernel must not write to buf directly: it is an address of another address space and
+	 * may be invalid. copy_to_user() checks it and copies; it returns the number of bytes it
+	 * could NOT copy, so any value other than 0 is an error. */
+	if (copy_to_user(buf, rx, FRAME_SIZE)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = FRAME_SIZE;
+
+out:
+	/* Every exit goes through here, so the buffers are freed in one place. kfree(NULL) does
+	 * nothing, which makes this safe when an allocation failed. */
+	kfree(tx);
+	kfree(rx);
+	return ret;
+}
+
+/* The functions the kernel can call on /dev/stm32_sensor_node. Only read is filled in; the other
+ * fields stay empty. .owner makes the kernel count the module as in use while the file is open,
+ * so that rmmod refuses to remove the code under a read() that is running. */
+static const struct file_operations stm32_node_fops = {
+	.owner = THIS_MODULE,
+	.read = stm32_node_read,
+};
+
+/* What makes the file: misc_register() creates /dev/stm32_sensor_node and links it to the table
+ * above. MISC_DYNAMIC_MINOR lets the kernel choose the minor number, which only tells the kernel
+ * which misc device a file is. */
+static struct miscdevice stm32_node_misc = {
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "stm32_sensor_node",
+	.fops = &stm32_node_fops,
+};
 
 /*
  * Called by the kernel when it finds an SPI device that matches this driver: that is, when a
@@ -91,17 +195,12 @@ static int stm32_node_read_frame(struct spi_device *spi, const u8 *tx, u8 *rx)
  * A return value of 0 means "I accept this device". A negative error number means "no", and the
  * kernel then leaves the device without a driver.
  *
- * If the node does not answer with a good frame (the STM32 is off, a wire is loose, the CRC is
- * wrong), probe still returns 0 and prints a warning. The device exists on the bus either way, and
- * the node may be powered later; the reads of step 4.5 will try again. Returning an error here
- * would make one bad frame at boot remove the driver for good. Only a failed memory allocation
- * makes probe fail.
+ * probe does not talk to the node. Whether the node is powered or connected is found out by each
+ * read(), which returns -EIO if it is not; the node may be powered later, and the device exists on
+ * the bus either way. Only a failed misc_register() makes probe fail.
  */
 static int stm32_node_probe(struct spi_device *spi)
 {
-	u8 *tx, *rx;
-	int ret;
-
 	/* The mode is printed as the SPI core set it. The value 4 is not a clock mode: bits 0 and 1
 	 * (CPHA, CPOL) are 0, so the clock is mode 0, which the node expects. Bit 2 is SPI_CS_HIGH,
 	 * set by the SPI core itself (drivers/spi/spi.c, "forcing CS_HIGH") when the controller
@@ -110,46 +209,18 @@ static int stm32_node_probe(struct spi_device *spi)
 	dev_info(&spi->dev, "probe: chip select %u, max clock %u Hz, mode %u\n",
 		 spi_get_chipselect(spi, 0), spi->max_speed_hz, spi->mode);
 
-	/* The buffers come from devm_kzalloc(), not from the stack: a buffer that a controller may
-	 * use with DMA has to be DMA-safe memory, and kernel stacks are not (they can be mapped in
-	 * a way that has no physical address). Separate allocations keep tx and rx on different
-	 * cache lines. devm_ means the kernel frees them when the driver is detached. The tx buffer
-	 * is all zeros, because the node ignores what the master sends. */
-	tx = devm_kzalloc(&spi->dev, FRAME_SIZE, GFP_KERNEL);
-	rx = devm_kzalloc(&spi->dev, FRAME_SIZE, GFP_KERNEL);
-	if (!tx || !rx)
-		return -ENOMEM;
-
-	ret = stm32_node_read_frame(spi, tx, rx);
-	if (ret) {
-		dev_warn(&spi->dev, "SPI transfer failed: %d\n", ret);
-		return 0;
-	}
-
-	/* %*ph prints a buffer as hex bytes ("A5 00 1A ..."). */
-	dev_info(&spi->dev, "frame: %*ph\n", FRAME_SIZE, rx);
-
-	if (rx[OFFSET_MARKER] != FRAME_MARKER) {
-		/* A dead or missing node reads as all 00 or all FF, never 0xA5 (frame.h). */
-		dev_warn(&spi->dev, "bad marker 0x%02X (expected 0x%02X): node off or not connected?\n",
-			 rx[OFFSET_MARKER], FRAME_MARKER);
-		return 0;
-	}
-	/* The node stored its CRC in two bytes, low byte first (little-endian), so the 16-bit
-	 * number is the first byte plus the second one shifted left by 8 bits. */
-	if (crc16(rx, CRC_BYTES) != (rx[OFFSET_CRC] | (rx[OFFSET_CRC + 1] << 8))) {
-		dev_warn(&spi->dev, "bad CRC: the frame was damaged on the wire\n");
-		return 0;
-	}
-
-	dev_info(&spi->dev, "good frame: seq=%u status=%u\n",
-		 rx[OFFSET_SEQUENCE] | (rx[OFFSET_SEQUENCE + 1] << 8), rx[OFFSET_STATUS]);
-	return 0;
+	/* node_spi is set BEFORE the file exists: as soon as misc_register() returns, a program
+	 * can call read(), and read() needs it. */
+	node_spi = spi;
+	return misc_register(&stm32_node_misc);
 }
 
-/* Called when the device goes away or the driver is unloaded: undo what probe did. */
+/* Called when the device goes away or the driver is unloaded: undo what probe did. The file is
+ * removed first, so that no new read() starts after node_spi is cleared. */
 static void stm32_node_remove(struct spi_device *spi)
 {
+	misc_deregister(&stm32_node_misc);
+	node_spi = NULL;
 	dev_info(&spi->dev, "remove\n");
 }
 
