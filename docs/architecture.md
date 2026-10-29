@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does one SPI transfer, checks the marker and CRC and returns the 14 raw bytes (step 4.5a), with no minimum gap and no stale-read policy yet
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; Phase 4 has started: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does one SPI transfer, checks the marker and CRC and returns the 14 raw bytes (step 4.5a), after a minimum gap of 200 us (4.5b) and with a throw-away first transfer so that the frame is fresh (4.5c, ADR-0019)
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -69,7 +69,7 @@ captures of the I2C and SPI links (`docs/captures/`).
 part of the pipeline (the Phase 3 image boots, joins Wi-Fi at boot and accepts SSH
 logins and reads valid frames over SPI with a user-space test tool, but has no finished kernel
 driver; Phase 4 has started: an SPI driver whose `probe` runs through a device-tree overlay, and a
-character device `/dev/stm32_sensor_node` whose `read()` returns one checked 14-byte frame (steps 4.2 to 4.5a).
+character device `/dev/stm32_sensor_node` whose `read()` returns one checked 14-byte frame (steps 4.2 to 4.5c).
 
 **Where to continue:** see "Where to continue" below.
 
@@ -393,6 +393,8 @@ register-level drivers instead of using a vendor library is ADR-0008.
 - ADR-0018: a kernel SPI driver (not `spidev`) with a character device that returns the raw 14-byte
   frame; the driver checks the marker and CRC, the reading program decodes the values; `probe` does
   not fail when the node does not answer.
+- ADR-0019: the stale first read is handled in the driver: every `read()` does a throw-away transfer
+  first and returns the second frame (no firmware change; about 0.4 ms more per read).
 
 ## System design (implemented: this is what runs)
 
@@ -879,6 +881,19 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   `seq=0`, `status=1` (`NO_READING`), T and P zero, a valid CRC. The next read was `seq=36`. This is
   the stale first read of ADR-0010 in its worst form; step 4.5c decides what to do about it.
 
+**Step 4.5c (2026-10-29): the stale first read.** (ADR-0019)
+- `read()` calls `stm32_node_read_frame()` twice and checks only the second frame. The first transfer
+  is thrown away; its side effect is that the node reloads its output buffer when it ends, and the
+  second transfer, at least `MIN_GAP_US` later, gets that newest frame. Cost: about 0.4 ms per read.
+  The options not taken: a firmware change to refresh the buffer (B), and leaving it to the programs
+  (C).
+- On the board: a read, 30 s of idle and a read gave `seq` 194 and 224 (a fresh frame; before the
+  change the second read would have been about the frame of the first); after a reset of the Nucleo
+  and 3 s of waiting, the first read gave `seq=3`, `status=0`; 8 readers at once, 10 reads each, no
+  failure. The 500 sequential reads were not repeated with this change.
+- The driver does not decode `status`: within the first second after a node start the frame can
+  still be the placeholder (`status=1`), and the program has to look at it.
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -910,8 +925,8 @@ gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs.
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: step 4.5c of Phase 4 (the policy for the stale
-first read, which step 4.4 measured). The Phase 3 quiz was
+Next: step 4.6 of Phase 4 (MQTT: a program that reads the frame and publishes it, and the Mosquitto
+decision). Step 4.5 is finished. The Phase 3 quiz was
 answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, read-only root not done (see the change log).
 
 ## Open questions / not yet decided
@@ -1153,3 +1168,7 @@ answered for questions 1 and 2 only. Phase 3 leftovers: `kbd` left as it is, rea
   end of the previous transfer (mutex + `usleep_range()`). Built and tested on the board: 500
   back-to-back reads and 8 concurrent readers, no failure; the 200 us on the wire are not measured.
   The first read after a node restart returned the placeholder frame (`seq=0`, `status=1`).
+- 2026-10-29: Phase 4 step 4.5c done, which finishes step 4.5. Every `read()` does two transfers and
+  keeps the second (ADR-0019): after 30 s of idle the sequence had moved by 30, and the first read
+  after a reset of the Nucleo was `seq=3`. Eight concurrent readers: no failure. The Phase 4 driver is
+  now: device-tree overlay, SPI driver, `/dev/stm32_sensor_node`, 200 us gap, fresh frame. Next is MQTT.

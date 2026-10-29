@@ -15,10 +15,13 @@
  * program, or an error if the frame is bad. The program decodes the temperature and the pressure
  * (ADR-0018).
  *
- * Step 4.5b (this file): before each transfer the driver waits until at least MIN_GAP_US have
+ * Step 4.5b: before each transfer the driver waits until at least MIN_GAP_US have
  * passed since the end of the previous one, so that a fast reader cannot start a transaction
- * before the node has loaded the next frame. The policy for the stale first read (4.5c) is not
- * here yet.
+ * before the node has loaded the next frame.
+ *
+ * Step 4.5c (this file): every read() does two transfers and keeps the second, because a transfer
+ * returns the frame the node loaded after the previous one (the "stale first read"). The first
+ * frame is thrown away.
  *
  * The frame layout and the CRC are in firmware/stm32-sensor-node/Src/frame.h and
  * docs/decisions/0010-spi-link-design.md. The same checks are done in user space by
@@ -183,6 +186,20 @@ static ssize_t stm32_node_read(struct file *file, char __user *buf, size_t count
 		goto out;
 	}
 
+	/* The policy for the stale first read (ADR-0010, step 4.5c): the node loads the newest frame
+	 * into its output buffer right after every transaction, so a transfer returns the frame
+	 * that was loaded after the PREVIOUS one, however long ago that was, or the placeholder if
+	 * there was none since the node started. The first transfer is therefore thrown away; what
+	 * matters is its side effect, that the node reloads its buffer when it ends. */
+	ret = stm32_node_read_frame(node_spi, tx, rx);
+	if (ret)
+		goto out;
+
+	/* The second transfer, at least MIN_GAP_US later (stm32_node_read_frame() waits), gets the
+	 * frame loaded at the end of the first one: the newest the node has, at most one sensor
+	 * period old. Only this frame is checked below. It costs a second transfer on every read
+	 * (about 0.4 ms). If the node has just started and the sensor task has not made a frame yet,
+	 * this is still the placeholder (status 1); the program sees that in the status byte. */
 	ret = stm32_node_read_frame(node_spi, tx, rx);
 	if (ret)
 		goto out;
