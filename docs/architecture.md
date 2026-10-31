@@ -400,6 +400,11 @@ register-level drivers instead of using a vendor library is ADR-0008.
   not fail when the node does not answer.
 - ADR-0019: the stale first read is handled in the driver: every `read()` does a throw-away transfer
   first and returns the second frame (no firmware change; about 0.4 ms more per read).
+- ADR-0020: the MQTT broker (Mosquitto) runs on the Pi and the publisher is a C program with
+  libmosquitto; both come from `meta-openembedded`, a fifth repository. Decided, nothing built yet.
+- ADR-0021: one JSON message per frame on the topic `gateway/stm32/bmp280`; the publisher reads every
+  0.2 s and publishes when `seq` changes; a frame with `status` other than 0 is published without
+  numbers, and `-EIO` is only logged; the broker listens on localhost only, reached through an SSH tunnel.
 
 ## System design (implemented: this is what runs)
 
@@ -987,9 +992,10 @@ below was checked on the board).
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: I am consolidating first (review of the docs, quizzes, understanding the code). Step 4.6 (MQTT: a
-program that reads the frame and publishes it, and the Mosquitto decision, which lives in
-`meta-openembedded`) is paused, then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
+Next: step 4.6 (MQTT). The design is decided (ADR-0020: Mosquitto on the Pi, publisher in C with
+libmosquitto; ADR-0021: message, topic, publish rule, error handling, broker access). To do: clone
+`meta-openembedded` (Wrynose) and pin its commit, add the broker and client tools to the image and check
+the size, then write the publisher in small pieces. Then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
 questions 1 and 2 only; the Phase 4 quiz and the 4.4/4.5 milestone quizzes are not done. Phase 3
 leftovers: `kbd` and the audio line left as they are, read-only root not done (see the change log).
 
