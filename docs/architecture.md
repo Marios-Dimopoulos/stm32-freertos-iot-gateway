@@ -58,8 +58,7 @@ spikes (the analyzer showed spikes only with a probe wiring that disturbed the l
 MOSI on the wire; the UART bit time (PA2 is not reachable on the headers, see below).
 The stale first read after an idle time still exists in the node; the Phase 4 driver hides
 it (ADR-0019). Also not verified, from Phase 4: the 200 us gap and the 1 MHz clock on the wire
-with the kernel driver (no analyzer capture of it), and that `rmmod` refuses while the device
-file is open. Measured on the wire (logic analyzer, 2026-10-20): the I2C read of the BMP280, the
+with the kernel driver (no analyzer capture of it). Measured on the wire (logic analyzer, 2026-10-20): the I2C read of the BMP280, the
 clock error (about 1.1% fast), the SPI frame (112 clocks, mode 0, valid CRC), the SCK
 frequency at 1 to 6 MHz and the gap between back-to-back reads.
 
@@ -856,8 +855,8 @@ to `read()`; this section describes the 4.4 version, and the checks and `crc16()
   bit 2 `SPI_CS_HIGH`, so 4 is `CS_HIGH` alone: the clock is mode 0. `drivers/spi/spi.c` (`spi_setup`)
   sets `CS_HIGH` itself when the controller uses a GPIO descriptor for chip select, because the
   descriptor holds the active-low polarity. The good CRCs below show that the clock mode and the
-  chip-select polarity are right. Not found: the `cs-gpios` line of the Pi's device tree (my grep of
-  the `.dtsi` files found none), so how `spi-bcm2835` gets its chip-select GPIO is not confirmed.
+  chip-select polarity are right. Where the chip-select GPIO comes from was settled on 2026-10-31
+  (see "Checks on the board" after step 4.5c): the Pi's device tree has `cs-gpios`.
 - On the board (image `...rootfs-20261027144216.wic.bz2`, STM32 running): udev loaded the module at
   4.64 s with no `modprobe`; `dmesg` showed `good frame: seq=97 status=0 T=20.17 C P=1011.35 hPa`, and
   the bytes decode by hand to the same numbers. Four more `rmmod`/`modprobe` rounds: all 5 frames good.
@@ -868,8 +867,9 @@ to `read()`; this section describes the 4.4 version, and the checks and `crc16()
   decides the policy (read twice and keep the second, or refresh the buffer on the node).
 - The cleaned-up version (2026-10-29), flashed: `dmesg` showed the frames as expected, so the node,
   the wires and the driver work.
-- Not verified: the clock on the wire (no logic analyzer capture of the driver); that `speed_hz = 0`
-  really gives 1 MHz; `spi-frame-test` cannot run on this image, because `/dev/spidev0.0` is gone.
+- Not verified: the clock on the wire (no logic analyzer capture of the driver; the SPI core
+  replaces `speed_hz = 0` by the 1 MHz of the device tree, but the real divider result was not
+  measured); `spi-frame-test` cannot run on this image, because `/dev/spidev0.0` is gone.
 
 **Step 4.5a (2026-10-29): the character device.** (ADR-0018)
 - `probe` no longer talks to the node. It saves the `spi_device` in a global pointer `node_spi` (one
@@ -893,7 +893,9 @@ to `read()`; this section describes the 4.4 version, and the checks and `crc16()
   back to back, were all good once it was running.
 - BusyBox has no `od -A`/`-t`; `hexdump -C` is in the image. `cat` on the file never ends, because
   `read()` never returns 0; `dd bs=14 count=1` reads one frame.
-- Not tested: that `rmmod` refuses while a program holds the file open (`.owner`).
+- Tested on 2026-10-31: with `sleep 300 < /dev/stm32_sensor_node &` holding the file open,
+  `lsmod` showed "used by 1" and `rmmod stm32_node` answered `Module stm32_node is in use`; after
+  `kill %1` the `rmmod` worked and `modprobe` made the file again (`.owner = THIS_MODULE` works).
 
 **Step 4.5b (2026-10-29): the minimum gap.**
 - `stm32_node_read_frame()` takes a mutex (`frame_lock`), computes how long ago the previous
@@ -925,6 +927,29 @@ to `read()`; this section describes the 4.4 version, and the checks and `crc16()
 - The driver does not decode `status`: within the first second after a node start the frame can
   still be the placeholder (`status=1`), and the program has to look at it.
 
+**Checks on the board (2026-10-31).** I read the SPI controller driver and the SPI core in the
+mainline 6.18 source in the build folder (the Pi runs the Raspberry Pi fork of 6.18.33, so each point
+below was checked on the board).
+- **Chip select.** `dmesg | grep native-CS` printed nothing, so `spi-bcm2835` does not build the
+  chip-select GPIO itself. The Pi's device tree gives it: `/proc/device-tree/soc/spi@7e204000/cs-gpios`
+  holds two entries, GPIO 8 (chip select 0, Pi pin 24, where the STM32's NSS is wired) and GPIO 7 (chip
+  select 1), both with flag 1 = active low. That is why the SPI core sets `SPI_CS_HIGH` and `probe`
+  prints `mode 4`.
+- **Interrupt mode.** In the source a transfer under 96 bytes is never done with DMA
+  (`BCM2835_SPI_DMA_MIN_LENGTH`), and polling is only used under about 3 bytes at 1 MHz, so my 14-byte
+  transfers use the interrupt. On the board the count of `3f204000.spi` in `/proc/interrupts` went from
+  0 to 10 after 5 reads, which are 10 transfers: one interrupt per transfer. The node also lists `dmas`,
+  so DMA exists for this controller; 14 bytes are too short for it. In this mode the source says
+  there is one idle clock after each byte (9 clock periods per byte, about 126 us for the frame at
+  1 MHz); I derived that from the source, I did not measure it with the driver.
+- **Clock request.** In the SPI core, a transfer with `speed_hz = 0` gets `spi->max_speed_hz`, the
+  1 MHz of the device-tree node. The controller driver then divides its input clock by an even number,
+  so the real clock is at or just below 1 MHz. The exact value is not measured.
+- **Overlay dependency (from reading, not tested).** The overlay adds `stm32@0` under `spi0` but does not
+  switch `spi0` on; the base tree has it `disabled`. So `dtparam=spi=on` (`ENABLE_SPI_BUS`) is a
+  prerequisite of the driver.
+- **`rmmod`:** see the end of step 4.5a.
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -940,9 +965,8 @@ to `read()`; this section describes the 4.4 version, and the checks and `crc16()
   Anyone with the SD card can read them. SSH is key-only since 2026-10-27 (see the change log); the
   private key is on my PC without a passphrase, so whoever copies that file can log in.
 - Phase 4 driver, not verified: the 200 us gap and the 1 MHz clock on the wire (no logic analyzer
-  capture of the driver), `speed_hz = 0` giving exactly the device-tree 1 MHz, `rmmod` refusing
-  while the file is open, 500 sequential reads with the 4.5c build, how `spi-bcm2835` gets its
-  chip-select GPIO, and why the first module build recompiled the whole kernel.
+  capture of the driver; the exact clock the divider gives), 500 sequential reads with the 4.5c
+  build, and why the first module build recompiled the whole kernel.
 - Only the driver's `-EIO` path (node off) and `-EINVAL` (`bs=4`) were seen; `-EFAULT` and
   `-ENODEV` were not triggered. The driver does not say whether the marker or the CRC failed.
 - Wi-Fi power save: the commit `254c5d3` adds a line to `interfaces` that turns power save off after
@@ -1214,6 +1238,10 @@ leftovers: `kbd` and the audio line left as they are, read-only root not done (s
   keeps the second (ADR-0019): after 30 s of idle the sequence had moved by 30, and the first read
   after a reset of the Nucleo was `seq=3`. Eight concurrent readers: no failure. The Phase 4 driver is
   now: device-tree overlay, SPI driver, `/dev/stm32_sensor_node`, 200 us gap, fresh frame. Next is MQTT.
+- 2026-10-31: three Phase 4 items closed on the board. The chip select comes from `cs-gpios` in the Pi's
+  device tree (GPIO 8 for chip select 0, active low); a 14-byte transfer uses the controller's
+  interrupt (10 interrupts for 10 transfers); `rmmod` refuses while the device file is open
+  (`.owner = THIS_MODULE` works). Still open: the 200 us gap and the real clock on the wire.
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),
