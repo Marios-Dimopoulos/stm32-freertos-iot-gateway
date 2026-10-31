@@ -2,8 +2,9 @@
  * gateway-publisher: reads frames from the STM32 sensor node through /dev/stm32_sensor_node and
  * sends them to the MQTT broker on the gateway (ADR-0020, ADR-0021).
  *
- * Step 4.6c, piece 1 (this file): read ONE frame and print it decoded. There is no MQTT yet, so
- * the program can be tested on the board alone.
+ * Step 4.6c, piece 1: read ONE frame and decode it.
+ * Piece 2 (this file): build the MQTT message of ADR-0021 as JSON text and print it. There is
+ * no MQTT yet, so the program can be tested on the board alone.
  *
  * The program does NOT check the marker or the CRC. The kernel driver does that and makes read()
  * fail with EIO for a bad frame (ADR-0018: the driver checks, the program decodes), so a
@@ -25,6 +26,17 @@
 #define OFFSET_SEQUENCE 2           /* 2 bytes, unsigned */
 #define OFFSET_TEMP     4           /* 4 bytes, signed, hundredths of a degree Celsius */
 #define OFFSET_PRESSURE 8           /* 4 bytes, unsigned, pascals */
+
+/* The status that means "this frame has a real reading" (frame_status_t OK in frame.h). Any other
+ * status is the placeholder after a node start (1) or a sensor failure (2 to 6), and then the
+ * temperature and pressure of the frame are zeros that must not be shown as readings. */
+#define STATUS_OK       0
+
+/* The longest message has 71 characters: status 0 with the largest sequence and the most extreme
+ * numbers, {"seq":65535,"status":0,"temp_c":-21474836.48,"press_hpa":-21474836.48} (measured
+ * with a test on the PC). A status other than 0 hides the numbers, so it is always shorter. This
+ * leaves room, and format_json() checks the fit anyway. */
+#define JSON_MAX        96
 
 /* Built byte by byte, so that the result does not depend on the byte order of the CPU. */
 static uint32_t read_le(const uint8_t *p, int bytes)
@@ -57,11 +69,48 @@ static void format_hundredths(char *out, size_t size, int32_t value)
              (long long)(magnitude / 100), (long long)(magnitude % 100));
 }
 
+/*
+ * Builds the message of ADR-0021 into `out` and returns its length, or -1 if it does not fit in
+ * `size` bytes (a message that is cut must never be sent).
+ *
+ *   status 0:       {"seq":97,"status":0,"temp_c":20.17,"press_hpa":1011.35}
+ *   other status:   {"seq":98,"status":2}
+ *
+ * With a status other than 0 the numbers are left out on purpose, so that a subscriber never
+ * sees the zeros of a failed reading as a temperature of 0.00 C. The numbers are written without
+ * quotes, so that a subscriber reads them as numbers and not as text. The text is built by hand
+ * with snprintf: it has two fixed shapes and only numbers in it, so no string needs escaping and
+ * a JSON library would add code for nothing.
+ */
+static int format_json(char *out, size_t size, unsigned sequence, unsigned status,
+                       int32_t temperature, int32_t pressure)
+{
+    char temperature_text[16];
+    char pressure_text[16];
+    int length;
+
+    if (status == STATUS_OK) {
+        format_hundredths(temperature_text, sizeof(temperature_text), temperature);
+        format_hundredths(pressure_text, sizeof(pressure_text), pressure);
+        length = snprintf(out, size,
+                          "{\"seq\":%u,\"status\":%u,\"temp_c\":%s,\"press_hpa\":%s}",
+                          sequence, status, temperature_text, pressure_text);
+    } else {
+        length = snprintf(out, size, "{\"seq\":%u,\"status\":%u}", sequence, status);
+    }
+
+    /* snprintf returns the length the text WOULD have had; a value of `size` or more means it
+     * was cut. */
+    if (length < 0 || (size_t)length >= size) {
+        return -1;
+    }
+    return length;
+}
+
 int main(void)
 {
     uint8_t frame[FRAME_SIZE];
-    char temperature[16];
-    char pressure[16];
+    char json[JSON_MAX];
     ssize_t n;
     int fd;
 
@@ -84,11 +133,15 @@ int main(void)
         return 1;
     }
 
-    format_hundredths(temperature, sizeof(temperature), (int32_t)read_le(&frame[OFFSET_TEMP], 4));
-    format_hundredths(pressure, sizeof(pressure), (int32_t)read_le(&frame[OFFSET_PRESSURE], 4));
+    if (format_json(json, sizeof(json),
+                    (unsigned)read_le(&frame[OFFSET_SEQUENCE], 2),
+                    (unsigned)frame[OFFSET_STATUS],
+                    (int32_t)read_le(&frame[OFFSET_TEMP], 4),
+                    (int32_t)read_le(&frame[OFFSET_PRESSURE], 4)) < 0) {
+        fprintf(stderr, "the message does not fit in %d bytes\n", JSON_MAX);
+        return 1;
+    }
 
-    printf("seq=%u status=%u T=%s C P=%s hPa\n",
-           (unsigned)read_le(&frame[OFFSET_SEQUENCE], 2),
-           (unsigned)frame[OFFSET_STATUS], temperature, pressure);
+    printf("%s\n", json);
     return 0;
 }
