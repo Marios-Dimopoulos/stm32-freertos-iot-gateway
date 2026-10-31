@@ -12,10 +12,17 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 SRC_URI = "file://gateway-publisher.c"
 S = "${UNPACKDIR}"
 
+# The program uses the client library of Mosquitto. DEPENDS makes BitBake build the `mosquitto`
+# recipe first and put its headers (mosquitto.h) and libmosquitto.so in the sysroot that ${CC}
+# uses. Nothing is needed in RDEPENDS: libmosquitto1 is already in the image, and Yocto adds the
+# runtime dependency by itself because the program links against that library.
+DEPENDS = "mosquitto"
+
 # ${CC} is the cross-compiler already set up for the target's sysroot. ${CFLAGS} and ${LDFLAGS}
 # are Yocto's standard flags; leaving them out would also skip the quality checks on the result.
+# -lmosquitto links the client library.
 do_compile() {
-	${CC} ${CFLAGS} ${LDFLAGS} ${S}/gateway-publisher.c -o gateway-publisher
+	${CC} ${CFLAGS} ${LDFLAGS} ${S}/gateway-publisher.c -o gateway-publisher -lmosquitto
 }
 
 do_install() {
