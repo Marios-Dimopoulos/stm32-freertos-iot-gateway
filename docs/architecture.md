@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. **Not done:** MQTT  and the final documentation, so nothing publishes the data yet.
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT (step 4.6) is half done: the broker runs on the gateway (loopback only), but the publisher program is not written, so nothing publishes the data yet. **Not done:** the publisher (4.6c) and the final documentation (4.7).
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -72,8 +72,8 @@ module `stm32-node`, the device-tree overlay, the `spi-frame-test` tool and the 
 boot-config changes). The image boots, joins Wi-Fi, accepts SSH with a key, and
 `/dev/stm32_sensor_node` returns a checked, fresh 14-byte frame.
 **What does not exist:** a UART capture, a measured re-arm time, a program that decodes the
-frame and publishes it (MQTT, step 4.6: no broker recipe chosen, no reader program), and a
-logic analyzer capture of the kernel driver.
+frame and publishes it (MQTT, step 4.6: the broker is in the image since 2026-10-31, but the
+publisher program is not written), and a logic analyzer capture of the kernel driver.
 
 **Where to continue:** see "Where to continue" below.
 
@@ -789,9 +789,9 @@ boot time, memory use.
 **Plan** (agreed 2026-10-25): 4.1 design decisions (ADR-0018); 4.2 an empty kernel
 module in a recipe; 4.3 the SPI driver with `probe`/`remove` and the device-tree overlay; 4.4 one
 SPI transfer, marker and CRC check; 4.5 the character device `/dev/stm32_sensor_node`, the minimum
-gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs. **Status (2026-10-29): 4.1 to 4.5c
-done; 4.6 and 4.7 not started** (MQTT paused by me on purpose: the driver is the part I wanted to
-finish and understand first).
+gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs. **Status (2026-10-31): 4.1 to 4.5c
+done; 4.6a and 4.6b done (layers, broker in the image); 4.6c (the publisher) and 4.7 not started.**
+MQTT was paused from 2026-10-29 until the driver was understood, and restarted on 2026-10-31.
 
 **Facts found while planning:**
 - No Mosquitto recipe exists in `openembedded-core`, `meta-yocto` or `meta-raspberrypi`: it is in
@@ -961,6 +961,33 @@ below was checked on the board).
   prerequisite of the driver.
 - **`rmmod`:** see the end of step 4.5a.
 
+**Step 4.6a (2026-10-31): the layers.** The repo `meta-openembedded` is cloned into `~/yocto/` (branch
+`wrynose`, commit `c734c2cb9713`, 2026-10-29). Mosquitto is not in `meta-oe` but in `meta-networking`
+(`mosquitto_2.1.2.bb`), which depends on `meta-oe` and `meta-python`; the three layers were added with
+`bitbake-layers add-layer`, which checked the dependencies, and `linux-gateway/conf/bblayers.conf` has
+the same seven layers. `meta-python` adds no Python to the image. (ADR-0020.)
+
+**Step 4.6b (2026-10-31): the broker in the image.**
+- `meta-gateway/recipes-connectivity/mosquitto/mosquitto_%.bbappend` removes `ssl` and `websockets`
+  from `PACKAGECONFIG` of that recipe and installs my `mosquitto.conf` over the sample one (my
+  `do_install:append` runs after the recipe's). The config has two lines: `listener 1883 127.0.0.1`
+  and `allow_anonymous true`, written explicitly because I read the 2.x defaults only in forum posts.
+  `gateway-image.bb` lists `mosquitto` and `mosquitto-clients`.
+- Checks on the build: `bitbake-layers show-appends` lists the `.bbappend`; `PACKAGECONFIG` is empty;
+  the root filesystem has my config and `S30mosquitto` links; no zero-byte files. 82 packages (76
+  before), root filesystem 39 MB (37), image 36M compressed. The broker links only `libm`, `libcjson`
+  and `libc`. OpenSSL was already in the image (`wpa_supplicant` links `libssl` and `libcrypto`,
+  `sshd` links `libcrypto`), so removing `ssl` saved no package; ADR-0020 says so.
+- On the board (image `...rootfs-20261031163029.wic.bz2`): the broker runs as the user `mosquitto`
+  (started by `S30mosquitto`). `/proc/net/tcp` shows it listening on `127.0.0.1:1883` only and
+  `sshd` on `0.0.0.0:22`; there is no `/proc/net/tcp6` (no IPv6 in this kernel). `netstat` is not in
+  the image, so `/proc/net/tcp` is the way to look (ports and addresses are hex; `0A` is LISTEN).
+  The Pi had the address 192.168.1.4. I reported the broker test with `mosquitto_pub`/`mosquitto_sub`,
+  the closed port 1883 seen from the laptop and the driver frame as passed; I did not paste those
+  outputs into this document.
+- Not done: the publisher program; the SSH tunnel test from the laptop (the laptop has no Mosquitto
+  client); broker logging (there is `busybox-syslog` in the image, `log_dest syslog` is untried).
+
 ### Not verified / known problems
 
 - I did not compare the SSH host key fingerprint on the board with the one the client
@@ -981,8 +1008,10 @@ below was checked on the board).
 - Only the driver's `-EIO` path (node off) and `-EINVAL` (`bs=4`) were seen; `-EFAULT` and
   `-ENODEV` were not triggered. The driver does not say whether the marker or the CRC failed.
 - Wi-Fi power save: the commit `254c5d3` adds a line to `interfaces` that turns power save off after
-  `ifup`, because I suspected it of unanswered ARP and dropped SSH. It was never built or tested on
-  the board, so I do not know if the suspicion was right.
+  `ifup`, because I suspected it of unanswered ARP and dropped SSH. It is in the image since the
+  build of 2026-10-31, and `iw dev wlan0 get power_save` says `Power save: off` on the board. That
+  shows the setting is applied. It does not show that the original problem is gone; that needs time
+  on the network, and I have not watched for it.
 - The `spi-frame-test` runs (two, 10 frames each) were on the old image with `/dev/spidev0.0`; no speed
   sweep, no minimum-gap test, nothing on the logic analyzer from the gateway image.
 - `perl` is built although it is not in the image; why is not known (ADR-0014).
@@ -998,10 +1027,10 @@ below was checked on the board).
   (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: step 4.6 (MQTT). The design is decided (ADR-0020: Mosquitto on the Pi, publisher in C with
-libmosquitto; ADR-0021: message, topic, publish rule, error handling, broker access). To do: clone
-`meta-openembedded` (Wrynose) and pin its commit, add the broker and client tools to the image and check
-the size, then write the publisher in small pieces. Then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
+Next: step 4.6c (MQTT): the publisher program, in small pieces. The design is decided (ADR-0020:
+Mosquitto on the Pi, publisher in C with libmosquitto; ADR-0021: message, topic, publish rule, error
+handling, broker access). Steps 4.6a (the layers) and 4.6b (the broker in the image) are done. Still
+open for 4.6c: QoS, retain, client ID and keepalive. Then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
 questions 1 and 2 only; the Phase 4 quiz and the 4.4/4.5 milestone quizzes are not done. Phase 3
 leftovers: `kbd` and the audio line left as they are, read-only root not done (see the change log).
 
@@ -1254,6 +1283,11 @@ leftovers: `kbd` and the audio line left as they are, read-only root not done (s
   device tree (GPIO 8 for chip select 0, active low); a 14-byte transfer uses the controller's
   interrupt (10 interrupts for 10 transfers); `rmmod` refuses while the device file is open
   (`.owner = THIS_MODULE` works). Still open: the 200 us gap and the real clock on the wire.
+- 2026-10-31: ADR-0020 (Mosquitto on the Pi, C publisher with libmosquitto) and ADR-0021 (JSON message,
+  topic `gateway/stm32/bmp280`, publish when `seq` changes, errors, broker on localhost only). Step 4.6a:
+  `meta-openembedded` cloned and three of its layers added. Step 4.6b: the broker built into
+  `gateway-image` (82 packages, 39 MB) and running on the board, loopback only. The Wi-Fi power-save
+  line is applied for the first time (`Power save: off`).
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),

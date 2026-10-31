@@ -19,7 +19,9 @@ Constraints and facts:
   (`mosquitto_2.1.2.bb`) is in the layer `meta-networking`, not `meta-oe` as first assumed, and that
   layer depends on `meta-oe` and `meta-python`, so three layers of the repo are added. `meta-python`
   puts no Python in the image. The recipe's default `PACKAGECONFIG` is `ssl websockets`, so the broker
-  would pull in OpenSSL and libwebsockets; the plan is to remove both for this recipe only.
+  would be built with TLS and WebSocket support; the plan was to remove both for this recipe only
+  (done in `mosquitto_%.bbappend`). The first guess was that this keeps OpenSSL out of the image;
+  after the build that turned out wrong (see Consequences).
 - The image has no Python, and ADR-0017 reduced it from 142 MB to 37 MB on purpose.
 - The Pi has no battery clock (the boot log showed the year 2018), so anything that checks certificate
   dates (TLS to a cloud broker) would fail.
@@ -53,7 +55,8 @@ Constraints and facts:
 - How it works: the client library is built by the same `mosquitto` recipe. The program is a recipe in
   `meta-gateway`, like `spi-frame-test`.
 - Pros: same language as the rest of the gateway; small; the library handles keepalive and reconnect.
-- Cons: more verbose than Python; the default build probably pulls in OpenSSL, to be checked.
+- Cons: more verbose than Python; the default build is made with TLS and WebSocket support (removed
+  for this recipe, see Consequences).
 
 ### Publisher: option 2, C with a hand-written MQTT client
 - Pros: no library; teaches the protocol.
@@ -79,8 +82,17 @@ code.
   `bblayers.conf`; the broker needs a configuration and, for remote subscribers, a password that stays
   out of the repo like the Wi-Fi key and the root hash; port 1883 on the Wi-Fi has to be limited or
   protected.
-- To check when building: what the `mosquitto` recipe pulls in (OpenSSL, other libraries), and how much
-  it adds to the 37 MB image.
+- Measured on 2026-10-31 (build of `gateway-image` with `mosquitto` and `mosquitto-clients`): the
+  root filesystem went from 37 MB to 39 MB, the compressed image to 36 MB, the manifest from 76 to 82
+  packages. `readelf -d` shows that the broker links only `libm`, `libcjson` and `libc`: no OpenSSL and
+  no libwebsockets, so `PACKAGECONFIG:remove = "ssl websockets"` did what it should. **But OpenSSL was
+  already in the image:** `wpa_supplicant` links `libssl.so.3` and `libcrypto.so.3`, and `sshd` links
+  `libcrypto.so.3`. So removing `ssl` saved no package; it keeps TLS code out of the broker, and
+  removing `websockets` kept `libwebsockets` out. My first reasoning (that the broker would add
+  OpenSSL) was wrong for this image.
+- Of the 6 new packages, four are certain: `mosquitto`, `mosquitto-clients`, `libmosquitto1` and
+  `cjson` (a library of the broker and the clients). I did not identify the other two; the old
+  manifest was no longer on disk to compare.
 - Open for later steps (each its own decision): the message format, the topic name, the publish
   period, what the publisher does on `-EIO` and on `status` other than 0, and how broker access is
   restricted.
