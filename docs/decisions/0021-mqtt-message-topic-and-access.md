@@ -59,9 +59,29 @@ together, carries `seq` and `status`, and any tool can read it.
   TLS the password and data are in clear text.
 - On the Wi-Fi address without a password: anyone on the network can read and publish.
 
+### Connection settings (decided before writing the publisher, 2026-10-31)
+- **QoS 0** (at most once). QoS 1 adds duplicates and state; it protects only a message that is in
+  flight, and I believe (not checked in the library) that nothing is queued while the connection is
+  down. QoS 2 is a four-step handshake for a value that the next message replaces. On a loopback link,
+  with one replaceable reading per second and a `seq` that shows gaps, QoS 0 is enough. Changing it
+  is a one-number change.
+- **No retain.** A retained message has no age: the frame has no timestamp and the Pi has no clock to
+  add one, and without a Last Will (not in this design) a dead publisher would leave its last reading
+  looking current. A new subscriber waits up to about one second for the first message. Retain with a
+  timestamp becomes possible once the Pi has a clock (new ADR).
+- **Client ID `gateway-publisher`, clean session.** A fixed name makes a second copy of the program
+  kick the first (the broker disconnects the older client with the same ID), which is a useful alarm.
+  A random ID would let two copies publish silently; an ID built from the hostname or the MAC is not
+  needed with one gateway. Clean session: the broker keeps no state for this client (right for QoS 0
+  and a client that subscribes to nothing).
+- **Keepalive 60 s.** My publisher sends about one message per second, which already counts as
+  activity; pings only happen when it is quiet (for example the node is off and every read gives
+  `-EIO`). On loopback a connection cannot half-die the way a Wi-Fi link can, so a faster value gains
+  nothing. A frozen publisher would be dropped by the broker after about 90 s.
+
 ## Decision
 
-All five choices marked above. The swing factors: keep both values of a frame together and keep `seq`
+All the choices marked above. The swing factors: keep both values of a frame together and keep `seq`
 meaningful; use the failure information the firmware already sends; and add no port and no secret.
 
 ## Consequences

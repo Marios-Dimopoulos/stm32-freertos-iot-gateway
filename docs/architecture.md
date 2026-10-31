@@ -1029,8 +1029,9 @@ the same seven layers. `meta-python` adds no Python to the image. (ADR-0020.)
 
 Next: step 4.6c (MQTT): the publisher program, in small pieces. The design is decided (ADR-0020:
 Mosquitto on the Pi, publisher in C with libmosquitto; ADR-0021: message, topic, publish rule, error
-handling, broker access). Steps 4.6a (the layers) and 4.6b (the broker in the image) are done. Still
-open for 4.6c: QoS, retain, client ID and keepalive. Then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
+handling, broker access, and the connection settings: QoS 0, no retain, client ID `gateway-publisher`
+with a clean session, keepalive 60 s). Steps 4.6a (the layers) and 4.6b (the broker in the image) are
+done. Nothing is left to decide for the publisher; its code is next. Then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
 questions 1 and 2 only; the Phase 4 quiz and the 4.4/4.5 milestone quizzes are not done. Phase 3
 leftovers: `kbd` and the audio line left as they are, read-only root not done (see the change log).
 
