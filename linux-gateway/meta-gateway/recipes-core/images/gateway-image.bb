@@ -50,7 +50,14 @@ IMAGE_INSTALL = "\
     kernel-module-spidev \
     spi-frame-test \
     stm32-node \
+    mosquitto \
+    mosquitto-clients \
     "
+# Phase 4, step 4.6b (ADR-0020, ADR-0021): the MQTT broker and its command-line clients. The recipe
+# is in meta-networking (meta-openembedded). `mosquitto` is the broker and its init script, which
+# starts it at boot with the config of mosquitto_%.bbappend (loopback only). `mosquitto-clients` has
+# mosquitto_pub and mosquitto_sub, to check the broker on the Pi before the publisher program
+# exists; they pull in libmosquitto1 by themselves, so it is not listed.
 # Phase 4, step 4.2: my own kernel module (recipe stm32-node in this layer). For now it only
 # prints a line when it is loaded and unloaded.
 # The name on the list is the RECIPE, not kernel-module-stm32-node: with that name do_rootfs
