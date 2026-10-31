@@ -4,8 +4,9 @@
  *
  * Step 4.6c, piece 1: read ONE frame and decode it.
  * Piece 2: build the MQTT message of ADR-0021 as JSON text.
- * Piece 3 (this file): connect to the broker, publish that one message and exit. The loop that
- * repeats this comes in piece 4.
+ * Piece 3: connect to the broker and publish that message.
+ * Piece 4 (this file): do it in a loop. Every POLL_PERIOD_MS the program reads a frame and, if
+ * its sequence number is new, publishes it. It runs until it gets SIGINT or SIGTERM.
  *
  * The program does NOT check the marker or the CRC. The kernel driver does that and makes read()
  * fail with EIO for a bad frame (ADR-0018: the driver checks, the program decodes), so a
@@ -21,7 +22,8 @@
  * includes the broker and plugin headers, and through them the cJSON header, which this program
  * does not need (a syntax check on the PC failed on it). */
 #include <mosquitto/libmosquitto.h>
-#include <stdatomic.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -60,14 +62,18 @@
 #define QOS             0
 #define RETAIN          false
 
-/* How long to wait for the library to say the message has left (see on_publish()), and how often
- * to look. */
-#define PUBLISH_WAIT_MS 2000
-#define POLL_MS         10
+/* How often to ask the driver for a frame (ADR-0021). The node makes a frame about every 0.988 s,
+ * so five reads a second find every new frame within 0.2 s. A read costs two SPI transfers (about
+ * 0.4 ms, ADR-0019), so the load is small. */
+#define POLL_PERIOD_MS  200
 
-/* Set by on_publish(), which runs in the library's network thread, and read by main(). An atomic
- * variable makes that safe without a lock. */
-static atomic_int published;
+/* The value of last_sequence before anything was published. A sequence number has 16 bits, so -1
+ * is never a real one, and the first frame that is read is always new. */
+#define NO_SEQUENCE     (-1)
+
+/* Set by the signal handler, read by the loop in main(). sig_atomic_t is the one type that the C
+ * standard allows a signal handler to write safely. */
+static volatile sig_atomic_t stop_requested;
 
 /* Built byte by byte, so that the result does not depend on the byte order of the CPU. */
 static uint32_t read_le(const uint8_t *p, int bytes)
@@ -138,18 +144,13 @@ static int format_json(char *out, size_t size, unsigned sequence, unsigned statu
     return length;
 }
 
-/*
- * Called by the library when a message has been sent. For QoS 0 that means the message was passed
- * to the operating system for delivery to the broker; there is no confirmation from the broker
- * (that is what QoS 0 is). It is enough to know that the library is done with it, so that
- * main() does not close the connection before the bytes have left.
- */
-static void on_publish(struct mosquitto *mosq, void *obj, int mid)
+/* Runs when SIGINT (Ctrl+C) or SIGTERM (what an init script's `stop` sends) arrives. It only sets a
+ * flag, because almost nothing else is safe to do inside a signal handler; the loop in main()
+ * sees the flag and leaves by itself, so the connection is closed properly. */
+static void on_signal(int signal_number)
 {
-    (void)mosq;
-    (void)obj;
-    (void)mid;
-    atomic_store(&published, 1);
+    (void)signal_number;
+    stop_requested = 1;
 }
 
 /*
@@ -176,7 +177,6 @@ static struct mosquitto *broker_connect(void)
         fprintf(stderr, "mosquitto_new failed\n");
         goto fail_lib;
     }
-    mosquitto_publish_callback_set(mosq, on_publish);
 
     rc = mosquitto_connect(mosq, BROKER_HOST, BROKER_PORT, KEEPALIVE_S);
     if (rc != MOSQ_ERR_SUCCESS) {
@@ -215,63 +215,94 @@ int main(void)
     uint8_t frame[FRAME_SIZE];
     char json[JSON_MAX];
     struct mosquitto *mosq;
+    struct sigaction action;
+    int last_sequence = NO_SEQUENCE;
+    bool read_failing = false;
+    bool publish_failing = false;
+    unsigned sequence;
     ssize_t n;
     int length;
-    int waited_ms;
     int rc;
     int fd;
 
+    /* The device is opened once. Every read() on it does its own transfers and returns the
+     * newest frame, so the file position means nothing. */
     fd = open(DEVICE, O_RDONLY);
     if (fd < 0) {
         perror(DEVICE);
         return 1;
     }
 
-    /* One read() returns the whole 14-byte frame, or fails. EIO means the driver found no good
-     * frame (the node is off, or the frame was damaged). */
-    n = read(fd, frame, sizeof(frame));
-    close(fd);
-    if (n != FRAME_SIZE) {
-        if (n < 0) {
-            perror("read");
-        } else {
-            fprintf(stderr, "read: got %zd bytes instead of %d\n", n, FRAME_SIZE);
-        }
-        return 1;
-    }
-
-    length = format_json(json, sizeof(json),
-                         (unsigned)read_le(&frame[OFFSET_SEQUENCE], 2),
-                         (unsigned)frame[OFFSET_STATUS],
-                         (int32_t)read_le(&frame[OFFSET_TEMP], 4),
-                         (int32_t)read_le(&frame[OFFSET_PRESSURE], 4));
-    if (length < 0) {
-        fprintf(stderr, "the message does not fit in %d bytes\n", JSON_MAX);
-        return 1;
-    }
-    printf("%s\n", json);
-
     mosq = broker_connect();
     if (mosq == NULL) {
+        close(fd);
         return 1;
     }
 
-    rc = mosquitto_publish(mosq, NULL, TOPIC, length, json, QOS, RETAIN);
-    if (rc != MOSQ_ERR_SUCCESS) {
-        fprintf(stderr, "mosquitto_publish failed (%d)\n", rc);
-    } else {
-        /* publish only queues the message; the network thread sends it. Wait until on_publish()
-         * says it has gone, because closing the connection first would drop it. */
-        for (waited_ms = 0; waited_ms < PUBLISH_WAIT_MS && !atomic_load(&published);
-             waited_ms += POLL_MS) {
-            usleep(POLL_MS * 1000);
+    /* No SA_RESTART flag, so a signal also interrupts the sleep below and the program stops at
+     * once and not up to 0.2 s later. */
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = on_signal;
+    sigaction(SIGINT, &action, NULL);
+    sigaction(SIGTERM, &action, NULL);
+
+    while (!stop_requested) {
+        /* One read() returns the whole 14-byte frame, or fails. EIO means the driver found no
+         * good frame (the node is off, or the frame was damaged). */
+        n = read(fd, frame, sizeof(frame));
+
+        if (n < 0 && errno == EINTR) {
+            continue;                   /* a signal: the loop condition decides what to do */
         }
-        if (!atomic_load(&published)) {
-            fprintf(stderr, "the message was not sent within %d ms\n", PUBLISH_WAIT_MS);
-            rc = -1;
+
+        if (n != FRAME_SIZE) {
+            /* Only logged, and only when it starts: a node that is off would otherwise print
+             * five lines a second. Nothing is published, so a subscriber sees that the
+             * sequence stops (ADR-0021). */
+            if (!read_failing) {
+                fprintf(stderr, "read failed: %s\n", (n < 0) ? strerror(errno) : "short frame");
+                read_failing = true;
+            }
+        } else {
+            if (read_failing) {
+                fprintf(stderr, "read works again\n");
+                read_failing = false;
+            }
+
+            sequence = (unsigned)read_le(&frame[OFFSET_SEQUENCE], 2);
+            if ((int)sequence != last_sequence) {
+                length = format_json(json, sizeof(json), sequence,
+                                     (unsigned)frame[OFFSET_STATUS],
+                                     (int32_t)read_le(&frame[OFFSET_TEMP], 4),
+                                     (int32_t)read_le(&frame[OFFSET_PRESSURE], 4));
+                if (length < 0) {
+                    /* Cannot happen: JSON_MAX is larger than the longest message. */
+                    fprintf(stderr, "the message does not fit in %d bytes\n", JSON_MAX);
+                    break;
+                }
+
+                rc = mosquitto_publish(mosq, NULL, TOPIC, length, json, QOS, RETAIN);
+                if (rc == MOSQ_ERR_SUCCESS) {
+                    /* Only a published frame counts as done. After a failed publish the same
+                     * sequence (or a newer one) is tried again at the next round. */
+                    last_sequence = (int)sequence;
+                    if (publish_failing) {
+                        fprintf(stderr, "publish works again\n");
+                        publish_failing = false;
+                    }
+                } else if (!publish_failing) {
+                    /* The library's network thread reconnects by itself when the broker comes
+                     * back; until then publish keeps failing, and this is printed once. */
+                    fprintf(stderr, "mosquitto_publish failed (%d)\n", rc);
+                    publish_failing = true;
+                }
+            }
         }
+
+        usleep(POLL_PERIOD_MS * 1000);
     }
 
     broker_close(mosq);
-    return (rc == MOSQ_ERR_SUCCESS) ? 0 : 1;
+    close(fd);
+    return 0;
 }
