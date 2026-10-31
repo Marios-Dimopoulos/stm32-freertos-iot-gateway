@@ -15,7 +15,11 @@ program is written in.
 
 Constraints and facts:
 - No Mosquitto recipe exists in `openembedded-core`, `meta-yocto` or `meta-raspberrypi`; it is in
-  `meta-openembedded`, a fifth repository.
+  `meta-openembedded`, a fifth repository. Found when the repo was cloned (2026-10-31): the recipe
+  (`mosquitto_2.1.2.bb`) is in the layer `meta-networking`, not `meta-oe` as first assumed, and that
+  layer depends on `meta-oe` and `meta-python`, so three layers of the repo are added. `meta-python`
+  puts no Python in the image. The recipe's default `PACKAGECONFIG` is `ssl websockets`, so the broker
+  would pull in OpenSSL and libwebsockets; the plan is to remove both for this recipe only.
 - The image has no Python, and ADR-0017 reduced it from 142 MB to 37 MB on purpose.
 - The Pi has no battery clock (the boot log showed the year 2018), so anything that checks certificate
   dates (TLS to a cloud broker) would fail.

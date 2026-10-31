@@ -546,15 +546,21 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 | `openembedded-core` | `wrynose` | `636e5d3b12d5` | 2026-10-12 |
 | `meta-yocto` | `wrynose` | `7c25b11156553` | 2026-09-30 |
 | `meta-raspberrypi` | `wrynose` | `919588393f41` | 2026-10-10 |
+| `meta-openembedded` (added 2026-10-31, ADR-0020) | `wrynose` | `c734c2cb9713` | 2026-10-29 |
 
 ### Build configuration
 
 The configuration is used from `~/yocto/build/conf/` in WSL. Copies are in
 `linux-gateway/conf/`: `bblayers.conf` byte for byte, and `local.conf` trimmed to its
 active lines with my comments (the 20 active lines were compared with the real file on
-2026-10-25 and are identical). `bblayers.conf` lists four layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
-`meta-raspberrypi` and `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
-`linux-gateway/meta-gateway/`). `local.conf` adds, on top of the template:
+2026-10-25 and are identical; the `local.conf` check was not repeated on 2026-10-31).
+`bblayers.conf` lists seven layers: `openembedded-core/meta`, `meta-yocto/meta-poky`,
+`meta-raspberrypi`, `meta-gateway` (mine, ADR-0016; it is in `~/yocto/` and a copy is in
+`linux-gateway/meta-gateway/`) and, since 2026-10-31, `meta-oe`, `meta-python` and `meta-networking`
+from the one repo `meta-openembedded`. Mosquitto is in `meta-networking`, which depends on the other
+two; `meta-python` makes recipes available but puts no Python in the image. Added with
+`bitbake-layers add-layer`, which checked the dependencies; the repo copy was compared with the real
+file (identical). `local.conf` adds, on top of the template:
 
 ```
 MACHINE = "raspberrypi0-2w-64"
