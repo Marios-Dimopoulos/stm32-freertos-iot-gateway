@@ -1,6 +1,7 @@
 # ADR-0020: The MQTT broker runs on the Pi, and the publisher is a C program with libmosquitto
 
-**Status:** Accepted (nothing is built yet; the smaller decisions of step 4.6 are open)
+**Status:** Accepted (built and running on the board; the smaller decisions are in ADR-0021 and
+ADR-0022)
 **Date:** 2026-10-31
 **Phase:** 4
 
@@ -93,9 +94,9 @@ code.
 - Of the 6 new packages, four are certain: `mosquitto`, `mosquitto-clients`, `libmosquitto1` and
   `cjson` (a library of the broker and the clients). I did not identify the other two; the old
   manifest was no longer on disk to compare.
-- Open for later steps (each its own decision): the message format, the topic name, the publish
-  period, what the publisher does on `-EIO` and on `status` other than 0, and how broker access is
-  restricted.
+- Left open here and decided later: the message format, the topic name, the publish period, what the
+  publisher does on `-EIO` and on `status` other than 0, and how broker access is restricted
+  (ADR-0021); how the publisher is started and where it logs (ADR-0022).
 
 ## Interview angle
 

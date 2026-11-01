@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 37 MB root filesystem, 76 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT (step 4.6) is half done: the broker runs on the gateway (loopback only), but the publisher program is not written, so nothing publishes the data yet. **Not done:** the publisher (4.6c) and the final documentation (4.7).
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT (step 4.6) is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. **Not done:** the final documentation and README (4.7), the SSH tunnel test from the laptop, and the quizzes.
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -64,16 +64,16 @@ frequency at 1 to 6 MHz and the gap between back-to-back reads.
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
-frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), nineteen ADRs (`docs/decisions/`), the
+frame, spi, sensor task, transmit task, hardfault, freertos_callbacks, main), twenty-two ADRs (`docs/decisions/`), the
 test script `tools/spi_frame_test.py`, the README, this document, and the logic analyzer
 captures of the I2C and SPI links (`docs/captures/`). On the gateway side, `linux-gateway/` has
 the Yocto configuration and my layer `meta-gateway` (image recipe `gateway-image`, the kernel
-module `stm32-node`, the device-tree overlay, the `spi-frame-test` tool and the Wi-Fi, SSH and
-boot-config changes). The image boots, joins Wi-Fi, accepts SSH with a key, and
-`/dev/stm32_sensor_node` returns a checked, fresh 14-byte frame.
-**What does not exist:** a UART capture, a measured re-arm time, a program that decodes the
-frame and publishes it (MQTT, step 4.6: the broker is in the image since 2026-10-31, but the
-publisher program is not written), and a logic analyzer capture of the kernel driver.
+module `stm32-node`, the device-tree overlay, the `spi-frame-test` tool, the Mosquitto broker
+configuration, the `gateway-publisher` program and the Wi-Fi, SSH and boot-config changes). The image
+boots, joins Wi-Fi, accepts SSH with a key, `/dev/stm32_sensor_node` returns a checked, fresh 14-byte
+frame, and `gateway-publisher` publishes it to the local broker at boot.
+**What does not exist:** a UART capture, a measured re-arm time, a logic analyzer capture of the kernel
+driver, and a test of the broker from the laptop through the SSH tunnel.
 
 **Where to continue:** see "Where to continue" below.
 
@@ -401,10 +401,12 @@ register-level drivers instead of using a vendor library is ADR-0008.
 - ADR-0019: the stale first read is handled in the driver: every `read()` does a throw-away transfer
   first and returns the second frame (no firmware change; about 0.4 ms more per read).
 - ADR-0020: the MQTT broker (Mosquitto) runs on the Pi and the publisher is a C program with
-  libmosquitto; both come from `meta-openembedded`, a fifth repository. Decided, nothing built yet.
+  libmosquitto; both come from `meta-openembedded`, a fifth repository. Built and running.
 - ADR-0021: one JSON message per frame on the topic `gateway/stm32/bmp280`; the publisher reads every
   0.2 s and publishes when `seq` changes; a frame with `status` other than 0 is published without
   numbers, and `-EIO` is only logged; the broker listens on localhost only, reached through an SSH tunnel.
+- ADR-0022: the publisher is started at boot by an init script (`S40`, after the broker's `S30`), waits
+  by itself for the device file and the broker, and logs to syslog (`/var/log/messages`).
 
 ## System design (implemented: this is what runs)
 
@@ -428,7 +430,7 @@ register-level drivers instead of using a vendor library is ADR-0008.
                                        Raspberry Pi Zero 2 W (SPI master)
 ```
 
-The gateway side (Phase 3 and 4, implemented up to the device file; MQTT is not):
+The gateway side (Phase 3 and 4, implemented up to the MQTT broker):
 
 ```
  STM32 node ──SPI0, chip select 0, 1 MHz──► spi-bcm2835 (controller driver)
@@ -440,7 +442,12 @@ The gateway side (Phase 3 and 4, implemented up to the device file; MQTT is not)
                                                    │
                            /dev/stm32_sensor_node  (14 raw bytes per read)
                                                    │
-                  [ reader program + MQTT publisher: step 4.6, not written ]
+                  gateway-publisher (C, libmosquitto): read every 200 ms,
+                  publish JSON when seq changes
+                                                   │ localhost:1883 (loopback only)
+                  Mosquitto broker ── topic gateway/stm32/bmp280
+                                                   │ SSH tunnel (not tested)
+                  subscribers: mosquitto_sub on the Pi; my laptop
 ```
 
 - One task reads the BMP280 over I2C1 (PB8/PB9) once a second and builds a frame.
@@ -531,8 +538,7 @@ outside the repo, ADR-0015 update of 2026-10-24) that only the serial console as
 
 Phase 4: the kernel driver is finished (see "Phase 4: the kernel driver"). The two requirements
 that came from Phase 2 are met: a minimum delay between SPI transfers (step 4.5b) and a policy
-for the stale first read (read twice, step 4.5c, ADR-0019). What is left is step 4.6 (MQTT) and
-4.7 (final docs).
+for the stale first read (read twice, step 4.5c, ADR-0019). Step 4.6 (MQTT) is done since 2026-11-01; what is left is 4.7 (final docs).
 
 ## Gateway image (Phase 3: built, booted, reachable over Wi-Fi and SSH)
 
@@ -790,7 +796,8 @@ boot time, memory use.
 module in a recipe; 4.3 the SPI driver with `probe`/`remove` and the device-tree overlay; 4.4 one
 SPI transfer, marker and CRC check; 4.5 the character device `/dev/stm32_sensor_node`, the minimum
 gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs. **Status (2026-10-31): 4.1 to 4.5c
-done; 4.6a and 4.6b done (layers, broker in the image); 4.6c (the publisher) and 4.7 not started.**
+done; 4.6a, 4.6b and 4.6c done (layers, broker in the image, the publisher started at boot); 4.7
+not started.**
 MQTT was paused from 2026-10-29 until the driver was understood, and restarted on 2026-10-31.
 
 **Facts found while planning:**
@@ -985,8 +992,51 @@ the same seven layers. `meta-python` adds no Python to the image. (ADR-0020.)
   The Pi had the address 192.168.1.4. I reported the broker test with `mosquitto_pub`/`mosquitto_sub`,
   the closed port 1883 seen from the laptop and the driver frame as passed; I did not paste those
   outputs into this document.
-- Not done: the publisher program; the SSH tunnel test from the laptop (the laptop has no Mosquitto
-  client); broker logging (there is `busybox-syslog` in the image, `log_dest syslog` is untried).
+- Not done: the SSH tunnel test from the laptop (the laptop has no Mosquitto client); broker logging
+  (there is `busybox-syslog` in the image, `log_dest syslog` is untried).
+
+**Step 4.6c (2026-10-31 to 2026-11-01): the publisher `gateway-publisher`.** One C file in
+`meta-gateway/recipes-app/gateway-publisher/`, built in five pieces; each was tested on the board before
+the next one (ADR-0020, ADR-0021, ADR-0022).
+- **Piece 1: read and decode.** `read()` on `/dev/stm32_sensor_node` returns the checked 14 bytes; the
+  program decodes them byte by byte (little-endian, temperature signed). It does not check marker and CRC,
+  the driver does. On the board: `seq=14 status=0 T=20.38 C P=1016.55 hPa`.
+- **Piece 2: the JSON.** Built with `snprintf` from integers only: the frame holds hundredths of a degree
+  and pascals, and a pascal is 0.01 hPa, so both print with the same function. The sign is written by hand
+  (`-5 / 100` is 0 in C) and the magnitude is 64-bit. A status other than 0 gives `{"seq":N,"status":S}`
+  without numbers. A message that does not fit the 96-byte buffer is never sent (the longest is 71
+  characters). 13 checks on the PC; on the board `{"seq":596,"status":0,"temp_c":20.37,"press_hpa":1016.50}`.
+- **Piece 3: connect and publish.** libmosquitto: `lib_init`, `new` (client ID `gateway-publisher`, clean
+  session), `connect` (localhost:1883, keepalive 60 s), `loop_start` (a thread for pings and reconnect),
+  `publish` (QoS 0, no retain). The header is `<mosquitto/libmosquitto.h>` because the umbrella header of
+  2.1 pulls in cJSON. `mosquitto_strerror` is in a library that is not in the image.
+  A `mosquitto_sub` on the Pi received `gateway/stm32/bmp280 {"seq":1252,...}`.
+- **Piece 4: the loop.** Read every 200 ms, publish when `seq` changed, and update the remembered `seq` only
+  after a successful publish. Read and publish failures are logged once when they start and once when they
+  end. SIGINT and SIGTERM only set a flag; the loop leaves and closes the connection. Four tests passed:
+  steady one message per second, node off and back on, broker stopped and started, Ctrl+C.
+- **Piece 5: start at boot.** `gateway-publisher.init` (start, stop, restart with `start-stop-daemon`) and
+  `update-rc.d` with `defaults 40 20`: `S40gateway-publisher` in the start folders and `K20` in the stop
+  folders. At start the program waits (every 2 s) for the device file and the broker, logging the first
+  failure only. Messages go to syslog.
+- **Tests of piece 5 on the board** (image `gateway-image...20261101`): the program runs after boot without a
+  manual start, with messages once per second and `seq` without gaps; `stop` removes the process and the pid
+  file and logs `stopped`; a second `start` does nothing; the node powered on after the Pi gave `read
+  failed` and then `read works again` without a restart; with the broker stopped, one log line and the
+  program keeps running, then `connected to the broker` when the broker returns.
+- **What the board showed that I had not expected.** `logread` does not work (`can't find syslogd buffer`);
+  the log is `/var/log/messages`, and its dates are not real because the Pi has no clock. After a failed
+  connect `strerror(errno)` said "Bad file descriptor" with the broker simply stopped; the program now logs
+  the library's code (`failed (code 14)`). My explanation (the library overwrites `errno`) is a guess.
+  `dmesg` has no `good frame` line any more.
+- **Wi-Fi power save, seen at boot.** `dmesg` shows `power save enabled` at 5.79 s and `power save
+  disabled` at 11.47 s, so the line in `interfaces` is applied at every boot.
+- **Two single `read failed` lines with the node running** (about 4 s apart, each followed by `read works
+  again` in the next read), within about two minutes. I do not know the cause, and the driver does not
+  say whether it was the marker or the CRC. No message was lost (`seq` had no gap).
+- **Not verified:** the shutdown order (`K20` before `K30`); that nothing restarts the program if it
+  crashes (no kill test); the SSH tunnel; a frame with a bad CRC produced on purpose (my test of shaking
+  the wires, 1000 reads with no failure, was too weak to show anything).
 
 ### Not verified / known problems
 
@@ -1009,9 +1059,9 @@ the same seven layers. `meta-python` adds no Python to the image. (ADR-0020.)
   `-ENODEV` were not triggered. The driver does not say whether the marker or the CRC failed.
 - Wi-Fi power save: the commit `254c5d3` adds a line to `interfaces` that turns power save off after
   `ifup`, because I suspected it of unanswered ARP and dropped SSH. It is in the image since the
-  build of 2026-10-31, and `iw dev wlan0 get power_save` says `Power save: off` on the board. That
-  shows the setting is applied. It does not show that the original problem is gone; that needs time
-  on the network, and I have not watched for it.
+  build of 2026-10-31, and `iw dev wlan0 get power_save` says `Power save: off` on the board; at boot
+  `dmesg` shows `power save disabled` (2026-11-01). That shows the setting is applied. It does not show
+  that the original problem is gone; that needs time on the network, and I have not watched for it.
 - The `spi-frame-test` runs (two, 10 frames each) were on the old image with `/dev/spidev0.0`; no speed
   sweep, no minimum-gap test, nothing on the logic analyzer from the gateway image.
 - `perl` is built although it is not in the image; why is not known (ADR-0014).
@@ -1023,15 +1073,14 @@ the same seven layers. `meta-python` adds no Python to the image. (ADR-0020.)
   `cairo_%.bbappend` adds an `egl` option that `cairo` 1.18.4 does not have), so I left it as it
   is (ADR-0017 update of 2026-10-25).
 - Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
-  not tried a rebuild from an empty folder with them. `bblayers.conf` has absolute paths
-  (`/home/mariosdimopoulos/yocto/...`). BitBake reads `~/yocto/meta-gateway`, not the copy in
+  not tried a rebuild from an empty folder with them. `bblayers.conf` uses `${TOPDIR}/../` paths
+  since 2026-11-01 (checked with `bitbake-layers show-layers` and `bitbake -p`), so it needs `build/`
+  and the layers in the same parent folder. BitBake reads `~/yocto/meta-gateway`, not the copy in
   git; the two are kept the same by hand (identical on 2026-10-23).
 
-Next: step 4.6c (MQTT): the publisher program, in small pieces. The design is decided (ADR-0020:
-Mosquitto on the Pi, publisher in C with libmosquitto; ADR-0021: message, topic, publish rule, error
-handling, broker access, and the connection settings: QoS 0, no retain, client ID `gateway-publisher`
-with a clean session, keepalive 60 s). Steps 4.6a (the layers) and 4.6b (the broker in the image) are
-done. Nothing is left to decide for the publisher; its code is next. Then 4.7. Step 4.5 is finished. The Phase 3 quiz was answered for
+Next: step 4.7 (README as a portfolio piece and a last pass over this document). Step 4.6 is finished
+(ADR-0020 to ADR-0022). Small open items of 4.6: the SSH tunnel test, the shutdown order, a kill test of
+the publisher. The Phase 3 quiz was answered for
 questions 1 and 2 only; the Phase 4 quiz and the 4.4/4.5 milestone quizzes are not done. Phase 3
 leftovers: `kbd` and the audio line left as they are, read-only root not done (see the change log).
 
@@ -1043,8 +1092,7 @@ leftovers: `kbd` and the audio line left as they are, read-only root not done (s
 - The real re-arm time (only the 154 us minimum gap between back-to-back reads is
   measured), and with it whether the driver's 200 us is a real margin (needs a logic analyzer
   capture of NSS with the kernel driver).
-- Step 4.6: the MQTT broker (Mosquitto from `meta-openembedded`, a fifth repository, or another) and
-  the language of the reader program.
+- Whether the publisher needs to be restarted by init if it crashes (ADR-0022: nothing does it now).
 - Whether the HSI accuracy stays good enough, or the clock moves to the ST-LINK's
   8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). Measured: about 1.1% fast
   (ADR-0006), which nothing in the project needs better than so far; to be decided
@@ -1289,6 +1337,12 @@ leftovers: `kbd` and the audio line left as they are, read-only root not done (s
   `meta-openembedded` cloned and three of its layers added. Step 4.6b: the broker built into
   `gateway-image` (82 packages, 39 MB) and running on the board, loopback only. The Wi-Fi power-save
   line is applied for the first time (`Power save: off`).
+- 2026-11-01: Step 4.6c done. `gateway-publisher` (five pieces, ADR-0021 and ADR-0022) reads the device,
+  publishes JSON to `gateway/stm32/bmp280`, and is started at boot by an init script (`S40`, after the
+  broker). Tested on the board: autostart, `stop` and `start`, the node powered on late, the broker
+  stopped and started. `logread` does not work on this image; the log is `/var/log/messages`.
+  `bblayers.conf` now uses `${TOPDIR}/../` paths. ADR-0020 and ADR-0021 status lines corrected (they
+  still said "nothing is built yet").
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),

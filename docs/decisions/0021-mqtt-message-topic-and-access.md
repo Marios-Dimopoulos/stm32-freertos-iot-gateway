@@ -1,6 +1,6 @@
 # ADR-0021: MQTT message, topic, publish rule, error handling and broker access
 
-**Status:** Accepted (nothing is built yet)
+**Status:** Accepted (built and tested on the board, 2026-11-01; see the Consequences)
 **Date:** 2026-10-31
 **Phase:** 4
 
@@ -93,7 +93,16 @@ meaningful; use the failure information the firmware already sends; and add no p
 - Only programs on the Pi, and my laptop through SSH, can subscribe. Other machines cannot until the Pi
   has a clock and the broker can use TLS (new ADR then).
 - The image needs the Mosquitto client tools (`mosquitto_sub`) to check messages on the Pi itself.
-- Not tested yet; the numbers above (0.2 s, five reads a second) are plans, not measurements.
+- Tested on the board (step 4.6c, 2026-10-31 and 2026-11-01): the message looks like the example
+  (`{"seq":596,"status":0,"temp_c":20.37,"press_hpa":1016.50}`); one message per second with `seq`
+  going up by one and no gaps; read and publish failures are logged once when they start and once
+  when they end; the node off and back on, and the broker stopped and started again, both recover
+  without a restart of the program. How the program is started is in ADR-0022.
+- Not tested: the SSH tunnel from the laptop; a frame with a bad CRC (only a node that was off, and
+  two single `-EIO` reads while the node was running, whose cause I do not know); whether the library
+  queues a QoS 0 message while the connection is down (I only saw `publish` fail and then work
+  again); a message with `status` other than 0 on the board (it was tested on the PC).
+- The numbers 0.2 s and five reads a second are still plans. I did not measure the load.
 
 ## Interview angle
 

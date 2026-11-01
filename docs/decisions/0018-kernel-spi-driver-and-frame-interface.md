@@ -1,6 +1,6 @@
 # ADR-0018: A kernel SPI driver for the STM32 node, with a raw-frame character device
 
-**Status:** Accepted (the driver attaches and reads a frame since step 4.4; the character device is step 4.5 and is not written yet)
+**Status:** Accepted (the driver attaches and reads a frame since step 4.4; the character device `/dev/stm32_sensor_node` has existed since step 4.5)
 **Date:** 2026-10-29
 **Phase:** 4
 
