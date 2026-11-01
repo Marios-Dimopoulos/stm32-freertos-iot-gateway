@@ -98,7 +98,9 @@ meaningful; use the failure information the firmware already sends; and add no p
   going up by one and no gaps; read and publish failures are logged once when they start and once
   when they end; the node off and back on, and the broker stopped and started again, both recover
   without a restart of the program. How the program is started is in ADR-0022.
-- Not tested: the SSH tunnel from the laptop; a frame with a bad CRC (only a node that was off, and
+- The broker access was tested on 2026-11-01: from the laptop, `mosquitto_sub` through `ssh -L` received the
+  messages and stopped when the tunnel closed; a direct connection to `192.168.1.4:1883` was refused.
+- Not tested: a frame with a bad CRC (only a node that was off, and
   two single `-EIO` reads while the node was running, whose cause I do not know); whether the library
   queues a QoS 0 message while the connection is down (I only saw `publish` fail and then work
   again); a message with `status` other than 0 on the board (it was tested on the PC).

@@ -4,7 +4,7 @@ This document reflects the **actual current state** of the system, not the
 target design. Update it as subsystems are completed — don't let it drift
 into aspiration.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT (step 4.6) is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. **Not done:** the final documentation and README (4.7), the SSH tunnel test from the laptop, and the quizzes.
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT (step 4.6) is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. **Not done:** the final documentation and README (4.7), and the quizzes.
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -73,7 +73,7 @@ configuration, the `gateway-publisher` program and the Wi-Fi, SSH and boot-confi
 boots, joins Wi-Fi, accepts SSH with a key, `/dev/stm32_sensor_node` returns a checked, fresh 14-byte
 frame, and `gateway-publisher` publishes it to the local broker at boot.
 **What does not exist:** a UART capture, a measured re-arm time, a logic analyzer capture of the kernel
-driver, and a test of the broker from the laptop through the SSH tunnel.
+driver.
 
 **Where to continue:** see "Where to continue" below.
 
@@ -446,7 +446,7 @@ The gateway side (Phase 3 and 4, implemented up to the MQTT broker):
                   publish JSON when seq changes
                                                    │ localhost:1883 (loopback only)
                   Mosquitto broker ── topic gateway/stm32/bmp280
-                                                   │ SSH tunnel (not tested)
+                                                   │ SSH tunnel (tested 2026-11-01)
                   subscribers: mosquitto_sub on the Pi; my laptop
 ```
 
@@ -992,8 +992,8 @@ the same seven layers. `meta-python` adds no Python to the image. (ADR-0020.)
   The Pi had the address 192.168.1.4. I reported the broker test with `mosquitto_pub`/`mosquitto_sub`,
   the closed port 1883 seen from the laptop and the driver frame as passed; I did not paste those
   outputs into this document.
-- Not done: the SSH tunnel test from the laptop (the laptop has no Mosquitto client); broker logging
-  (there is `busybox-syslog` in the image, `log_dest syslog` is untried).
+- Not done: broker logging (there is `busybox-syslog` in the image, `log_dest syslog` is untried). The
+  SSH tunnel test was done later, see step 4.6c.
 
 **Step 4.6c (2026-10-31 to 2026-11-01): the publisher `gateway-publisher`.** One C file in
 `meta-gateway/recipes-app/gateway-publisher/`, built in five pieces; each was tested on the board before
@@ -1034,8 +1034,14 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
 - **Two single `read failed` lines with the node running** (about 4 s apart, each followed by `read works
   again` in the next read), within about two minutes. I do not know the cause, and the driver does not
   say whether it was the marker or the CRC. No message was lost (`seq` had no gap).
+- **The SSH tunnel from the laptop (2026-11-01).** Mosquitto for Windows (`mosquitto_sub.exe`, installed
+  without the service) on the laptop. Window A: `ssh -i <key> -L 11883:localhost:1883 root@192.168.1.4`
+  (laptop port 11883, so it cannot clash with a local broker). Window B: `mosquitto_sub -h 127.0.0.1 -p
+  11883 -t 'gateway/#' -v` received one message per second (`seq` 1211 to 1217 in the paste). After `exit`
+  in window A the messages stopped. Without the tunnel, `mosquitto_sub -h 192.168.1.4 -p 1883` gave
+  "actively refused it". So the broker is reachable from the laptop only through the SSH login.
 - **Not verified:** the shutdown order (`K20` before `K30`); that nothing restarts the program if it
-  crashes (no kill test); the SSH tunnel; a frame with a bad CRC produced on purpose (my test of shaking
+  crashes (no kill test); a frame with a bad CRC produced on purpose (my test of shaking
   the wires, 1000 reads with no failure, was too weak to show anything).
 
 ### Not verified / known problems
@@ -1079,8 +1085,7 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   git; the two are kept the same by hand (identical on 2026-10-23).
 
 Next: step 4.7 (README as a portfolio piece and a last pass over this document). Step 4.6 is finished
-(ADR-0020 to ADR-0022). Small open items of 4.6: the SSH tunnel test, the shutdown order, a kill test of
-the publisher. The Phase 3 quiz was answered for
+(ADR-0020 to ADR-0022). Small open items of 4.6: the shutdown order, a kill test of the publisher. The Phase 3 quiz was answered for
 questions 1 and 2 only; the Phase 4 quiz and the 4.4/4.5 milestone quizzes are not done. Phase 3
 leftovers: `kbd` and the audio line left as they are, read-only root not done (see the change log).
 
@@ -1343,6 +1348,8 @@ leftovers: `kbd` and the audio line left as they are, read-only root not done (s
   stopped and started. `logread` does not work on this image; the log is `/var/log/messages`.
   `bblayers.conf` now uses `${TOPDIR}/../` paths. ADR-0020 and ADR-0021 status lines corrected (they
   still said "nothing is built yet").
+- 2026-11-01: SSH tunnel tested from the laptop: messages arrive through `ssh -L`, stop when the tunnel
+  closes, and a direct connection to `192.168.1.4:1883` is refused.
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),
