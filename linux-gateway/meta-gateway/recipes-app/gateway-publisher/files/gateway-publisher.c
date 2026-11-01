@@ -5,8 +5,13 @@
  * Step 4.6c, piece 1: read ONE frame and decode it.
  * Piece 2: build the MQTT message of ADR-0021 as JSON text.
  * Piece 3: connect to the broker and publish that message.
- * Piece 4 (this file): do it in a loop. Every POLL_PERIOD_MS the program reads a frame and, if
- * its sequence number is new, publishes it. It runs until it gets SIGINT or SIGTERM.
+ * Piece 4: do it in a loop. Every POLL_PERIOD_MS the program reads a frame and, if its sequence
+ * number is new, publishes it. It runs until it gets SIGINT or SIGTERM.
+ * Piece 5 (this file): it runs as a service that init starts at boot (/etc/init.d/gateway-publisher).
+ * A service has no terminal, so its messages go to the system log (syslog) and are also printed on
+ * stderr, which is what I see when I start it by hand. And at start it waits for the device file
+ * and for the broker instead of giving up, because at boot they may not be ready yet (udev loads
+ * the driver on its own schedule, and the broker is started by another script).
  *
  * The program does NOT check the marker or the CRC. The kernel driver does that and makes read()
  * fail with EIO for a bad frame (ADR-0018: the driver checks, the program decodes), so a
@@ -27,9 +32,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
-#define DEVICE          "/dev/stm32_sensor_node"
+#define DEVICE         "/dev/stm32_sensor_node"
 
 #define FRAME_SIZE      14
 #define OFFSET_STATUS   1           /* 1 byte */
@@ -70,6 +76,11 @@
 /* The value of last_sequence before anything was published. A sequence number has 16 bits, so -1
  * is never a real one, and the first frame that is read is always new. */
 #define NO_SEQUENCE     (-1)
+
+/* How long to wait between attempts while the device file or the broker is not there yet at
+ * start. Two seconds is short enough to be ready soon after they are, and long enough not to load
+ * the Pi while waiting. */
+#define STARTUP_RETRY_S 2
 
 /* Set by the signal handler, read by the loop in main(). sig_atomic_t is the one type that the C
  * standard allows a signal handler to write safely. */
@@ -155,16 +166,21 @@ static void on_signal(int signal_number)
 
 /*
  * Connects to the broker and starts the library's network thread. Returns the connection, or NULL
- * after printing why it failed.
+ * if it failed. When it fails and `report` is true, the reason is written to the log; main() passes
+ * false for the repeated attempts while it waits, so that a broker that is down does not fill the
+ * log with the same line every two seconds.
  *
  * mosquitto_connect() returns when the TCP connection exists; the broker's answer to the connect
  * request arrives later and is handled by the network thread. The library refuses to publish
  * only if the TCP connection does not exist, so a message can be published right after this.
  *
  * The error text of the library (mosquitto_strerror) is in a separate library that is not in the
- * image, so a failure to connect prints the system error, and the other calls print their code.
+ * image, so every failure here logs the numeric code of the library. errno is not used: on the
+ * board, with the broker stopped, strerror(errno) said "Bad file descriptor" and not "Connection
+ * refused". My guess (not checked in the library source) is that the library makes more system
+ * calls after the failed connect(), for example closing the socket, and they overwrite errno.
  */
-static struct mosquitto *broker_connect(void)
+static struct mosquitto *broker_connect(bool report)
 {
     struct mosquitto *mosq;
     int rc;
@@ -174,20 +190,22 @@ static struct mosquitto *broker_connect(void)
     /* true: clean session, the broker keeps nothing for this client between connections. */
     mosq = mosquitto_new(CLIENT_ID, true, NULL);
     if (mosq == NULL) {
-        fprintf(stderr, "mosquitto_new failed\n");
+        syslog(LOG_ERR, "mosquitto_new failed");
         goto fail_lib;
     }
 
     rc = mosquitto_connect(mosq, BROKER_HOST, BROKER_PORT, KEEPALIVE_S);
     if (rc != MOSQ_ERR_SUCCESS) {
-        fprintf(stderr, "mosquitto_connect to %s:%d failed: %s\n", BROKER_HOST, BROKER_PORT,
-                (rc == MOSQ_ERR_ERRNO) ? strerror(errno) : "invalid parameters");
+        if (report) {
+            syslog(LOG_ERR, "mosquitto_connect to %s:%d failed (code %d)", BROKER_HOST,
+                   BROKER_PORT, rc);
+        }
         goto fail_client;
     }
 
     rc = mosquitto_loop_start(mosq);
     if (rc != MOSQ_ERR_SUCCESS) {
-        fprintf(stderr, "mosquitto_loop_start failed (%d)\n", rc);
+        syslog(LOG_ERR, "mosquitto_loop_start failed (%d)", rc);
         goto fail_client;
     }
     return mosq;
@@ -219,34 +237,59 @@ int main(void)
     int last_sequence = NO_SEQUENCE;
     bool read_failing = false;
     bool publish_failing = false;
+    bool waited = false;
     unsigned sequence;
     ssize_t n;
     int length;
     int rc;
-    int fd;
+    int exit_code = 0;
+    int fd = -1;
 
-    /* The device is opened once. Every read() on it does its own transfers and returns the
-     * newest frame, so the file position means nothing. */
-    fd = open(DEVICE, O_RDONLY);
-    if (fd < 0) {
-        perror(DEVICE);
-        return 1;
-    }
+    /* LOG_PID puts the process number in each line; LOG_PERROR also prints the line on stderr,
+     * which is what I see when I start the program by hand (a service has no terminal, so there it
+     * goes to /dev/null and only the log is left). */
+    openlog("gateway-publisher", LOG_PID | LOG_PERROR, LOG_DAEMON);
 
-    mosq = broker_connect();
-    if (mosq == NULL) {
-        close(fd);
-        return 1;
-    }
-
-    /* No SA_RESTART flag, so a signal also interrupts the sleep below and the program stops at
-     * once and not up to 0.2 s later. */
+    /* The signal handlers come first, so that a `stop` from init also ends the waiting below.
+     * No SA_RESTART flag, so a signal interrupts a sleep and the program stops at once and not
+     * up to 2 s (or 0.2 s in the loop) later. */
     memset(&action, 0, sizeof(action));
     action.sa_handler = on_signal;
     sigaction(SIGINT, &action, NULL);
     sigaction(SIGTERM, &action, NULL);
 
-    while (!stop_requested) {
+    /* The device is opened once. Every read() on it does its own transfers and returns the
+     * newest frame, so the file position means nothing. At boot the file may not exist yet:
+     * udev loads the driver on its own schedule. So this waits, and logs the reason once. */
+    while (!stop_requested && (fd = open(DEVICE, O_RDONLY)) < 0) {
+        if (!waited) {
+            syslog(LOG_ERR, "cannot open %s: %s; waiting for it", DEVICE, strerror(errno));
+            waited = true;
+        }
+        sleep(STARTUP_RETRY_S);
+    }
+    if (fd >= 0 && waited) {
+        syslog(LOG_INFO, "%s is there now", DEVICE);
+    }
+
+    /* The same for the broker: init starts this program after the broker, but the broker may
+     * still be starting. The first failure is logged and the repeated ones are not. */
+    waited = false;
+    mosq = NULL;
+    while (!stop_requested && fd >= 0 &&
+           (mosq = broker_connect(!waited)) == NULL) {
+        waited = true;
+        sleep(STARTUP_RETRY_S);
+    }
+    if (mosq != NULL && waited) {
+        syslog(LOG_INFO, "connected to the broker");
+    }
+    if (mosq != NULL) {
+        syslog(LOG_INFO, "reading %s every %d ms, publishing to %s",
+               DEVICE, POLL_PERIOD_MS, TOPIC);
+    }
+
+    while (!stop_requested && mosq != NULL) {
         /* One read() returns the whole 14-byte frame, or fails. EIO means the driver found no
          * good frame (the node is off, or the frame was damaged). */
         n = read(fd, frame, sizeof(frame));
@@ -256,16 +299,16 @@ int main(void)
         }
 
         if (n != FRAME_SIZE) {
-            /* Only logged, and only when it starts: a node that is off would otherwise print
+            /* Only logged, and only when it starts: a node that is off would otherwise log
              * five lines a second. Nothing is published, so a subscriber sees that the
              * sequence stops (ADR-0021). */
             if (!read_failing) {
-                fprintf(stderr, "read failed: %s\n", (n < 0) ? strerror(errno) : "short frame");
+                syslog(LOG_ERR, "read failed: %s", (n < 0) ? strerror(errno) : "short frame");
                 read_failing = true;
             }
         } else {
             if (read_failing) {
-                fprintf(stderr, "read works again\n");
+                syslog(LOG_INFO, "read works again");
                 read_failing = false;
             }
 
@@ -276,8 +319,10 @@ int main(void)
                                      (int32_t)read_le(&frame[OFFSET_TEMP], 4),
                                      (int32_t)read_le(&frame[OFFSET_PRESSURE], 4));
                 if (length < 0) {
-                    /* Cannot happen: JSON_MAX is larger than the longest message. */
-                    fprintf(stderr, "the message does not fit in %d bytes\n", JSON_MAX);
+                    /* Cannot happen: JSON_MAX is larger than the longest message. If it ever
+                     * does, it is a bug, so the program stops and says so with its exit code. */
+                    syslog(LOG_ERR, "the message does not fit in %d bytes", JSON_MAX);
+                    exit_code = 1;
                     break;
                 }
 
@@ -287,13 +332,13 @@ int main(void)
                      * sequence (or a newer one) is tried again at the next round. */
                     last_sequence = (int)sequence;
                     if (publish_failing) {
-                        fprintf(stderr, "publish works again\n");
+                        syslog(LOG_INFO, "publish works again");
                         publish_failing = false;
                     }
                 } else if (!publish_failing) {
                     /* The library's network thread reconnects by itself when the broker comes
-                     * back; until then publish keeps failing, and this is printed once. */
-                    fprintf(stderr, "mosquitto_publish failed (%d)\n", rc);
+                     * back; until then publish keeps failing, and this is logged once. */
+                    syslog(LOG_ERR, "mosquitto_publish failed (%d)", rc);
                     publish_failing = true;
                 }
             }
@@ -302,7 +347,15 @@ int main(void)
         usleep(POLL_PERIOD_MS * 1000);
     }
 
-    broker_close(mosq);
-    close(fd);
-    return 0;
+    /* Reached by a signal, or after the bug above; or while still waiting, in which case one or
+     * both of these were never opened. */
+    if (mosq != NULL) {
+        broker_close(mosq);
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+    syslog(LOG_INFO, "stopped");
+    closelog();
+    return exit_code;
 }

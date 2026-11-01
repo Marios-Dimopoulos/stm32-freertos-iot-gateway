@@ -1,0 +1,52 @@
+#!/bin/sh
+# Starts and stops gateway-publisher (step 4.6c, piece 5). Modelled on the init script of the
+# Mosquitto recipe, which is started the same way on this image.
+#
+# The start order is set by the numbers in the links that the recipe creates (update-rc.d):
+# S40 starts this after the broker (S30mosquitto), and K20 stops it before the broker (K30), so
+# that the program says goodbye to a broker that is still running. The program also waits for the
+# broker and for the device file by itself, so the order is a convenience and not a requirement.
+#
+# The program has no terminal here, so it writes to the system log. On this image the log daemon
+# writes to the file /var/log/messages; `logread` does not work (tested on the board).
+
+### BEGIN INIT INFO
+# Provides:       gateway-publisher
+# Required-Start: mosquitto
+# Required-Stop:  mosquitto
+# Default-Start:  2 3 4 5
+# Default-Stop:   0 1 6
+# Short-Description: publishes the frames of the STM32 sensor node to MQTT
+### END INIT INFO
+
+DAEMON=/usr/bin/gateway-publisher
+PIDFILE=/var/run/gateway-publisher.pid
+
+test -x ${DAEMON} || exit 0
+
+case "$1" in
+    start)
+        echo "Starting gateway-publisher"
+        # --background puts the program in the background and --make-pidfile writes its process
+        # number, which stop uses. --oknodo makes a second start a no-op and not an error.
+        start-stop-daemon --start --quiet --oknodo --background --make-pidfile \
+            --pidfile ${PIDFILE} --exec ${DAEMON}
+        ;;
+    stop)
+        echo "Stopping gateway-publisher"
+        # stop sends SIGTERM, which the program turns into a clean exit. --retry waits up to 5 s
+        # for it to be gone.
+        start-stop-daemon --stop --quiet --oknodo --retry 5 --pidfile ${PIDFILE}
+        rm -f ${PIDFILE}
+        ;;
+    restart)
+        $0 stop
+        $0 start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
