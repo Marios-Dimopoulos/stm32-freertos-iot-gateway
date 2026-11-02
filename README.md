@@ -1,149 +1,239 @@
 # STM32 → Embedded Linux IoT Gateway
 
-A sensor node on an **STM32F411RE** (FreeRTOS, static allocation only, my own
-register-level drivers) that reads a **BMP280** over I2C once a second and sends the
-reading, as a CRC-protected frame, over **SPI with DMA** to a **Raspberry Pi Zero 2 W**.
-The next step is a custom-built Linux image on the Pi, where a kernel driver hands
-the data to an MQTT publisher.
+A sensor node on an **STM32F411RE** reads a Bosch **BMP280** once a second. It runs FreeRTOS with
+static allocation only, on my own register-level drivers. It offers each reading as a 14-byte,
+CRC-protected frame on **SPI, fed by DMA**. A **Raspberry Pi Zero 2 W** runs a Linux image that I
+built with **Yocto**. It reads the frame through **my own kernel SPI driver** and publishes it as
+JSON to an **MQTT** broker on the gateway. My laptop subscribes through an SSH tunnel.
 
-**Status: Phases 1 and 2 work on the board.** The Pi (running the stock Raspberry Pi
-OS as a temporary test jig) reads a valid frame every second. The Phase 3 image boots on the
-board, joins my Wi-Fi by itself (the key is baked in from a file outside the repo), I can log
-in over SSH, and a test tool in the image (`spi-frame-test`) reads valid frames from the
-STM32 over SPI. The image is my own recipe, built up from the minimum: 37 MB root filesystem
-and 76 packages, against 142 MB and 2015 for the standard `core-image-base`. Root has a
-password (only its hash is in the image, kept outside the repo). **Phase 4 has started:** my kernel
-module is an SPI driver, built by a recipe and attached to the STM32 by a device-tree overlay: at boot
-the kernel matches the two and calls its `probe`. The SPI transfer, the character device and MQTT are
-still to come.
-The logic analyzer captures of
-Phase 2 are done, apart from the re-arm time and the UART bit time.
-The file `docs/architecture.md` describes the real current state, and I keep it
-honest: what is verified, and what is not.
+```
+$ mosquitto_sub -h 127.0.0.1 -p 11883 -t 'gateway/#' -v        # on the laptop, through the tunnel
+gateway/stm32/bmp280 {"seq":596,"status":0,"temp_c":20.37,"press_hpa":1016.50}
+gateway/stm32/bmp280 {"seq":597,"status":0,"temp_c":20.37,"press_hpa":1016.51}
+```
 
-This is a learning project built to prepare for embedded software and embedded
-Linux roles. The goal is not only a working system but to be able to defend every
-design decision, which is why the reasoning is written down in ADRs.
+**Status (2026-11-02): all four phases run on the hardware.** The node, the SPI link, the custom
+image, the kernel driver, the broker and the publisher work together. The publisher starts at boot.
+Each part was tested on the board before the next one was built. What is **not** verified is listed
+openly in [Known limitations](#known-limitations-and-what-is-not-verified) and in every ADR.
 
-![Terminal output of the running node](docs/captures/phase1-terminal-output.png)
+This is a learning project for embedded software and embedded Linux roles. The goal is a working
+system, and also being able to defend every design decision. That is why the reasoning is in **22
+Architecture Decision Records**, and [`docs/architecture.md`](docs/architecture.md) records the real
+state of the system, with the evidence.
 
-*Tera Term on the ST-LINK virtual COM port. The `Sensor task stack free` lines
-come from temporary code that I used to measure the task's stack (ADR-0005); it is
-removed now, so the node prints only the init line and the readings.*
+---
 
-## What works today
+## Contents
+
+- [The data path](#the-data-path)
+- [Engineering practices](#engineering-practices)
+- [What works, and the evidence](#what-works-and-the-evidence)
+- [Design decisions (ADRs)](#design-decisions-adrs)
+- [Hardware and wiring](#hardware-and-wiring)
+- [Build and run](#build-and-run)
+- [Known limitations and what is not verified](#known-limitations-and-what-is-not-verified)
+- [Repository layout](#repository-layout)
+
+---
+
+## The data path
+
+```
+ BMP280 ──I2C1, 100 kHz──┐
+                         ▼
+ ┌────────────────────────────────────────────────────────────────────┐
+ │ STM32F411RE (Nucleo, 84 MHz), FreeRTOS, static allocation only     │
+ │                                                                    │
+ │  sensor task (prio 1, every 1 s) ── frame ──► latest-frame queue   │
+ │                                                     │              │
+ │  transmit task (prio 2) ◄── notify ◄── EXTI ISR (NSS rising edge)  │
+ │        │ loads the newest frame                                    │
+ │        ▼                                                           │
+ │  frame buffer ──DMA2 stream 3──► SPI1 data register (SPI slave)    │
+ └──────────────────────────────┬─────────────────────────────────────┘
+                                │ SPI mode 0, 1 MHz, chip select 0
+                                ▼
+ ┌────────────────────────────────────────────────────────────────────┐
+ │ Raspberry Pi Zero 2 W: gateway-image (Yocto Wrynose, Linux 6.18)   │
+ │                                                                    │
+ │  spi-bcm2835 (driver of the Pi's SPI peripheral) + SPI core        │
+ │        │                                                           │
+ │  stm32_node.ko: my SPI driver, bound by my device-tree overlay     │
+ │    read(): transfer, gap ≥ 200 µs, transfer, check marker + CRC    │
+ │        │                                                           │
+ │  /dev/stm32_sensor_node (14 checked bytes per read)                │
+ │        │                                                           │
+ │  gateway-publisher (C, libmosquitto): reads every 200 ms,          │
+ │  publishes one JSON message per new frame                          │
+ │        │ 127.0.0.1:1883 (loopback only)                            │
+ │  Mosquitto broker ── topic gateway/stm32/bmp280                    │
+ └──────────────────────────────┬─────────────────────────────────────┘
+                                │ SSH tunnel over Wi-Fi (port 22, key only)
+                                ▼
+                       laptop: mosquitto_sub
+```
+
+**The frame** ([`frame.h`](firmware/stm32-sensor-node/Src/frame.h), [ADR-0010](docs/decisions/0010-spi-link-design.md)).
+All multi-byte fields are little-endian:
+
+| Bytes | Field |
+|---|---|
+| 0 | marker `0xA5` (a dead node reads `0x00` or `0xFF`, never `0xA5`) |
+| 1 | status: 0 OK, 1 no reading yet, 2 to 6 the cause of a sensor failure |
+| 2-3 | sequence number (`uint16`), +1 per frame, also while the sensor fails |
+| 4-7 | temperature (`int32`, hundredths of a degree Celsius) |
+| 8-11 | pressure (`uint32`, pascals) |
+| 12-13 | CRC-16/CCITT-FALSE over bytes 0 to 11 |
+
+SPI has no acknowledge and no error flag, so all the safety is in the frame. A wrong marker
+means a dead node, a wrong CRC means damage, and a jump in the sequence means a lost frame.
+
+---
+
+## Engineering practices
+
+These are the things that make this more than a demo. Each one has an ADR or a measurement behind it.
+
+**Firmware (STM32)**
+- **No dynamic memory.** Every FreeRTOS object is created with the static APIs. No heap is
+  compiled, and the link map contains no `malloc` ([ADR-0001](docs/decisions/0001-static-memory-allocation.md)).
+- **My own register-level drivers** for the clock, USART, I2C and SPI/DMA, not a vendor library
+  ([ADR-0008](docs/decisions/0008-own-register-level-drivers.md)). The waits are bounded, there is one
+  error code per cause, and the I2C bus recovers by itself after an error.
+- **DMA for the data path.** The CPU never moves the frame's bytes. A transmit task, woken by the
+  chip-select interrupt, re-arms the DMA. The re-arm is written so that a disturbed transaction cannot
+  leave the node shifted by one byte. That failure was found on the board, and the fix is decision 7 of
+  [ADR-0010](docs/decisions/0010-spi-link-design.md).
+- **Checked on the wire** with a logic analyzer: the I2C read, the SPI frame, the SPI clock up to the
+  6 MHz project limit, and the gap between reads ([`docs/captures/`](docs/captures/)).
+
+**Gateway (Linux)**
+- **A custom, minimal image**, not the stock Raspberry Pi OS. My own image recipe was built up from
+  the minimum one tested step at a time: 39 MB and 82 packages, against 142 MB and 2015 packages for
+  Yocto's standard `core-image-base` ([ADR-0017](docs/decisions/0017-own-image-recipe-gateway-image.md)).
+  It has no Python, no systemd and no package manager.
+- **A kernel driver, not a user-space `spidev` program.** A device-tree overlay attaches the driver to
+  chip select 0, and udev loads it by its module alias. The driver keeps in one place the three things
+  that belong in one place: the minimum gap between transfers, the "stale first read" fix, and the frame
+  check. Programs get a checked frame or an error
+  ([ADR-0018](docs/decisions/0018-kernel-spi-driver-and-frame-interface.md), [ADR-0019](docs/decisions/0019-stale-first-read-policy.md)).
+- **MQTT adds no open port and no secret.** The broker listens on the loopback address only. I read the
+  data from the laptop through my SSH login ([ADR-0021](docs/decisions/0021-mqtt-message-topic-and-access.md)).
+- **Secrets stay out of the repo.** The Wi-Fi key and the root password hash are read at build time
+  from a folder outside the repo. SSH accepts a key only. The build stops if the password hash is
+  missing, because an image without one has a locked root account
+  ([ADR-0015](docs/decisions/0015-wifi-by-hand-and-openssh.md)).
+- **A service that does not trust the boot order.** The publisher starts after the broker, but it
+  still waits by itself for the device file and the broker. Each failure is logged once to syslog,
+  not every second ([ADR-0022](docs/decisions/0022-publisher-autostart-retry-and-logging.md)).
+
+**Process**
+- Every non-trivial choice has an ADR with the options, the reason, and what is still untested.
+- Debugging is hypothesis first: what would confirm it, what would refute it, then the test. The
+  failures found this way are recorded in the ADRs, not hidden.
+
+---
+
+## What works, and the evidence
 
 ### Phase 1: the sensor node
 
 | What | Evidence |
 |---|---|
-| **Static allocation only.** No `heap_x.c` is compiled, and `configSUPPORT_DYNAMIC_ALLOCATION` is 0. | The link map contains no `malloc` (the only match is the library function `_get_argv_nomalloc`). ADR-0001 |
-| **84 MHz from the internal oscillator through the PLL**, in its own module with bounded waits and build-time checks of the PLL limits. | Register values and the SysTick reload (83999) checked in the debugger. ADR-0006 |
+| **84 MHz from the internal oscillator through the PLL**, in its own module, with bounded waits and build-time checks of the PLL limits. | Register values and the SysTick reload (83999) checked in the debugger. The logic analyzer measured the clock about 1.1% fast (the internal oscillator's tolerance). [ADR-0006](docs/decisions/0006-clock-hsi-pll-84mhz.md) |
 | **Interrupt-driven UART** with a ring buffer. A message is stored whole or dropped whole. | Verified in Tera Term, including a burst test of the drop behaviour. |
-| **I2C1 master driver at register level.** Waits bounded in RTOS ticks, one error code per cause, a critical section only around the few operations with a deadline, and self-recovery after a bus error. | Chip ID, 6-byte and 24-byte reads on the real sensor. ADR-0007 |
-| **BMP280 module** with Bosch's integer compensation (no floats, no `printf`). | Stable, plausible readings (see the screenshot). ADR-0009 |
-| **Self-healing sensor task.** After any error the task initialises the sensor again on the next period. | Disconnected the sensor completely while it ran: `NACK` lines, then `OK` and readings again, with no reset. |
-| **A real failure found and documented.** A falling edge on the sensor's CSB pin locks it out of I2C until its power is cycled. | Reproduced twice on the board. ADR-0007 |
-| **A HardFault handler** that records the stacked registers (the PC of the faulting instruction) and the fault status registers where the debugger can read them, and **no heap** (the start-up heap is 0 bytes; nothing allocates). | A deliberate bus fault gave the expected record; the map no longer has the 512-byte heap. |
+| **I2C1 master driver at register level**, with waits bounded in RTOS ticks and self-recovery after a bus error. | Chip ID, 6-byte and 24-byte reads on the real sensor. On the wire: the read takes 834 µs, with ACK and NACK where expected. [ADR-0007](docs/decisions/0007-i2c-driver-design.md) |
+| **BMP280 module** with Bosch's integer compensation (no floats, no `printf`). | Stable, plausible readings. [ADR-0009](docs/decisions/0009-bmp280-module-design.md) |
+| **A sensor task that heals itself.** After any error it initialises the sensor again on the next period. | Sensor disconnected while running: `NACK` lines, then readings again, with no reset. |
+| **A real failure, found and documented.** A falling edge on the sensor's CSB pin locks it out of I2C until its power is cycled. | Reproduced twice on the board. [ADR-0007](docs/decisions/0007-i2c-driver-design.md) |
+| **A HardFault handler** that records the faulting PC and the fault status registers for the debugger. | A deliberate bus fault gave the expected record. |
 
-### Phase 2: the SPI link to the gateway (ADR-0010)
+Footprint from the last build map: about **18.5 KB of flash and 4.0 KB of RAM**, FreeRTOS included.
+
+![Terminal output of the running node](docs/captures/phase1-terminal-output.png)
+
+*Debug output on the ST-LINK virtual COM port (debug only, not part of the data path). The
+`Sensor task stack free` lines came from temporary code used to measure the stack
+([ADR-0005](docs/decisions/0005-task-stack-sizing.md)). That code is removed.*
+
+### Phase 2: the SPI link
 
 | What | Evidence |
 |---|---|
-| **A 14-byte frame** per second: marker, status, sequence number, temperature, pressure, CRC-16. SPI has no acknowledge and no error flag, so the safety is in the frame. | The bytes of the C code equal a Python replica, in the debugger and read by the Pi. |
-| **SPI1 as a slave, fed by DMA.** The bytes are moved by DMA2, not by the CPU; the Pi can read at any moment. | The Pi read a complete frame while the CPU was halted in the debugger. |
-| **A transmit task woken by the end of each transaction** (interrupt on the NSS rising edge, a task notification) that loads the newest frame. The sensor task hands frames over through a one-slot queue. | 3000 reads in about 35 s with the node running freely: every interrupt and wake-up counted, no I2C error on the sensor task. |
-| **A re-arm that heals itself.** At every re-arm the CPU writes byte 0 into the SPI data register, so a short or interrupted transaction cannot leave the node shifted. | A failure I found with a 50-read test (the node stayed shifted by one byte) and fixed. After the fix: a deliberate short read, then a correct frame; 47 good of 50 reads while I moved the wires, none shifted. |
-| **Spikes on NSS are ignored** by the interrupt handler (it reads the pin before believing the edge) and counted. | With the wires still: 7 spikes in 3000 transactions, no damaged frame. While touching the wire: about 3000 spikes, 3017 ignored. |
-| **Range.** | SPI clock from 100 kHz to 6 MHz, and reads back to back from Python: all good, apart from the rare noise-damaged frame, always followed by good ones. |
-| **A sensor failure reaches the Pi.** | With SDA unplugged: frames with status `NACK` and zeros, then `NO_READING`, then `OK`; the sequence kept counting. |
-| **Checked on the wire** with a logic analyzer (a Raspberry Pi Pico with `sigrok-pico`, read in PulseView). | NSS low during exactly 112 SCK clocks in SPI mode 0, and the frame decodes with a valid CRC. SCK measured 1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4 and 6 MHz requested. NSS stays high 154 to 228 us between back-to-back reads from Python, and 30000 such reads were all good. The BMP280 read on I2C and the CPU clock (about 1.1% fast) were measured too. `docs/captures/`, ADR-0006, ADR-0007, ADR-0010 |
+| **SPI1 slave fed by DMA2.** The Pi can read at any moment, and the CPU moves no byte of the frame. | The Pi read a complete frame while the CPU was halted in the debugger. |
+| **A transmit task woken by the end of each transaction**, which loads the newest frame from a one-slot queue. | 3000 reads in about 35 s: every interrupt and wake-up counted, no I2C error. |
+| **A re-arm that heals itself:** the CPU writes byte 0 into the SPI data register at every re-arm. | A 50-read test found the node staying shifted after a disturbed transaction. After the fix: no shifted frame, including 10 runs stopped with Ctrl+C. |
+| **Spikes on NSS are ignored** by the interrupt handler, and counted. | 7 spikes in 3000 transactions with the wires still, none damaged a frame. |
+| **Long run.** | 30 minutes, 1800 reads: 1797 good, 0 shifted, 3 bad (all caught by the CRC). The node's counters agreed with the Pi. |
+| **Checked on the wire** with a logic analyzer. | NSS low for exactly 112 clocks in mode 0, and a valid CRC. SCK measured 1.000 to 5.88 MHz for 1 to 6 MHz requested. Back-to-back reads leave a gap of 154 to 228 µs, and 30,000 such reads were all good. [ADR-0010](docs/decisions/0010-spi-link-design.md) |
 
-Size from the last build map (2026-10-17): about 18.5 KB of flash and 4.0 KB of RAM (of
-128 KB), FreeRTOS included.
+### Phase 3: the custom Linux image
 
-### What is not verified, or not done
+| What | Evidence |
+|---|---|
+| **Yocto Wrynose 6.0 (LTS), Linux 6.18.33, sysvinit and BusyBox.** Five repositories pinned to exact commits. | Boots to a login on the serial console. The Pi firmware loads the kernel directly, with no U-Boot. [ADR-0011](docs/decisions/0011-yocto-for-the-gateway-image.md), [ADR-0012](docs/decisions/0012-yocto-release-and-layer-fetching.md) |
+| **My own layer `meta-gateway`** and **my own image recipe**: 39 MB root filesystem, 82 packages, 36 MB compressed. | Package manifests before and after each step. [ADR-0016](docs/decisions/0016-own-layer-meta-gateway.md), [ADR-0017](docs/decisions/0017-own-image-recipe-gateway-image.md) |
+| **Wi-Fi at boot** (`nl80211`), with the key taken from a folder outside the repo. | After a flash, SSH worked with nothing typed on the board. |
+| **SSH with a key only.** Root has a password for the serial console, stored as a hash only. | Without the key: `Permission denied (publickey)`. [ADR-0015](docs/decisions/0015-wifi-by-hand-and-openssh.md) |
+| **Memory given back.** The GPU overlay is removed, and the reserved memory pool went from 256 MiB to 64 MiB. | Boot log: 350,660K of 458,752K available (it was 154,540K). |
 
-- **The logic analyzer works and has captured the I2C and SPI links**
-  (`docs/captures/`, ADR-0006, ADR-0010): the BMP280 read and the 14-byte SPI frame are as
-  designed, the clock runs about 1.1% fast, SCK is within the 6 MHz limit (5.88 MHz at the
-  top setting), and 30000 back-to-back reads from the Pi were all good. Still open: the
-  re-arm time (only an upper bound of 154 us), the cause of the spikes the firmware counts
-  on NSS (none were seen with a clean probe wiring), and the UART bit time.
-- The first read after an idle time returns a stale frame (as old as the idle time):
-  fine for a poller that reads every period, to be decided with the Phase 4 driver.
-- The Pi side is the stock Raspberry Pi OS with Python `spidev`: a temporary test jig,
-  not the final image.
-- A sensor locked out by CSB needs a power cycle, which no I2C driver can fix.
+### Phase 4: the kernel driver and MQTT
 
-## Architecture
+| What | Evidence |
+|---|---|
+| **Kernel SPI driver `stm32_node`.** A device-tree overlay replaces the `spidev` node on chip select 0 with mine. The SPI core matches the compatible string and calls `probe`, and udev loads the module by its alias. | `probe` line in `dmesg` at boot. After `rmmod`, re-sending the device's "add" event loaded the module again with no `modprobe`. [ADR-0018](docs/decisions/0018-kernel-spi-driver-and-frame-interface.md) |
+| **`/dev/stm32_sensor_node`:** every `read()` returns a checked 14-byte frame, or `-EIO` (bad frame), or `-EINVAL` (buffer too small). | Frames read with `dd`/`hexdump`. `-EIO` with the node off. |
+| **At least 200 µs between transfers**, with a mutex for concurrent readers. | 500 back-to-back reads and 8 concurrent readers: no failure. |
+| **The stale first read is fixed:** every `read()` does two transfers and keeps the second. | After 30 s of idle, the sequence had moved by 30. The first read after a node reset gave `seq=3`. [ADR-0019](docs/decisions/0019-stale-first-read-policy.md) |
+| **Mosquitto on the Pi, loopback only**, built without TLS and WebSocket support. | `/proc/net/tcp` shows `127.0.0.1:1883` only. [ADR-0020](docs/decisions/0020-mqtt-broker-on-the-pi-and-c-client.md) |
+| **`gateway-publisher` in C:** it reads every 200 ms and publishes once per new sequence number (QoS 0, no retain). | One message per second, with no gap in `seq`. The node switched off and on, and the broker stopped and started, both recover without restarting the program. [ADR-0021](docs/decisions/0021-mqtt-message-topic-and-access.md) |
+| **Starts at boot** (`S40`, after the broker's `S30`), waits for its inputs, and logs to syslog. | Reboot test with no manual command. Node powered after the Pi: `read failed`, then `read works again`. [ADR-0022](docs/decisions/0022-publisher-autostart-retry-and-logging.md) |
+| **Remote access only through SSH.** | `mosquitto_sub` on the laptop received the messages through `ssh -L`. A direct connection to port 1883 was refused. |
 
-What runs today:
+---
 
-```
- BMP280 ──I2C1 (PB8 SCL, PB9 SDA)──┐
-                                    ▼
-        ┌─────────────────────────────────────────────────────────────┐
-        │ STM32F411RE (Nucleo, 84 MHz), FreeRTOS, static allocation   │
-        │                                                             │
-        │  Sensor task (prio 1, 1 s) ──frame──► latest-frame queue    │
-        │       │                                    │ xQueuePeek     │
-        │       └─ lines ─► USART2 (PA2) ─► ST-LINK  │                │
-        │                   virtual COM, Tera Term   ▼                │
-        │  Transmit task (prio 2) ◄─ notify ◄─ EXTI4 ISR (NSS rising) │
-        │       │ spi_load_frame()                                    │
-        │       ▼                                                     │
-        │  ucDmaFrame ──DMA2 stream 3──► SPI1->DR  (SPI1 slave)       │
-        └───────────────────────────────────────────┬─────────────────┘
-                              PA4 NSS, PA5 SCK, PA6 MISO, PA7 MOSI │
-                                                                    ▼
-                                       Raspberry Pi Zero 2 W (SPI master, test jig)
-```
+## Design decisions (ADRs)
 
-The plan (Phases 3 and 4):
-
-```
-   STM32 sensor node ──SPI + DMA──► Raspberry Pi Zero 2 W ──► kernel driver ──► MQTT ──► network
-                                    (custom Linux image)     (Device Tree)
-```
-
-## Design decisions
-
-Every non-trivial choice has an ADR in `docs/decisions/`, with the options I
-considered, the one I chose and why, and what I did not verify.
+Each ADR in [`docs/decisions/`](docs/decisions/) has the options I considered, the one I chose and why,
+the consequences, and what I did not verify.
 
 | ADR | Decision |
 |---|---|
-| 0001 | Static-only memory allocation for the FreeRTOS objects |
-| 0002 | The GCC/ARM_CM4F FreeRTOS port, with Arm Compiler 6 |
-| 0003 | The RTOS tick derived from `SystemCoreClock`, at 1 kHz |
-| 0004 | Interrupt priority threshold for FreeRTOS calls at level 5 |
-| 0005 | Task stacks sized by measurement, with a margin |
-| 0006 | CPU at 84 MHz from the HSI through the PLL, in its own module |
-| 0007 | I2C1 driver: register-oriented polling API with tick-based timeouts and self-recovery |
-| 0008 | Own register-level drivers instead of a vendor library |
-| 0009 | BMP280 module: normal mode, integer results, initialise again after every error |
-| 0010 | The SPI link: the Pi as master, a fixed frame with CRC-16, a one-slot latest-frame queue, a transmit task re-arming a normal-mode DMA on the NSS edge; the CPU primes the data register; NSS spikes ignored |
-| 0011 | Yocto for the gateway image, not Buildroot and not the stock Raspberry Pi OS |
-| 0012 | Yocto Wrynose (6.0, LTS), with the layers cloned by hand |
-| 0013 | Accept the `synaptics-killswitch` license flag to get the Wi-Fi firmware |
-| 0014 | Skip the `buildpaths` quality check for the `perl` recipe (a workaround; the cause is not found) |
-| 0015 | Wi-Fi typed on the board for now, OpenSSH as the SSH server, and the first OpenSSH build that shipped seven 0-byte programs |
-| 0016 | A layer of my own (`meta-gateway`) that replaces `/etc/network/interfaces`: Wi-Fi starts at boot, with `nl80211` |
-| 0017 | An image recipe of my own (`gateway-image`), built up from the minimum in tested steps: 142 MB and 2015 packages down to 37 MB and 76 |
+| [0001](docs/decisions/0001-static-memory-allocation.md) | Static-only memory allocation for the FreeRTOS objects |
+| [0002](docs/decisions/0002-freertos-port-for-arm-compiler-6.md) | The GCC/ARM_CM4F FreeRTOS port, with Arm Compiler 6 |
+| [0003](docs/decisions/0003-rtos-tick-from-systemcoreclock-1khz.md) | The RTOS tick derived from `SystemCoreClock`, at 1 kHz |
+| [0004](docs/decisions/0004-interrupt-priority-threshold.md) | Interrupt priority threshold for FreeRTOS calls at level 5 |
+| [0005](docs/decisions/0005-task-stack-sizing.md) | Task stacks sized by measurement, with a margin |
+| [0006](docs/decisions/0006-clock-hsi-pll-84mhz.md) | CPU at 84 MHz from the internal oscillator through the PLL |
+| [0007](docs/decisions/0007-i2c-driver-design.md) | I2C1 driver: register-oriented API, tick-based timeouts, self-recovery |
+| [0008](docs/decisions/0008-own-register-level-drivers.md) | My own register-level drivers instead of a vendor library |
+| [0009](docs/decisions/0009-bmp280-module-design.md) | BMP280 module: normal mode, integer results, initialise again after every error |
+| [0010](docs/decisions/0010-spi-link-design.md) | The SPI link: Pi as master, fixed frame with CRC-16, latest-frame queue, DMA re-armed on the NSS edge |
+| [0011](docs/decisions/0011-yocto-for-the-gateway-image.md) | Yocto for the gateway image, not Buildroot and not the stock Raspberry Pi OS |
+| [0012](docs/decisions/0012-yocto-release-and-layer-fetching.md) | Yocto Wrynose (6.0, LTS), with the layers cloned by hand |
+| [0013](docs/decisions/0013-accept-the-wifi-firmware-license.md) | Accept the license flag of the Wi-Fi firmware |
+| [0014](docs/decisions/0014-skip-the-buildpaths-check-for-perl.md) | Skip one quality check for the `perl` recipe (a workaround; cause not found) |
+| [0015](docs/decisions/0015-wifi-by-hand-and-openssh.md) | OpenSSH, the Wi-Fi key and root password kept outside the repo, key-only SSH |
+| [0016](docs/decisions/0016-own-layer-meta-gateway.md) | My own layer `meta-gateway`: Wi-Fi starts at boot, with `nl80211` |
+| [0017](docs/decisions/0017-own-image-recipe-gateway-image.md) | My own image recipe `gateway-image`, built up from the minimum in tested steps |
+| [0018](docs/decisions/0018-kernel-spi-driver-and-frame-interface.md) | A kernel SPI driver with a character device that returns the raw, checked frame |
+| [0019](docs/decisions/0019-stale-first-read-policy.md) | The stale first read is handled in the driver by reading twice |
+| [0020](docs/decisions/0020-mqtt-broker-on-the-pi-and-c-client.md) | Mosquitto broker on the Pi, and a C publisher with libmosquitto |
+| [0021](docs/decisions/0021-mqtt-message-topic-and-access.md) | JSON message, topic, publish rule, error handling, broker on loopback only |
+| [0022](docs/decisions/0022-publisher-autostart-retry-and-logging.md) | The publisher starts from an init script, waits for its inputs, and logs to syslog |
 
-## Hardware
+---
 
-- STM32 Nucleo-F411RE (Cortex-M4 at 84 MHz, 128 KB SRAM)
+## Hardware and wiring
+
+- STM32 Nucleo-F411RE (Cortex-M4F, run at 84 MHz, 128 KB SRAM)
 - Bosch BMP280 breakout (temperature and pressure, I2C)
-- Raspberry Pi Zero 2 W: today the SPI master of the test (stock Raspberry Pi OS Lite,
-  Python `spidev`), later the target of the custom Linux image (Phase 3)
-- A logic analyzer for Phase 2 (a Raspberry Pi Pico with the `sigrok-pico` firmware,
-  read with `PulseView`): used for the I2C and SPI captures in `docs/captures/`
+- Raspberry Pi Zero 2 W (Cortex-A53, 512 MB RAM, Wi-Fi)
+- Logic analyzer: a Raspberry Pi Pico with the `sigrok-pico` firmware, read in PulseView
+- A USB-UART adapter (3.3 V) for the Pi's serial console
 
-The extra hardware budget is 50 EUR. See `docs/budget.md`.
-
-### Wiring the BMP280
+### BMP280 to Nucleo
 
 | BMP280 | Nucleo |
 |---|---|
@@ -154,13 +244,12 @@ The extra hardware budget is 50 EUR. See `docs/budget.md`.
 | SDO | GND (address 0x76) |
 | **CSB** | **3V3, wired firmly** |
 
-CSB must stay high. A falling edge on it, even a loose wire, switches the sensor to
-SPI mode until its power is cycled (see ADR-0007). Most breakouts already have
-pull-ups on SCL and SDA; the firmware also enables the weak internal ones as a backup.
+CSB must stay high. A falling edge on it, even from a loose wire, switches the sensor to SPI mode
+until its power is cycled ([ADR-0007](docs/decisions/0007-i2c-driver-design.md)).
 
-### Wiring the Raspberry Pi (SPI)
+### Raspberry Pi to Nucleo (SPI)
 
-Both sides are 3.3 V; only these five wires, and no power between the boards.
+Both sides are 3.3 V. There are only these five wires, and no power wire between the boards.
 
 | Signal | Pi header pin | Nucleo pin |
 |---|---|---|
@@ -170,83 +259,109 @@ Both sides are 3.3 V; only these five wires, and no power between the boards.
 | MOSI | 19 (GPIO10) | PA7 (D11) |
 | GND | 25 | GND |
 
-The Nucleo pins and their Arduino labels are those of the Nucleo-64 manual (UM1724,
-Table 16); the Pi pins are its standard SPI0 pins. This is the wiring used in all the
-tests. Keep the wires short: wires that disturb the link, such as probe wires clipped
-onto the SPI lines, create spikes on NSS (ADR-0010).
+Keep the wires short. Wires that disturb the link, such as probe wires clipped onto the SPI lines,
+create spikes on NSS ([ADR-0010](docs/decisions/0010-spi-link-design.md)).
+
+---
 
 ## Build and run
 
-Needed:
-- **Keil MDK-ARM** with Arm Compiler 6 (I used armclang V6.24) and the device pack
-  `Keil.STM32F4xx_DFP.2.17.0`
-- A Nucleo-F411RE connected over USB (the ST-LINK flashes it and provides the serial port)
-- A serial terminal, for example Tera Term
-- For the SPI link: a Raspberry Pi with SPI enabled (`sudo raspi-config nonint do_spi 0`)
-  and `python3-spidev`
+### 1. The sensor node (Windows, Keil)
 
-Steps:
-1. Open `firmware/stm32-sensor-node/stm32-sensor-node.uvprojx` in Keil.
-2. Build, then download to the board. FreeRTOS V11.3.1 is in the repository,
-   unmodified; the project's own configuration is in
-   `FreeRTOS/config/FreeRTOSConfig.h`.
-3. Open the ST-LINK virtual COM port in the terminal at **115200, 8N1**.
-4. On the Pi, copy `tools/spi_frame_test.py` and run
-   `python3 spi_frame_test.py poll --count 10 --period 1.0 --verbose`.
+Needed: **Keil MDK-ARM** with Arm Compiler 6 (I used armclang V6.24), the device pack
+`Keil.STM32F4xx_DFP.2.17.0`, and a Nucleo-F411RE on USB.
 
-Expected output in the terminal:
+1. Open `firmware/stm32-sensor-node/stm32-sensor-node.uvprojx`.
+2. Build, then download to the board. FreeRTOS V11.3.1 is in the repo, unmodified. The project's
+   configuration is in `FreeRTOS/config/FreeRTOSConfig.h`.
+3. Optional: open the ST-LINK virtual COM port at **115200, 8N1** to see the debug output:
 
 ```
 BMP280 init: OK
 T=24.08 C  P=1017.61 hPa
-T=24.08 C  P=1017.61 hPa
-...
 ```
 
-If the sensor is disconnected, you get `BMP280 error: NACK (failures: n)` every
-second, and the readings come back by themselves when it is reconnected.
+### 2. The gateway image (Linux, Yocto)
 
-Expected output on the Pi (the first read of a run can be stale or the placeholder
-with sequence 0, see above; the others are consecutive):
+I build in WSL2 (Ubuntu 24.04). The Yocto repositories and the build folder stay **outside** this
+repo, in `~/yocto/`, next to each other. [`linux-gateway/`](linux-gateway/) holds only my files:
+the build configuration (`conf/`) and my layer (`meta-gateway/`).
 
+1. Clone the five repositories into `~/yocto/` at the commits listed in
+   [`docs/architecture.md`](docs/architecture.md#gateway-image-phase-3-built-booted-reachable-over-wi-fi-and-ssh):
+   `bitbake`, `openembedded-core`, `meta-yocto`, `meta-raspberrypi`, `meta-openembedded`.
+2. `source ~/yocto/openembedded-core/oe-init-build-env ~/yocto/build`, copy `meta-gateway/` to
+   `~/yocto/meta-gateway`, and replace the generated `conf/bblayers.conf` and `conf/local.conf` with
+   the ones from `linux-gateway/conf/`.
+3. Create `~/yocto/secrets/` with your Wi-Fi file and a root password hash, as described in
+   [`linux-gateway/README.md`](linux-gateway/README.md). These secrets are never committed.
+4. `bitbake gateway-image`, then flash the `.wic.bz2` from
+   `build/tmp/deploy/images/raspberrypi0-2w-64/` to a microSD card.
+
+The finished image contains the Wi-Fi key and the password hash, so it must not be shared. I have
+not yet done a rebuild from an empty folder with these steps.
+
+### 3. Reading the data
+
+The publisher starts by itself at boot. On the Pi:
+
+```sh
+mosquitto_sub -t 'gateway/#' -v                  # the messages
+grep gateway-publisher /var/log/messages         # the publisher's log
 ```
-   0 ok  seq=412 status=OK T=21.35 C P=1017.20 hPa
-   1 ok  seq=413 status=OK T=21.35 C P=1017.21 hPa
-   ...
-poll 1000000 Hz           good    10  shifted    0  bad    0  seq-jumps   1  [OK:10]
+
+From a laptop, through an SSH tunnel (the broker is not reachable on the network otherwise):
+
+```sh
+ssh -i <your key> -L 11883:localhost:1883 root@<pi address>      # window A, keep it open
+mosquitto_sub -h 127.0.0.1 -p 11883 -t 'gateway/#' -v            # window B
 ```
 
-(The numbers above are an example of the format, not a recording.)
+---
 
-## Roadmap
+## Known limitations and what is not verified
 
-| Phase | What | State |
-|---|---|---|
-| 1 | Hardware and RTOS: I2C driver, BMP280, FreeRTOS with static allocation | Working on the board |
-| 2 | SPI + DMA transfer to the gateway, checked with a logic analyzer | Working and checked on the wire; the re-arm time and the UART bit time are not measured |
-| 3 | Custom minimal Linux image for the Raspberry Pi Zero 2 W (Yocto, ADR-0011) | The image builds (2008 packages, 79 MB compressed) and boots; Wi-Fi (typed by hand) and SSH work; no SPI yet |
-| 4 | Linux kernel SPI driver, Device Tree overlay, MQTT publishing | Not started |
+I keep this list honest. Each item is also in [`docs/architecture.md`](docs/architecture.md) or an ADR.
 
-Practices that belong to the later phases (a custom Linux image, a kernel driver
-instead of `spidev`, protocol-level debugging with a logic analyzer) are goals, not
-achievements, until they exist.
+- **The node's re-arm time is not measured.** Only an upper bound (154 µs) is known. The driver's
+  200 µs gap is a margin above it, but neither the gap nor the 1 MHz clock has been captured on the
+  wire with the kernel driver.
+- **Nothing restarts the publisher if it crashes.** The shutdown order (publisher before broker) was
+  read from the `rc` links, not watched on the board.
+- **The root filesystem is writable**, and `/boot` is mounted read-write. A power cut during a write
+  could damage it. A product would need a read-only root; I decided not to do it here, and the reasons
+  are in the change log of `docs/architecture.md`.
+- **Secrets are inside every image.** Anyone with the SD card can read the Wi-Fi key and the password
+  hash.
+- **No clock on the Pi** (no battery, no network time). Log dates are not real, and TLS is not
+  possible yet. That is one reason why the broker stays on the loopback address.
+- **Smaller open items:** the cause of the NSS spikes the firmware counts, the UART bit time, and why
+  the `perl` recipe needs a workaround ([ADR-0014](docs/decisions/0014-skip-the-buildpaths-check-for-perl.md)).
+
+---
 
 ## Repository layout
 
 ```
-firmware/stm32-sensor-node/   Keil project
-  Src/                        main, clock, uart, i2c, bmp280, format, frame, spi,
-                              sensor_task, transmit_task, hardfault, freertos_callbacks
-  FreeRTOS/                   kernel V11.3.1 (unmodified) and the project's config
+firmware/stm32-sensor-node/      Keil project (Phases 1-2)
+  Src/                           main, clock, uart, i2c, bmp280, format, frame, spi,
+                                 sensor_task, transmit_task, hardfault, freertos_callbacks
+  FreeRTOS/                      kernel V11.3.1 (unmodified) and the project's config
+linux-gateway/                   Phases 3-4: what I wrote for the gateway (README inside)
+  conf/                          bblayers.conf and local.conf of the build
+  meta-gateway/                  my Yocto layer
+    recipes-core/images/         gateway-image.bb: the image recipe
+    recipes-kernel/stm32-node/   the kernel SPI driver (stm32_node.c)
+    recipes-bsp/                 the device-tree overlay and the config.txt change
+    recipes-app/                 gateway-publisher (C) and its init script
+    recipes-connectivity/        Mosquitto config, Wi-Fi changes
+    recipes-test/                spi-frame-test, the bring-up tool before the driver existed
 docs/
-  architecture.md             the current state of the system (living document)
-  decisions/                  Architecture Decision Records
-  captures/                   the Phase 1 screenshot and the logic analyzer captures (README inside)
-  budget.md                   hardware cost tracking
-  plan.md                     the original plan of the whole project (in Greek)
+  architecture.md                the current state of the system, with evidence (living document)
+  decisions/                     the 22 ADRs
+  captures/                      logic analyzer captures and the Phase 1 screenshot (README inside)
+  plan.md                        the original plan of the project (in Greek)
+  budget.md                      hardware cost tracking
 tools/
-  spi_frame_test.py           runs on the Pi: reads and checks the frames
+  spi_frame_test.py              the Phase 2 test tool (Python, on the stock Raspberry Pi OS)
 ```
-
-`linux-gateway/` holds the Yocto configuration of the gateway image (`conf/`), my own layer
-(`meta-gateway/`, ADR-0016) and how to rebuild it.

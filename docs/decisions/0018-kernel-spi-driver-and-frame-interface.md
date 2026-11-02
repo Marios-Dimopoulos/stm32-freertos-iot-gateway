@@ -92,9 +92,9 @@ Details:
   to `stm32_node`, and the `driver` link of `spi0.0` points to `stm32_node`. After `rmmod stm32_node` the device
   stays without a driver, and writing `add` into its `uevent` file loaded the module again and ran `probe` with
   no `modprobe`. The module use count is 1 while the publisher has the file open. The driver of the SPI
-  peripheral is `spi-bcm2835` and, like `spidev`, a module. My 14-byte transfers seem to be done with
-  interrupts and not with DMA (about 40 SPI interrupts a second against about 10 transfers a second, and the
-  DMA interrupt lines hardly moved); that is evidence, not proof.
+  peripheral is `spi-bcm2835` and, like `spidev`, a module. That my 14-byte transfers use the controller's
+  interrupt and not DMA was settled on 2026-10-31 (`docs/architecture.md`, "Checks on the board"): in the
+  source a transfer under 96 bytes never uses DMA, and 5 reads gave 10 interrupts, one per transfer.
 
 ## Interview angle
 

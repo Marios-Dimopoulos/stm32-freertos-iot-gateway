@@ -1,10 +1,9 @@
 # Architecture
 
 This document reflects the **actual current state** of the system, not the
-target design. Update it as subsystems are completed — don't let it drift
-into aspiration.
+target design. Update it as subsystems are completed.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT (step 4.6) is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. **Not done:** the final documentation and README (4.7), and the quizzes.
+## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. Step 4.7 (documentation) is done since 2026-11-02: the README and `linux-gateway/README.md` are rewritten and this document is brought up to date. **Not done:** the open items under "Not verified / known problems".
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -538,7 +537,7 @@ outside the repo, ADR-0015 update of 2026-10-24) that only the serial console as
 
 Phase 4: the kernel driver is finished (see "Phase 4: the kernel driver"). The two requirements
 that came from Phase 2 are met: a minimum delay between SPI transfers (step 4.5b) and a policy
-for the stale first read (read twice, step 4.5c, ADR-0019). Step 4.6 (MQTT) is done since 2026-11-01; what is left is 4.7 (final docs).
+for the stale first read (read twice, step 4.5c, ADR-0019). Step 4.6 (MQTT) is done since 2026-11-01 and step 4.7 (docs) since 2026-11-02.
 
 ## Gateway image (Phase 3: built, booted, reachable over Wi-Fi and SSH)
 
@@ -550,7 +549,7 @@ The image is built with Yocto Wrynose 6.0 (ADR-0011, ADR-0012) in WSL2 (Ubuntu 2
 |---|---|---|---|
 | `bitbake` | `2.18` | `6e260eb6ab16` | 2026-10-07 |
 | `openembedded-core` | `wrynose` | `636e5d3b12d5` | 2026-10-12 |
-| `meta-yocto` | `wrynose` | `7c25b11156553` | 2026-09-30 |
+| `meta-yocto` | `wrynose` | `7c25b1115655` | 2026-09-30 |
 | `meta-raspberrypi` | `wrynose` | `919588393f41` | 2026-10-10 |
 | `meta-openembedded` (added 2026-10-31, ADR-0020) | `wrynose` | `c734c2cb9713` | 2026-10-29 |
 
@@ -795,9 +794,9 @@ boot time, memory use.
 **Plan** (agreed 2026-10-25): 4.1 design decisions (ADR-0018); 4.2 an empty kernel
 module in a recipe; 4.3 the SPI driver with `probe`/`remove` and the device-tree overlay; 4.4 one
 SPI transfer, marker and CRC check; 4.5 the character device `/dev/stm32_sensor_node`, the minimum
-gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs. **Status (2026-10-31): 4.1 to 4.5c
-done; 4.6a, 4.6b and 4.6c done (layers, broker in the image, the publisher started at boot); 4.7
-not started.**
+gap and the policy for the stale first read; 4.6 MQTT; 4.7 docs. **Status (2026-11-02): all steps
+done. 4.1 to 4.5c (the driver); 4.6a, 4.6b and 4.6c (layers, broker in the image, the publisher
+started at boot); 4.7 (README, `linux-gateway/README.md`, this document).**
 MQTT was paused from 2026-10-29 until the driver was understood, and restarted on 2026-10-31.
 
 **Facts found while planning:**
@@ -1040,9 +1039,35 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   11883 -t 'gateway/#' -v` received one message per second (`seq` 1211 to 1217 in the paste). After `exit`
   in window A the messages stopped. Without the tunnel, `mosquitto_sub -h 192.168.1.4 -p 1883` gave
   "actively refused it". So the broker is reachable from the laptop only through the SSH login.
-- **Not verified:** the shutdown order (`K20` before `K30`); that nothing restarts the program if it
-  crashes (no kill test); a frame with a bad CRC produced on purpose (my test of shaking
+  (The comment in `mosquitto.conf` gives the example `ssh -L 1883:localhost:1883`; I used 11883 on the
+  laptop.)
+- **Not verified:** the shutdown order on the board (the `rc6.d` links put `K20gateway-publisher` before
+  `K20syslog` and `K30mosquitto`, see below; a shutdown was not watched); that nothing restarts the
+  program if it crashes (no kill test); a frame with a bad CRC produced on purpose (my test of shaking
   the wires, 1000 reads with no failure, was too weak to show anything).
+
+**How the driver is found and loaded (board, 2026-11-01), and the boot scripts (build folder,
+2026-11-02).**
+- `/sys/bus/spi/devices/` has `spi0.0` (mine) and `spi0.1` (the `spidev@1` node that stays). The
+  `modalias` of `spi0.0` is `spi:stm32-sensor-node`, and `modules.alias` has that alias for `stm32_node`
+  (plus two `of:` aliases from the `of_match_table`, which this device does not use). The `driver` link of
+  `spi0.0` points to `stm32_node`. There is no `/etc/modules` and no `/etc/modules-load.d`.
+- With the publisher stopped the module count was 0. After `rmmod stm32_node`, `spi0.0` stayed without a
+  driver and the device file was gone. `echo add > /sys/bus/spi/devices/spi0.0/uevent` loaded the module
+  again with no `modprobe`, `probe` printed its line, and the device file came back (major 10, minor 265).
+  `udevd` was the only program running that reacts to such an event; I did not watch it with
+  `udevadm monitor`.
+- The SPI peripheral's driver is `spi-bcm2835` (the `driver` link of `3f204000.spi`), and it is a module,
+  like `spidev`. The interrupt count of `3f204000.spi` kept growing and the DMA interrupt lines hardly
+  moved, which fits the interrupt mode of the checks of 2026-10-31. The time between my two looks was
+  not measured, so this gives no rate.
+- Read in the root filesystem folder of the build, not on the Pi: `/etc/inittab` has `id:5:initdefault:`
+  (default runlevel 5) and runs `/etc/init.d/rcS` first. In `rcS.d`, `S04udev` starts `udevd -d` and then
+  runs `udevadm trigger --action=add` and `udevadm settle`, which replays the "add" events of the devices
+  the kernel made before udev started; that is how the module is loaded at boot. `rc2.d` has `S01networking`,
+  `S09sshd`, `S20syslog`, `S30mosquitto`, `S40gateway-publisher`. `rc6.d` has `K09sshd`, then
+  `K20dbus-1`, `K20gateway-publisher`, `K20syslog` (equal numbers run in name order, as far as I know),
+  then `K30mosquitto`. The only `respawn` line in `inittab` is the serial login.
 
 ### Not verified / known problems
 
@@ -1082,12 +1107,20 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   not tried a rebuild from an empty folder with them. `bblayers.conf` uses `${TOPDIR}/../` paths
   since 2026-11-01 (checked with `bitbake-layers show-layers` and `bitbake -p`), so it needs `build/`
   and the layers in the same parent folder. BitBake reads `~/yocto/meta-gateway`, not the copy in
-  git; the two are kept the same by hand (identical on 2026-10-23).
+  git; the two are kept the same by hand. On 2026-11-02 they were identical apart from the two files
+  changed that day in git (`gateway-image.bb`: the root password file is now found at
+  `${TOPDIR}/../secrets/root.hash`; `stm32_node.c`: one comment). Neither is built yet, so the new path is
+  not tested. The Wi-Fi `.bbappend` still names the secrets folder with an absolute path that contains my
+  user name.
 
-Next: step 4.7 (README as a portfolio piece and a last pass over this document). Step 4.6 is finished
-(ADR-0020 to ADR-0022). Small open items of 4.6: the shutdown order, a kill test of the publisher. The Phase 3 quiz was answered for
-questions 1 and 2 only; the Phase 4 quiz and the 4.4/4.5 milestone quizzes are not done. Phase 3
-leftovers: `kbd` and the audio line left as they are, read-only root not done (see the change log).
+All planned steps are done. Small open items: the shutdown order and a kill test of the publisher on
+the board; a build with the `${TOPDIR}` path of `root.hash`; the absolute path in the Wi-Fi `.bbappend`.
+Quizzes: the Phase 3 quiz was answered for questions 1 and 2 only. On 2026-11-01 a walkthrough of the
+gateway side (device tree, `probe`, `read()`, the SPI layers, the publisher) ended with five
+interview-style questions (the `read()` path, the two transfers and the gap, how `probe` is called, the
+200 ms polling, the broker and the tunnel), answered and graded. The Yocto and boot side was walked
+through on 2026-11-02, without a quiz. Phase 3 leftovers: `kbd` and the audio line left as they are,
+read-only root not done (see the change log).
 
 ## Open questions / not yet decided
 
@@ -1350,6 +1383,18 @@ leftovers: `kbd` and the audio line left as they are, read-only root not done (s
   still said "nothing is built yet").
 - 2026-11-01: SSH tunnel tested from the laptop: messages arrive through `ssh -L`, stop when the tunnel
   closes, and a direct connection to `192.168.1.4:1883` is refused.
+- 2026-11-01: how the driver is loaded, checked on the board: the `spi:stm32-sensor-node` modalias,
+  `modules.alias`, no boot list, and the module loaded again by a re-sent "add" event after `rmmod`.
+  `spi-bcm2835` is a module. The comment in `stm32_node.c` that said "from memory, not tested" now says
+  what was seen; ADR-0018 records it.
+- 2026-11-02: `inittab` and the `rc` links read in the build folder: default runlevel 5, `S04udev` replays
+  the device events, and the shutdown links put the publisher before syslog and the broker (ADR-0022).
+  `gateway-image.bb` finds `root.hash` at `${TOPDIR}/../secrets/` (not built yet). The wrong interrupt
+  rate I had put into ADR-0018 that morning is corrected.
+- 2026-11-02: step 4.7. The README is rewritten as a portfolio page for all four phases;
+  `linux-gateway/README.md` is rewritten (five repositories, seven layers, every recipe of
+  `meta-gateway`, the rebuild steps); this document is brought up to date, and the `meta-yocto` commit
+  typo (`7c25b11156553`) is corrected to `7c25b1115655`.
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),
