@@ -71,7 +71,15 @@ Small rules that follow from it:
   order of the lines is.
 - **Nothing restarts the program if it crashes.** The loop has no known way to crash, but I have not
   tested a kill. `respawn` in `inittab`, or a small supervisor, is the way out if it ever matters.
-- Not tested: the stop order at shutdown (`K20` before `K30`), and a power cut with the program running.
+- Read in the build folder of the image (2026-11-02), not on the Pi: `/etc/inittab` has `id:5:initdefault:`,
+  so the default runlevel is 5. The `rcS.d` stage runs first and its `S04udev` starts `udevd` and then runs
+  `udevadm trigger --action=add` and `udevadm settle`, which replays the events of devices that already exist
+  (this loads my driver module). The module can still appear after `S40` runs, which is why the program waits
+  for the device file.
+- In `rc6.d` the links `K20gateway-publisher` and `K20syslog` have the same number; as far as I know `rc` runs
+  equal numbers in alphabetical order, so the publisher stops before syslog and before `K30mosquitto`. That is
+  from the file listing only.
+- Not tested: the stop order at shutdown on the board, and a power cut with the program running.
 - The log file is in RAM or on the root filesystem; I have not looked at how big it can grow.
 
 ## Interview angle

@@ -297,11 +297,13 @@ static const struct of_device_id stm32_node_of_match[] = {
 MODULE_DEVICE_TABLE(of, stm32_node_of_match);
 
 /* The same device by its SPI name: the part of the compatible string after the comma. The SPI
- * core builds the module alias of a device from this name ("spi:stm32-sensor-node"), which is
- * what lets udev load this module by itself when the node appears. Without this table the
- * kernel also prints a warning for every device that is matched by the device tree only. Both
- * statements are from my memory of the SPI core, not tested here: the boot will show if udev
- * loads the module without a modprobe. */
+ * core gives the device the module alias "spi:stm32-sensor-node" (checked on the board: the
+ * modalias file of spi0.0 says so), and modules.alias maps that alias to this module. That is how
+ * udev loads the module by itself when the node appears: on the board there is no modprobe and no
+ * boot list, and after rmmod, `echo add > /sys/bus/spi/devices/spi0.0/uevent` loaded the module
+ * again and probe ran (2026-11-01). Not tested: my statement that without this table the kernel
+ * prints a warning for every device that is matched by the device tree only (from my memory of
+ * the SPI core). */
 static const struct spi_device_id stm32_node_spi_ids[] = {
 	{ "stm32-sensor-node" },
 	{ }

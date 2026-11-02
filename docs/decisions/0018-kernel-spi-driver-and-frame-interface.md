@@ -88,6 +88,13 @@ Details:
 - Follow-up in step 4.5: the character device (`open`, `read`), the minimum gap, the stale-read
   policy. Not verified yet: the clock on the wire (no logic analyzer capture of the driver) and
   that `speed_hz = 0` gives the 1 MHz of the device tree.
+- Checked on the board (2026-11-01): `spi0.0` has the modalias `spi:stm32-sensor-node`, `modules.alias` maps it
+  to `stm32_node`, and the `driver` link of `spi0.0` points to `stm32_node`. After `rmmod stm32_node` the device
+  stays without a driver, and writing `add` into its `uevent` file loaded the module again and ran `probe` with
+  no `modprobe`. The module use count is 1 while the publisher has the file open. The driver of the SPI
+  peripheral is `spi-bcm2835` and, like `spidev`, a module. My 14-byte transfers seem to be done with
+  interrupts and not with DMA (about 40 SPI interrupts a second against about 10 transfers a second, and the
+  DMA interrupt lines hardly moved); that is evidence, not proof.
 
 ## Interview angle
 

@@ -122,10 +122,15 @@ do_image_wic[depends] += "stm32-node-overlay:do_deploy"
 # variable: it does not go into the task hash, `bitbake -e` or the generated run script.
 # (Do not build with `bitbake -v`: the verbose log may print the commands.)
 #
+# The path of the hash file is built from TOPDIR (the build folder), the same way as the layer paths
+# in bblayers.conf, so that no user name is written in the repo. It needs the folder `secrets` next
+# to the build folder (here ~/yocto/secrets next to ~/yocto/build). Only the PATH becomes part of
+# the function text and the task hash; the hash itself is still read at build time.
+#
 # Unlike the Wi-Fi .bbappend, this stops the build if the file is missing or wrong, because an
 # image without a root password is locked (root cannot log in on the serial console either).
 set_root_password() {
-    hashfile=/home/mariosdimopoulos/yocto/secrets/root.hash
+    hashfile=${TOPDIR}/../secrets/root.hash
 
     if [ ! -s "$hashfile" ]; then
         bbfatal "set_root_password: $hashfile is missing or empty (see linux-gateway/README.md)"
