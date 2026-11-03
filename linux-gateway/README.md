@@ -44,8 +44,9 @@ The current state of the image, with the tests on the board, is in
 | `recipes-test/spi-frame-test/` | The bring-up tool of Phase 3 that read frames through `/dev/spidev0.0`. Since the overlay takes chip select 0, it has no device to read on this image. | 0017 |
 
 **BitBake reads `~/yocto/meta-gateway`, not this folder.** The copy in git and the copy in `~/yocto/`
-are kept the same by hand. On 2026-11-02 they were identical apart from the two files changed that
-day in git (`gateway-image.bb` and `stm32_node.c`), which are not built yet.
+are kept the same by hand. On 2026-11-03 I copied the three files changed in git on 2026-11-02 and
+2026-11-03 (`gateway-image.bb`, `stm32_node.c` and the Wi-Fi `.bbappend`) to `~/yocto/meta-gateway`
+and built the image, so the two copies are identical again.
 
 ## The Wi-Fi key is not in this repo
 
@@ -55,9 +56,11 @@ The image contains my Wi-Fi network, but the key is in a folder outside the repo
 recipe, so the file `~/yocto/secrets/wpa_supplicant.conf-sane` is installed as
 `/etc/wpa_supplicant.conf`.
 
-That `.bbappend` still names the folder with an absolute path (`/home/mariosdimopoulos/yocto/secrets`).
-With another user name, change that line. The root password file below already uses a path relative
-to the build folder.
+Since 2026-11-03 that `.bbappend` names the folder as `${TOPDIR}/../secrets`, that is, `secrets/` next
+to the build folder, so it works for any user name. Before, it was an absolute path with my user name.
+Built and flashed on 2026-11-03: the image's `/etc/wpa_supplicant.conf` was the same as my secrets
+file, and the Pi joined Wi-Fi at boot. The `root.hash` path below was checked in the same build: root
+logged in with the password on the serial console.
 
 To rebuild with your own network, create the file (mode 600, folder mode 700) with these contents,
 with your values in place of the two in angle brackets:

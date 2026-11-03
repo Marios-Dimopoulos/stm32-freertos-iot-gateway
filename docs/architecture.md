@@ -731,7 +731,9 @@ next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bba
 
 The recipe `wpa-supplicant` installs `/etc/wpa_supplicant.conf` (mode 600) from a file named
 `wpa_supplicant.conf-sane`. My layer has `recipes-connectivity/wpa-supplicant/wpa-supplicant_%.bbappend`
-with `FILESEXTRAPATHS:prepend := "/home/mariosdimopoulos/yocto/secrets:"`. The folder
+with `FILESEXTRAPATHS:prepend := "/home/mariosdimopoulos/yocto/secrets:"` (since 2026-11-03
+`"${TOPDIR}/../secrets:"`, the same folder without my user name; built, flashed and the Pi
+joined Wi-Fi on 2026-11-03). The folder
 `~/yocto/secrets/` is outside the repo and holds my `wpa_supplicant.conf-sane` (country, SSID and
 the derived `psk`; `.gitignore` has a rule for any `secrets/` folder). With the image flashed, the
 Pi joined Wi-Fi at boot and SSH worked with nothing typed on the board. If the folder is missing
@@ -1107,14 +1109,19 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   not tried a rebuild from an empty folder with them. `bblayers.conf` uses `${TOPDIR}/../` paths
   since 2026-11-01 (checked with `bitbake-layers show-layers` and `bitbake -p`), so it needs `build/`
   and the layers in the same parent folder. BitBake reads `~/yocto/meta-gateway`, not the copy in
-  git; the two are kept the same by hand. On 2026-11-02 they were identical apart from the two files
-  changed that day in git (`gateway-image.bb`: the root password file is now found at
-  `${TOPDIR}/../secrets/root.hash`; `stm32_node.c`: one comment). Neither is built yet, so the new path is
-  not tested. The Wi-Fi `.bbappend` still names the secrets folder with an absolute path that contains my
-  user name.
+  git; the two are kept the same by hand. Three files changed in git on 2026-11-02 and 2026-11-03:
+  `gateway-image.bb` (the root password file is now found at `${TOPDIR}/../secrets/root.hash`),
+  `stm32_node.c` (one comment) and the Wi-Fi `.bbappend` (the secrets folder is now
+  `${TOPDIR}/../secrets` instead of an absolute path with my user name). On 2026-11-03 I copied all
+  three to `~/yocto/meta-gateway` and built the image (`...rootfs-20261103174036.wic.bz2`). In the
+  root filesystem folder the root field of `/etc/shadow` is the same as `root.hash`, and
+  `/etc/wpa_supplicant.conf` is the same as my secrets file (not the placeholder). Both checks printed
+  only SAME or DIFFERENT, never the values. I flashed this image the same day: the Pi joined Wi-Fi at
+  boot with only power connected, SSH with the key worked, root logged in with the password on the
+  serial console, and `mosquitto_sub` showed the messages again.
 
 All planned steps are done. Small open items: the shutdown order and a kill test of the publisher on
-the board; a build with the `${TOPDIR}` path of `root.hash`; the absolute path in the Wi-Fi `.bbappend`.
+the board.
 Quizzes: the Phase 3 quiz was answered for questions 1 and 2 only. On 2026-11-01 a walkthrough of the
 gateway side (device tree, `probe`, `read()`, the SPI layers, the publisher) ended with five
 interview-style questions (the `read()` path, the two transfers and the gap, how `probe` is called, the
@@ -1395,6 +1402,10 @@ read-only root not done (see the change log).
   `linux-gateway/README.md` is rewritten (five repositories, seven layers, every recipe of
   `meta-gateway`, the rebuild steps); this document is brought up to date, and the `meta-yocto` commit
   typo (`7c25b11156553`) is corrected to `7c25b1115655`.
+- 2026-11-03: the Wi-Fi `.bbappend` finds the secrets folder at `${TOPDIR}/../secrets`, like
+  `root.hash`, so no file in the layer has my user name. The three changed files are copied to
+  `~/yocto/meta-gateway` and the image is built; both secrets are in the root filesystem folder.
+  Flashed: Wi-Fi at boot, SSH, the root password on the serial console and the MQTT messages all work.
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),
