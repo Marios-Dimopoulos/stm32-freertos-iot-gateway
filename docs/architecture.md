@@ -1044,8 +1044,7 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   (The comment in `mosquitto.conf` gives the example `ssh -L 1883:localhost:1883`; I used 11883 on the
   laptop.)
 - **Not verified:** the shutdown order on the board (the `rc6.d` links put `K20gateway-publisher` before
-  `K20syslog` and `K30mosquitto`, see below; a shutdown was not watched); that nothing restarts the
-  program if it crashes (no kill test); a frame with a bad CRC produced on purpose (my test of shaking
+  `K20syslog` and `K30mosquitto`, see below; a shutdown was not watched); a frame with a bad CRC produced on purpose (my test of shaking
   the wires, 1000 reads with no failure, was too weak to show anything).
 
 **How the driver is found and loaded (board, 2026-11-01), and the boot scripts (build folder,
@@ -1120,13 +1119,18 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   boot with only power connected, SSH with the key worked, root logged in with the password on the
   serial console, and `mosquitto_sub` showed the messages again.
 
-All planned steps are done. Small open items: the shutdown order and a kill test of the publisher on
-the board.
+All planned steps are done. Small open item: the shutdown order on the board (the kill test of the
+publisher was done on 2026-11-03, see the change log).
 Quizzes: the Phase 3 quiz was answered for questions 1 and 2 only. On 2026-11-01 a walkthrough of the
 gateway side (device tree, `probe`, `read()`, the SPI layers, the publisher) ended with five
 interview-style questions (the `read()` path, the two transfers and the gap, how `probe` is called, the
 200 ms polling, the broker and the tunnel), answered and graded. The Yocto and boot side was walked
-through on 2026-11-02, without a quiz. Phase 3 leftovers: `kbd` and the audio line left as they are,
+through on 2026-11-02 and quizzed on 2026-11-03 with five questions (from `IMAGE_INSTALL` to a file in
+the image, `.bbappend`, `DEPENDS` and `RDEPENDS`, power-on to `probe`, start order), answered and
+graded. Weak spots found: the task chain (`do_compile` builds, `do_install` copies into `${D}`,
+`do_package` sorts `${D}` into one folder per package, `do_rootfs` installs the requested packages);
+why the udev coldplug replays events from early in the boot; and that the start order does not mean the
+broker is ready. Phase 3 leftovers: `kbd` and the audio line left as they are,
 read-only root not done (see the change log).
 
 ## Open questions / not yet decided
@@ -1406,6 +1410,12 @@ read-only root not done (see the change log).
   `root.hash`, so no file in the layer has my user name. The three changed files are copied to
   `~/yocto/meta-gateway` and the image is built; both secrets are in the root filesystem folder.
   Flashed: Wi-Fi at boot, SSH, the root password on the serial console and the MQTT messages all work.
+- 2026-11-03: quiz on the Yocto and boot side (five questions), answered and graded; see "Next".
+- 2026-11-03: kill test of the publisher on the board. `kill -TERM` ended it; `kill -9` ended it and
+  10 seconds later it was still not running, so nothing restarts it (ADR-0022, updated). `start` worked
+  afterwards although the old pid file was still there. Also looked at on the board: `unbind` and `bind` of
+  `spi0.0` on the driver (`remove`, then `probe`; the device stays, the device file goes and comes back),
+  the publisher as PID 369 with parent 1, 2 threads and its open files. The Wi-Fi driver is `brcmfmac`.
 - 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
   "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
   delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),

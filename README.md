@@ -227,6 +227,11 @@ the consequences, and what I did not verify.
 
 ## Hardware and wiring
 
+![The test setup](docs/captures/setup.png)
+
+*The setup I used for the tests: the Nucleo-F411RE with the BMP280 on the breadboard, and the
+Raspberry Pi Zero 2 W below it, joined by jumper wires.*
+
 - STM32 Nucleo-F411RE (Cortex-M4F, run at 84 MHz, 128 KB SRAM)
 - Bosch BMP280 breakout (temperature and pressure, I2C)
 - Raspberry Pi Zero 2 W (Cortex-A53, 512 MB RAM, Wi-Fi)
@@ -317,6 +322,22 @@ ssh -i <your key> -L 11883:localhost:1883 root@<pi address>      # window A, kee
 mosquitto_sub -h 127.0.0.1 -p 11883 -t 'gateway/#' -v            # window B
 ```
 
+Both ways on the real board:
+
+![SSH login with the tunnel](docs/captures/publisher-ssh-tunnel.png)
+
+*Window A, on the laptop: the SSH login with `-L 11883:localhost:1883`. The "Last login" date is not
+real, because the Pi has no clock. The warning is the standard banner of the Poky distribution.*
+
+![Messages on the laptop through the tunnel](docs/captures/publisher-laptop-via-tunnel.png)
+
+*Window B, on the laptop (Windows): `mosquitto_sub` connects to its own port 11883, and the tunnel
+carries it to the broker on the Pi. One message per second, `seq` 145 to 169, `status` 0.*
+
+![Messages on the Pi](docs/captures/publisher-on-pi.png)
+
+*On the Pi itself: the same subscriber, straight to the broker on port 1883.*
+
 ---
 
 ## Known limitations and what is not verified
@@ -326,8 +347,8 @@ I keep this list honest. Each item is also in [`docs/architecture.md`](docs/arch
 - **The node's re-arm time is not measured.** Only an upper bound (154 µs) is known. The driver's
   200 µs gap is a margin above it, but neither the gap nor the 1 MHz clock has been captured on the
   wire with the kernel driver.
-- **Nothing restarts the publisher if it crashes.** The shutdown order (publisher before broker) was
-  read from the `rc` links, not watched on the board.
+- **Nothing restarts the publisher if it crashes.** Tested with `kill -9` on the board: it stays dead.
+  The shutdown order (publisher before broker) was read from the `rc` links, not watched on the board.
 - **The root filesystem is writable**, and `/boot` is mounted read-write. A power cut during a write
   could damage it. A product would need a read-only root; I decided not to do it here, and the reasons
   are in the change log of `docs/architecture.md`.
@@ -359,7 +380,7 @@ linux-gateway/                   Phases 3-4: what I wrote for the gateway (READM
 docs/
   architecture.md                the current state of the system, with evidence (living document)
   decisions/                     the 22 ADRs
-  captures/                      logic analyzer captures and the Phase 1 screenshot (README inside)
+  captures/                      logic analyzer captures, the screenshots and a photo of the setup (README inside)
   plan.md                        the original plan of the project (in Greek)
   budget.md                      hardware cost tracking
 tools/

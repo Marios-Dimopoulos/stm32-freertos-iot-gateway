@@ -69,8 +69,12 @@ Small rules that follow from it:
 - `logread` does not work on this image (`can't find syslogd buffer`). The log daemon writes the file
   `/var/log/messages`, so that is where to look. The Pi has no clock, so the dates in it are not real; the
   order of the lines is.
-- **Nothing restarts the program if it crashes.** The loop has no known way to crash, but I have not
-  tested a kill. `respawn` in `inittab`, or a small supervisor, is the way out if it ever matters.
+- **Nothing restarts the program if it crashes.** The loop has no known way to crash. Tested on the
+  board on 2026-11-03 with `kill -9` (SIGKILL, which the program cannot catch): 10 seconds later there was
+  no `gateway-publisher` process (`pidof` printed nothing), so nobody restarts it. `kill -TERM` also ended it,
+  as the signal handler is meant to. After the kill, `/etc/init.d/gateway-publisher start` worked although the
+  pid file of the dead process was still there, because `start-stop-daemon` checks that the process exists.
+  `respawn` in `inittab`, or a small supervisor, is the way out if it ever matters.
 - Read in the build folder of the image (2026-11-02), not on the Pi: `/etc/inittab` has `id:5:initdefault:`,
   so the default runlevel is 5. The `rcS.d` stage runs first and its `S04udev` starts `udevd` and then runs
   `udevadm trigger --action=add` and `udevadm settle`, which replays the events of devices that already exist

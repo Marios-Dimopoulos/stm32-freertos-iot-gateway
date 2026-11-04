@@ -21,6 +21,10 @@ captures the Pico's GND came from the `GND` pin next to `D13`.
 | File | Date | What | Settings |
 |---|---|---|---|
 | `phase1-terminal-output.png` | Phase 1 | Tera Term output of the sensor task | not a capture |
+| `setup.png` | 2026-11-04 | Photo of the test setup: the Nucleo, the BMP280 on the breadboard, the Pi Zero 2 W | not a capture |
+| `publisher-ssh-tunnel.png` | 2026-11-04 | Laptop: SSH login to the Pi with the tunnel `-L 11883:localhost:1883` | not a capture |
+| `publisher-laptop-via-tunnel.png` | 2026-11-04 | Laptop: `mosquitto_sub` through the tunnel, `seq` 145 to 169 | not a capture |
+| `publisher-on-pi.png` | 2026-11-04 | Pi: `mosquitto_sub` straight to the broker, `seq` 214 to 219 | not a capture |
 | `i2c_bmp280_5s.sr` | 2026-10-20 | Five BMP280 reads, one per second, no Pi connected | D2 = SCL (PB8), D3 = SDA (PB9); 1 MHz; 5 M samples (5 s); no trigger |
 | `i2c_bmp280_1transaction.sr` | 2026-10-20 | One BMP280 read in detail | same channels; 5 MHz; 500 k samples (100 ms); trigger: falling edge on D3; 10% pre-capture |
 | `spi_1MHz_clean_3probes.sr` | 2026-10-20 | Two frames, 1 MHz, the clean wiring: no spikes on NSS | D2 NSS, D3 SCK, D4 MISO; 20 MHz; no trigger; Pi: `poll --count 3000 --period 0.005` |
