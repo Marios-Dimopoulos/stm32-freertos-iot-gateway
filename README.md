@@ -17,11 +17,6 @@ image, the kernel driver, the broker and the publisher work together. The publis
 Each part was tested on the board before the next one was built. What is **not** verified is listed
 openly in [Known limitations](#known-limitations-and-what-is-not-verified) and in every ADR.
 
-This is a learning project for embedded software and embedded Linux roles. The goal is a working
-system, and also being able to defend every design decision. That is why the reasoning is in **22
-Architecture Decision Records**, and [`docs/architecture.md`](docs/architecture.md) records the real
-state of the system, with the evidence.
-
 ---
 
 ## Contents
@@ -227,16 +222,20 @@ the consequences, and what I did not verify.
 
 ## Hardware and wiring
 
-![The test setup](docs/captures/setup.png)
+![The test setup](docs/captures/setup.jpg)
 
-*The setup I used for the tests: the Nucleo-F411RE with the BMP280 on the breadboard, and the
-Raspberry Pi Zero 2 W below it, joined by jumper wires.*
+*The setup I used for the tests: the Raspberry Pi Zero 2 W (left), the breadboard with the BMP280
+(top) and the Nucleo-F411RE (bottom), joined by jumper wires.*
 
 - STM32 Nucleo-F411RE (Cortex-M4F, run at 84 MHz, 128 KB SRAM)
 - Bosch BMP280 breakout (temperature and pressure, I2C)
 - Raspberry Pi Zero 2 W (Cortex-A53, 512 MB RAM, Wi-Fi)
 - Logic analyzer: a Raspberry Pi Pico with the `sigrok-pico` firmware, read in PulseView
 - A USB-UART adapter (3.3 V) for the Pi's serial console
+
+| ![Raspberry Pi Pico](docs/captures/RPI_pico.jpg) | ![FT232 USB-UART adapter](docs/captures/USB_to_UART_adapter.jpg) |
+|:---:|:---:|
+| *The Raspberry Pi Pico, the logic analyzer (`sigrok-pico` firmware)* | *The FT232 USB-UART adapter, for the Pi's serial console* |
 
 ### BMP280 to Nucleo
 
@@ -380,7 +379,7 @@ linux-gateway/                   Phases 3-4: what I wrote for the gateway (READM
 docs/
   architecture.md                the current state of the system, with evidence (living document)
   decisions/                     the 22 ADRs
-  captures/                      logic analyzer captures, the screenshots and a photo of the setup (README inside)
+  captures/                      logic analyzer captures, the screenshots and photos of the hardware (README inside)
   plan.md                        the original plan of the project (in Greek)
   budget.md                      hardware cost tracking
 tools/

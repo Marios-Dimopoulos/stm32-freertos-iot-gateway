@@ -21,7 +21,9 @@ captures the Pico's GND came from the `GND` pin next to `D13`.
 | File | Date | What | Settings |
 |---|---|---|---|
 | `phase1-terminal-output.png` | Phase 1 | Tera Term output of the sensor task | not a capture |
-| `setup.png` | 2026-11-04 | Photo of the test setup: the Nucleo, the BMP280 on the breadboard, the Pi Zero 2 W | not a capture |
+| `setup.jpg` | 2026-11-04 | Photo of the test setup: the Pi Zero 2 W, the breadboard with the BMP280, the Nucleo | not a capture |
+| `RPI_pico.jpg` | 2026-11-04 | Photo of the Raspberry Pi Pico used as the logic analyzer | not a capture |
+| `USB_to_UART_adapter.jpg` | 2026-11-04 | Photo of the FT232 USB-UART adapter used for the Pi's serial console | not a capture |
 | `publisher-ssh-tunnel.png` | 2026-11-04 | Laptop: SSH login to the Pi with the tunnel `-L 11883:localhost:1883` | not a capture |
 | `publisher-laptop-via-tunnel.png` | 2026-11-04 | Laptop: `mosquitto_sub` through the tunnel, `seq` 145 to 169 | not a capture |
 | `publisher-on-pi.png` | 2026-11-04 | Pi: `mosquitto_sub` straight to the broker, `seq` 214 to 219 | not a capture |
