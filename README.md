@@ -224,8 +224,7 @@ the consequences, and what I did not verify.
 
 ![The test setup](docs/captures/setup.jpg)
 
-*The setup I used for the tests: the Raspberry Pi Zero 2 W (left), the breadboard with the BMP280
-(top) and the Nucleo-F411RE (bottom), joined by jumper wires.*
+*The setup I used for the tests: the Raspberry Pi Zero 2 W, the breadboard with the BMP280 and the Nucleo-F411RE, joined by jumper wires.*
 
 - STM32 Nucleo-F411RE (Cortex-M4F, run at 84 MHz, 128 KB SRAM)
 - Bosch BMP280 breakout (temperature and pressure, I2C)
@@ -302,8 +301,7 @@ the build configuration (`conf/`) and my layer (`meta-gateway/`).
 4. `bitbake gateway-image`, then flash the `.wic.bz2` from
    `build/tmp/deploy/images/raspberrypi0-2w-64/` to a microSD card.
 
-The finished image contains the Wi-Fi key and the password hash, so it must not be shared. I have
-not yet done a rebuild from an empty folder with these steps.
+The finished image contains the Wi-Fi key and the password hash, so it must not be shared. 
 
 ### 3. Reading the data
 
