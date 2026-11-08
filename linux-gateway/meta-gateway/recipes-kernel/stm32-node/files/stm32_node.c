@@ -1,31 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * stm32_node: driver for the STM32 sensor node on the Raspberry Pi's SPI bus.
- *
- * Step 4.3 made the module an SPI driver: it attaches to a device when the kernel finds one that
- * matches (probe) and detaches when the device or the driver goes away (remove). The device comes
- * from the device-tree overlay, which adds a node with the compatible string below on chip select 0.
- *
- * Step 4.4 did ONE SPI transfer of 14 bytes in probe and checked the marker and the CRC of the
- * frame. That proved that the kernel can talk to the node.
- *
- * Step 4.5a: the transfer moved from probe into read(). probe now creates the file
- * /dev/stm32_sensor_node (a "misc device", the simplest kind of character device), and every
- * read() of that file does one SPI transfer, checks the frame and gives the 14 raw bytes to the
- * program, or an error if the frame is bad. The program decodes the temperature and the pressure
- * (ADR-0018).
- *
- * Step 4.5b: before each transfer the driver waits until at least MIN_GAP_US have
- * passed since the end of the previous one, so that a fast reader cannot start a transaction
- * before the node has loaded the next frame.
- *
- * Step 4.5c (this file): every read() does two transfers and keeps the second, because a transfer
- * returns the frame the node loaded after the previous one (the "stale first read"). The first
- * frame is thrown away.
- *
- * The frame layout and the CRC are in firmware/stm32-sensor-node/Src/frame.h and
- * docs/decisions/0010-spi-link-design.md. The same checks are done in user space by
- * spi-frame-test.c (recipes-test), which is the code this file was written from.
  */
 #include <linux/delay.h>
 #include <linux/fs.h>

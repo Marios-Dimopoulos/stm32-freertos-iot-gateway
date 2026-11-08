@@ -1,5 +1,5 @@
 SUMMARY = "Kernel driver for the STM32 sensor node on the SPI bus (Phase 4)"
-DESCRIPTION = "Step 4.2: only the skeleton of the module, to prove the build path. It prints a \
+DESCRIPTION = "Only the skeleton of the module, to prove the build path. It prints a \
 line when it is loaded and when it is unloaded. The SPI driver, the character device and the \
 frame checks are added in the next steps."
 

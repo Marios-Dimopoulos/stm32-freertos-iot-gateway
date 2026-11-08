@@ -1,5 +1,5 @@
 SUMMARY = "Reads frames from the STM32 sensor node and publishes them to the MQTT broker"
-DESCRIPTION = "Step 4.6c (ADR-0020, ADR-0021). Reads /dev/stm32_sensor_node, decodes the frame \
+DESCRIPTION = "Reads /dev/stm32_sensor_node, decodes the frame \
 and sends it as JSON to the Mosquitto broker on the gateway. Started at boot by an init script."
 
 # The program is my own code; same license and check as spi-frame-test.

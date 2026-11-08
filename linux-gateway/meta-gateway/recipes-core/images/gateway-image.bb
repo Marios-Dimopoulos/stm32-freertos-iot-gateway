@@ -4,37 +4,10 @@ LICENSE = "MIT"
 
 # core-image gives the image tasks (do_rootfs, do_image_wic) and the table that turns an
 # IMAGE_FEATURES word (for example ssh-server-openssh) into packages. Its default package
-# list, which is long (packagegroup-base-extended pulls in Bluetooth, audio, graphics
-# libraries and every kernel module), is replaced below on purpose.
+# list is long (Bluetooth, audio, every kernel module), so IMAGE_INSTALL below replaces it.
+# How the list grew and which builds failed on the way: ADR-0017.
 inherit core-image
 
-# The image was built up one step at a time, and each step was built, flashed and tested
-# before the next, so that a failure had one cause.
-#
-# Step 1 (tested): packagegroup-core-boot alone booted to a login on the serial console, 47
-# packages, 29 MB root filesystem.
-#
-# Step 2 (tested): Wi-Fi. wpa-supplicant joins the network, iw shows it, wireless-regdb-static
-# is the regulatory database (country=GR in wpa_supplicant.conf needs it), and the rest is the
-# chip firmware and the drivers. The drivers are kernel MODULES in this kernel, so they are
-# installed by name; the old image got them through kernel-modules (28 MB of everything).
-# brcmfmac is the driver, brcmutil and cfg80211 are what it depends on. This kernel splits
-# brcmfmac into a core and three vendor modules that the core loads by chip: lsmod on the
-# board showed that only brcmfmac_cyw is used, so -wcc and -bca are not listed.
-#
-# The first test of step 2 failed: wlan0 did not exist. The driver loaded, but dmesg said
-# "Direct firmware load for brcm/brcmfmac43430b0-sdio.raspberrypi,model-zero-2-w.bin failed
-# with error -2" (file not found). The chip reports itself as BCM43430/2, so the driver asks
-# for a 43430b0 name, and that name is only a symlink (to the 43436 firmware) which lives in
-# the package linux-firmware-rpidistro-bcm43430, not in ...bcm43436 where the real file is.
-# The old image had both packages. Both are listed, because the symlink is useless without
-# the file.
-#
-# Step 3 (tested): SPI. In step 1 `ls /dev/spi*` found nothing, because the SPI controller
-# driver and spidev are modules in this kernel and no module was installed. spi-bcm2835 is
-# the driver of the controller on the Pi's SoC; spidev makes /dev/spidev0.0 from it;
-# spi-frame-test is my own bring-up tool (recipe in this layer) that reads the frames of the
-# STM32 through it.
 IMAGE_INSTALL = "\
     packagegroup-core-boot \
     wpa-supplicant \
@@ -54,81 +27,60 @@ IMAGE_INSTALL = "\
     mosquitto-clients \
     gateway-publisher \
     "
-# Phase 4, step 4.6b (ADR-0020, ADR-0021): the MQTT broker and its command-line clients. The recipe
-# is in meta-networking (meta-openembedded). `mosquitto` is the broker and its init script, which
-# starts it at boot with the config of mosquitto_%.bbappend (loopback only). `mosquitto-clients` has
-# mosquitto_pub and mosquitto_sub, to check the broker on the Pi before the publisher program
-# exists; they pull in libmosquitto1 by themselves, so it is not listed.
-# Step 4.6c: gateway-publisher is my own program (recipe in recipes-app/ of this layer). It reads
-# the frames from /dev/stm32_sensor_node and, in the finished version, publishes them to the broker.
-# Phase 4, step 4.2: my own kernel module (recipe stm32-node in this layer). For now it only
-# prints a line when it is loaded and unloaded.
-# The name on the list is the RECIPE, not kernel-module-stm32-node: with that name do_rootfs
-# failed ("No match for argument: kernel-module-stm32-node", "neither a recipe nor a generated
-# package"), although the package data does list it as an alias of the real package
-# kernel-module-stm32-node-6.18.33-v8. The `module` class makes the package of the recipe an
-# empty one that only depends on the real module package, and that is the name to list. (Why
-# the alias fails for my module and works for spidev, I do not know.)
+# Why these entries:
+# - Wi-Fi: the drivers are kernel MODULES in this kernel, so they are listed by name.
+#   brcmfmac is the driver; brcmutil and cfg80211 are what it needs; only the -cyw vendor
+#   module is used on this chip (seen with lsmod). wireless-regdb-static is needed by
+#   country=GR in wpa_supplicant.conf.
+# - Both firmware packages: the name the driver asks for (43430b0) is only a symlink in
+#   ...bcm43430, and the real file is in ...bcm43436. Without both, wlan0 does not exist.
+# - SPI: spi-bcm2835 is the driver of the Pi's SPI peripheral, spidev makes /dev/spidev0.0.
+#   spi-frame-test is my bring-up tool (this layer).
+# - stm32-node is the RECIPE of my kernel module, not kernel-module-stm32-node: that name
+#   fails in do_rootfs, because the `module` class makes the recipe's own package an empty
+#   one that depends on the real module package.
+# - mosquitto is the broker (loopback only, config in mosquitto_%.bbappend);
+#   mosquitto-clients gives mosquitto_pub/sub to check it (ADR-0020, ADR-0021).
+# - gateway-publisher is my C program (recipes-app/): frames from /dev/stm32_sensor_node
+#   to the broker.
 
-# Packages that something only RECOMMENDS (RRECOMMENDS) and that I do not want. A hard
-# dependency (RDEPENDS) cannot be removed this way, and the build then fails with the name of
-# the package that needs it.
+# Packages that something only RECOMMENDS and that I do not want. A hard dependency
+# (RDEPENDS) cannot be removed this way; the build fails and names the package.
 #
-# kernel-image: every kernel module package depends on kernel-base, and kernel-base recommends
-# kernel-image, which puts a 26 MB copy of the kernel in /boot of the ROOT partition. The
-# firmware loads the kernel from partition 1 (kernel8.img) and partition 1 is then mounted over
-# /boot, so that copy is never used.
-#
-# The first try used the name "kernel-image" and did nothing: the build accepted it without
-# any error, but the manifest still had kernel-image-6.18.33-v8 and kernel-image-image-6.18.33-v8.
-# Yocto renames kernel packages to include the kernel version, and the exclusion works on the
-# final names. The entries are handed to `dnf -x`, which takes patterns, so a pattern avoids
-# putting the version number here.
+# kernel-image is recommended by kernel-base and would put a 26 MB copy of the kernel in
+# /boot of the root partition. It is never used: the firmware loads the kernel from
+# partition 1. Kernel packages are renamed with the version, so the entry is a pattern.
 BAD_RECOMMENDATIONS += "kernel-image-*"
 
-# Language files: the image asked for locale-base-c, locale-base-en-us and locale-base-en-gb
-# directly (they were in the `dnf install` command of do_rootfs), so they are not
-# recommendations and BAD_RECOMMENDATIONS fails the build for them. They come from
-# IMAGE_LINGUAS, which the class leaves empty but something else in my configuration sets; I
-# did not find what. Setting it empty here, in the recipe, wins over that. The console and
-# the logs are in English with the C locale and need no language files.
+# Language files (locale-base-*) were asked for directly, so BAD_RECOMMENDATIONS cannot
+# remove them. They come from IMAGE_LINGUAS, which something in my configuration sets (not
+# found); setting it empty here wins. The console and logs are English with the C locale.
 IMAGE_LINGUAS = ""
 
-# Features of this image. They were in local.conf until 2026-10-24, where they applied to every
-# image.
-#   ssh-server-openssh  the SSH server (ADR-0015). Note: the first build with it produced 0-byte
-#                       sshd, ssh-keygen and other programs (a race while `make install` ran in
-#                       parallel, as far as I can tell); `bitbake -f -c install openssh` gave
-#                       complete files. Check the new rootfs for zero-byte files.
-# NOT listed on purpose: empty-root-password and allow-empty-password. They made root log in
-# with no password, on the serial console and over SSH.
-# NOT listed any more: allow-root-login (PermitRootLogin yes in sshd_config). Since I log in with
-# a key (function install_root_ssh_key below), the default of OpenSSH, "prohibit-password", is
-# enough: root may log in over SSH with a key and never with a password, even if password login
-# were switched on again by mistake.
+# ssh-server-openssh: the SSH server (ADR-0015). The first build produced 0-byte sshd and
+# ssh-keygen; `bitbake -f -c install openssh` fixed it. Check the rootfs for zero-byte files.
+# NOT listed on purpose: empty-root-password, allow-empty-password (root with no password)
+# and allow-root-login. With a key login, OpenSSH's default "prohibit-password" is enough:
+# root can log in over SSH with a key and never with a password.
 IMAGE_FEATURES += "ssh-server-openssh"
 
-# Phase 4, step 4.3: the device-tree overlay of the STM32 node goes into the boot partition (the
-# FAT one) as overlays/stm32-node.dtbo. IMAGE_BOOT_FILES is the list of files that `wic` copies
-# into that partition, each as `<file in the deploy folder>;<destination>`. The recipe
-# stm32-node-overlay deploys the file; the second line makes the image wait for it. The
-# `dtoverlay=stm32-node` line in config.txt comes from rpi-config_%.bbappend in this layer.
+# The device-tree overlay goes into the FAT boot partition as
+# overlays/stm32-node.dtbo. IMAGE_BOOT_FILES is the list of files `wic` copies there, each as
+# `<file in the deploy folder>;<destination>`. The second line makes the image wait for the
+# recipe stm32-node-overlay. The `dtoverlay=stm32-node` line in config.txt comes from
+# rpi-config_%.bbappend.
 IMAGE_BOOT_FILES:append = " devicetree/stm32-node.dtbo;overlays/stm32-node.dtbo"
 do_image_wic[depends] += "stm32-node-overlay:do_deploy"
 
-# The password of root (follow-up of ADR-0015). Only the hash is in the image (SHA-512 crypt, from
-# `openssl passwd -6`), and the hash is in a file OUTSIDE the repo, like the Wi-Fi key. It is
-# written into /etc/shadow here, after the root filesystem is built, so that it is not a
-# variable: it does not go into the task hash, `bitbake -e` or the generated run script.
-# (Do not build with `bitbake -v`: the verbose log may print the commands.)
+# The password of root (ADR-0015). Only the SHA-512 hash (`openssl passwd -6`) is in the
+# image, read from a file OUTSIDE the repo, like the Wi-Fi key: ${TOPDIR}/../secrets/root.hash
+# (~/yocto/secrets next to ~/yocto/build). It is written into /etc/shadow after the root
+# filesystem is built, so it is not a variable: it stays out of the task hash, `bitbake -e`
+# and the run script. Only the PATH is part of the task hash. Do not build with `bitbake -v`:
+# the verbose log may print the commands.
 #
-# The path of the hash file is built from TOPDIR (the build folder), the same way as the layer paths
-# in bblayers.conf, so that no user name is written in the repo. It needs the folder `secrets` next
-# to the build folder (here ~/yocto/secrets next to ~/yocto/build). Only the PATH becomes part of
-# the function text and the task hash; the hash itself is still read at build time.
-#
-# Unlike the Wi-Fi .bbappend, this stops the build if the file is missing or wrong, because an
-# image without a root password is locked (root cannot log in on the serial console either).
+# Unlike the Wi-Fi .bbappend, this stops the build if the file is missing or wrong: an image
+# without a root password is locked, even on the serial console.
 set_root_password() {
     hashfile=${TOPDIR}/../secrets/root.hash
 
@@ -151,17 +103,15 @@ set_root_password() {
 }
 ROOTFS_POSTPROCESS_COMMAND += "set_root_password;"
 
-# SSH login for root with a key, and no password login over SSH (follow-up of ADR-0015: the
-# password was the only protection against anyone on the Wi-Fi). The file is the PUBLIC key
-# (the private half stays on my PC), so it is not secret and lives in the repo. The serial
-# console still asks for the root password, so it stays a way in if the key does not work.
+# SSH login for root with a key, and no password login over SSH (ADR-0015). The file is the
+# PUBLIC key (the private half stays on my PC), so it lives in the repo. The serial console
+# still asks for the root password, as a way in if the key does not work.
 #
-# sshd ignores authorized_keys if the file or its folders can be written by someone else, so the
-# modes are set here: 700 for the folder and 600 for the file. This runs under pseudo, so the
-# owner is root.
+# sshd ignores authorized_keys if someone else can write the file or its folders, so the
+# modes are 700 (folder) and 600 (file). This runs under pseudo, so the owner is root.
 #
-# PasswordAuthentication is a commented-out line in sshd_config (the default is yes), so sed
-# replaces it, and the check after it stops the build if the line was not there.
+# PasswordAuthentication is a commented-out line in sshd_config, so sed replaces it, and the
+# check after it stops the build if the line was not there.
 install_root_ssh_key() {
     keyfile=${THISDIR}/files/root_authorized_keys
 

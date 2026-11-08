@@ -1,5 +1,5 @@
 SUMMARY = "Device-tree overlay that adds the STM32 sensor node on SPI chip select 0"
-DESCRIPTION = "Phase 4, step 4.3. Compiled from stm32-node.dts to stm32-node.dtbo and deployed \
+DESCRIPTION = "Compiled from stm32-node.dts to stm32-node.dtbo and deployed \
 next to the image; gateway-image.bb puts it into /boot/overlays of the boot partition and \
 the file config.txt loads it with dtoverlay=stm32-node."
 

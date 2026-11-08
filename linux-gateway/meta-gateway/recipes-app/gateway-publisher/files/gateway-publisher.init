@@ -1,5 +1,5 @@
 #!/bin/sh
-# Starts and stops gateway-publisher (step 4.6c, piece 5). Modelled on the init script of the
+# Starts and stops gateway-publisher. Modelled on the init script of the
 # Mosquitto recipe, which is started the same way on this image.
 #
 # The start order is set by the numbers in the links that the recipe creates (update-rc.d):

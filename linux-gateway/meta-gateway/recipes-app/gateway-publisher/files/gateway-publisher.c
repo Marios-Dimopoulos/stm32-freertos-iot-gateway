@@ -1,25 +1,6 @@
 /*
  * gateway-publisher: reads frames from the STM32 sensor node through /dev/stm32_sensor_node and
  * sends them to the MQTT broker on the gateway (ADR-0020, ADR-0021).
- *
- * Step 4.6c, piece 1: read ONE frame and decode it.
- * Piece 2: build the MQTT message of ADR-0021 as JSON text.
- * Piece 3: connect to the broker and publish that message.
- * Piece 4: do it in a loop. Every POLL_PERIOD_MS the program reads a frame and, if its sequence
- * number is new, publishes it. It runs until it gets SIGINT or SIGTERM.
- * Piece 5 (this file): it runs as a service that init starts at boot (/etc/init.d/gateway-publisher).
- * A service has no terminal, so its messages go to the system log (syslog) and are also printed on
- * stderr, which is what I see when I start it by hand. And at start it waits for the device file
- * and for the broker instead of giving up, because at boot they may not be ready yet (udev loads
- * the driver on its own schedule, and the broker is started by another script).
- *
- * The program does NOT check the marker or the CRC. The kernel driver does that and makes read()
- * fail with EIO for a bad frame (ADR-0018: the driver checks, the program decodes), so a
- * frame that read() returns is already a good one. Checking again would be code for no new
- * protection.
- *
- * The frame layout is in firmware/stm32-sensor-node/Src/frame.h and docs/decisions/0010-spi-link-
- * design.md. All numbers in it are little-endian (the low byte comes first).
  */
 #include <errno.h>
 #include <fcntl.h>

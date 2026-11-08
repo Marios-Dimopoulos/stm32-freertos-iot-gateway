@@ -5,7 +5,7 @@
 # If the folder or the file is missing, BitBake does not fail: it silently installs the
 # placeholder. After every build I check the result in the root filesystem folder.
 #
-# Why ${TOPDIR}/../secrets and not /home/<me>/yocto/secrets (changed 2026-11-03):
+# Why ${TOPDIR}/../secrets and not /home/<me>/yocto/secrets:
 # TOPDIR is the build folder (~/yocto/build). BitBake sets it before it reads any layer, which
 # is why bblayers.conf can already use ${TOPDIR}/../<layer>. So this path works for any user
 # name, as long as `secrets/` sits next to the build folder, like the layers do. The root
