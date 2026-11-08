@@ -1,9 +1,23 @@
 # Architecture
 
 This document reflects the **actual current state** of the system, not the
-target design. Update it as subsystems are completed.
+target design. It is updated as subsystems are completed.
 
-## Current status: Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. Step 4.7 (documentation) is done since 2026-11-02: the README and `linux-gateway/README.md` are rewritten and this document is brought up to date. **Not done:** the open items under "Not verified / known problems".
+**Contents:**
+[Current status](#current-status) ·
+[Firmware](#firmware-phases-1-and-2) ·
+[Architecture decisions](#architecture-decisions-so-far) ·
+[System design](#system-design-implemented-this-is-what-runs) ·
+[Verification status](#verification-status) ·
+[Open questions](#open-questions-not-yet-decided) ·
+[Where to continue](#where-to-continue) ·
+[Gateway image and Phase 4](#gateway-image-phase-3-built-booted-reachable-over-wi-fi-and-ssh) ·
+[Bring-up log (history)](#bring-up-log-history) ·
+[Change log](#change-log)
+
+## Current status
+
+Phases 1 and 2 (firmware) are finished and verified; Phase 3 has a minimal image of my own (`gateway-image`, 39 MB root filesystem, 82 packages) that boots, joins Wi-Fi by itself, can be reached over SSH and reads valid frames from the STM32 over SPI with a test tool; the kernel driver of Phase 4 is finished: my kernel module is an SPI driver that the kernel attaches to the STM32 node through a device-tree overlay (its `probe` runs at boot); a read of `/dev/stm32_sensor_node` does a throw-away transfer and then a second one after a minimum gap of 200 us, checks the marker and CRC and returns the 14 raw bytes of a fresh frame. MQTT is done and runs on the board: the Mosquitto broker listens on the gateway's loopback address only, and my C program `gateway-publisher` reads `/dev/stm32_sensor_node` and publishes one JSON message per frame to `gateway/stm32/bmp280`; init starts it at boot, after the broker. **Not done:** the open items under "Verification status".
 
 FreeRTOS runs on the Nucleo at **84 MHz** (HSI + PLL) with three tasks. The
 **sensor task** reads the BMP280 over I2C1 once a second, prints
@@ -20,46 +34,7 @@ one; DMA2 stream 3 moves its bytes into the SPI data register, with no CPU
 instruction in the transfer. All the reasoning, the failures found on the board
 and the numbers are in **ADR-0010**.
 
-**Verified on the board:**
-- Phase 1: register values and SysTick `LOAD = 83999` checked in the debugger;
-  disconnecting the BMP280 gives `NACK` and everything comes back by itself; a
-  falling edge on its CSB pin locks it out of I2C until its power is cycled
-  (ADR-0007).
-- The Pi reads a real frame every second with a valid CRC, at SPI clocks from
-  100 kHz to 6 MHz, and back to back from Python (no pause between reads).
-- 3000 reads in about 35 s with the node running freely: every interrupt and
-  wake-up counted, no I2C error on the sensor task (the transmit task preempts it).
-- A short or interrupted transaction does not leave the node shifted by one byte:
-  at every re-arm the CPU writes byte 0 into the SPI data register itself
-  (ADR-0010, decision 7).
-- A 30-minute run (1800 reads, 1 s apart): 1797 good, 0 shifted, 3 bad. The node's
-  counters agreed with the Pi (1800 ends, 1800 wake-ups, 0 reload failures), and 15
-  spikes on NSS were ignored. One of the bad frames is a 2-bit slip, probably noise
-  on SCK (ADR-0010).
-- Ten runs of the test script stopped with Ctrl+C, and a run after them: no shifted
-  or bad frame (ADR-0010).
-- Noise on NSS: spikes on that line are ignored by the interrupt handler
-  (decision 8). With the wires still, 7 spikes were seen in 3000 transactions and
-  none damaged a frame; moving the wires by hand corrupts frames, which the Pi
-  detects with the CRC, and the next frame is good.
-- The sensor failing travels in the frame: with SDA unplugged the Pi gets frames
-  with status `NACK` and zeros, then `NO_READING`, then `OK` when it is back.
-- On the wire, with a logic analyzer (2026-10-20, `docs/captures/`): every BMP280 read
-  is START, `0xEC`, `0xF7`, repeated START, `0xED`, six bytes (ACK on the first five,
-  NACK on the last), STOP, 834 us (ADR-0007); the SPI frame is 112 clocks in mode 0 and
-  decodes with a valid CRC; SCK measured 1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4
-  and 6 MHz requested; NSS stays high 154 to 228 us between back-to-back reads, and
-  30000 such reads were good (ADR-0010). The CPU clock runs about 1.1% fast (ADR-0006).
-
-**What is not verified:** the re-arm time (only an upper bound: the node was ready
-within the 154 us minimum gap of back-to-back reads); the cause of the firmware's NSS
-spikes (the analyzer showed spikes only with a probe wiring that disturbed the link);
-MOSI on the wire; the UART bit time (PA2 is not reachable on the headers, see below).
-The stale first read after an idle time still exists in the node; the Phase 4 driver hides
-it (ADR-0019). Also not verified, from Phase 4: the 200 us gap and the 1 MHz clock on the wire
-with the kernel driver (no analyzer capture of it). Measured on the wire (logic analyzer, 2026-10-20): the I2C read of the BMP280, the
-clock error (about 1.1% fast), the SPI frame (112 clocks, mode 0, valid CRC), the SCK
-frequency at 1 to 6 MHz and the gap between back-to-back reads.
+**Verified and not verified:** see [Verification status](#verification-status).
 
 **What exists:** the Keil project (`firmware/stm32-sensor-node/`) with the
 FreeRTOS kernel and twelve application modules (clock, uart, i2c, bmp280, format,
@@ -75,6 +50,11 @@ frame, and `gateway-publisher` publishes it to the local broker at boot.
 driver.
 
 **Where to continue:** see "Where to continue" below.
+
+## Firmware (Phases 1 and 2)
+
+The Keil project in `firmware/stm32-sensor-node/`: the toolchain, the FreeRTOS kernel and its
+configuration, the application modules, the drivers, and the known gaps.
 
 ### Toolchain / project setup (done)
 
@@ -107,13 +87,13 @@ firmware/stm32-sensor-node/FreeRTOS/
 
 | Section | Status | Settings |
 |---|---|---|
-| Memory allocation model | ✅ done | `configSUPPORT_STATIC_ALLOCATION 1`, `configKERNEL_PROVIDED_STATIC_MEMORY 0`, `configSUPPORT_DYNAMIC_ALLOCATION 0`, `configTOTAL_HEAP_SIZE 0` (ADR-0001) |
-| Clock / tick | ✅ done | `configCPU_CLOCK_HZ (SystemCoreClock)`, `configTICK_RATE_HZ 1000`, `configUSE_PREEMPTION 1`, `configUSE_TIME_SLICING 1`, 32-bit tick (ADR-0003) |
-| Tasks / stacks | ✅ done | `configMAX_PRIORITIES 3` (see task table below), `configMINIMAL_STACK_SIZE 128` words, idle/tick hooks off, `configUSE_TIMERS 0`, CLZ task selection, stack overflow check method 2, high-water mark enabled |
-| Interrupt priorities (NVIC/BASEPRI) | ✅ done | `configMAX_SYSCALL_INTERRUPT_PRIORITY` = level 5 (raw `0x50`), via `configPRIO_BITS 4` + `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 5` |
-| `configASSERT` | ✅ done | disable interrupts (BASEPRI) + infinite loop; enables the port's priority and handler-installation checks |
-| Port handler mapping (SVC/PendSV/SysTick → startup file names) | ✅ done | direct routing: `#define vPortSVCHandler SVC_Handler` etc. |
-| Optional API functions | ✅ done | `INCLUDE_vTaskDelay 1`, `INCLUDE_xTaskDelayUntil 1`, `INCLUDE_xTaskGetSchedulerState 1` (the I2C driver asserts with it) and `INCLUDE_uxTaskGetStackHighWaterMark 1` (set in the tasks section); the others stay at the default 0 |
+| Memory allocation model | done | `configSUPPORT_STATIC_ALLOCATION 1`, `configKERNEL_PROVIDED_STATIC_MEMORY 0`, `configSUPPORT_DYNAMIC_ALLOCATION 0`, `configTOTAL_HEAP_SIZE 0` (ADR-0001) |
+| Clock / tick | done | `configCPU_CLOCK_HZ (SystemCoreClock)`, `configTICK_RATE_HZ 1000`, `configUSE_PREEMPTION 1`, `configUSE_TIME_SLICING 1`, 32-bit tick (ADR-0003) |
+| Tasks / stacks | done | `configMAX_PRIORITIES 3` (see task table below), `configMINIMAL_STACK_SIZE 128` words, idle/tick hooks off, `configUSE_TIMERS 0`, CLZ task selection, stack overflow check method 2, high-water mark enabled |
+| Interrupt priorities (NVIC/BASEPRI) | done | `configMAX_SYSCALL_INTERRUPT_PRIORITY` = level 5 (raw `0x50`), via `configPRIO_BITS 4` + `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 5` |
+| `configASSERT` | done | disable interrupts (BASEPRI) + infinite loop; enables the port's priority and handler-installation checks |
+| Port handler mapping (SVC/PendSV/SysTick → startup file names) | done | direct routing: `#define vPortSVCHandler SVC_Handler` etc. |
+| Optional API functions | done | `INCLUDE_vTaskDelay 1`, `INCLUDE_xTaskDelayUntil 1`, `INCLUDE_xTaskGetSchedulerState 1` (the I2C driver asserts with it) and `INCLUDE_uxTaskGetStackHighWaterMark 1` (set in the tasks section); the others stay at the default 0 |
 
 ### Application code (`firmware/stm32-sensor-node/Src/`)
 
@@ -310,25 +290,10 @@ register-level drivers instead of using a vendor library is ADR-0008.
 
 ### Known gaps (real current state, not bugs)
 
-- **What the logic analyzer (a Raspberry Pi Pico with sigrok-pico) showed on
-  2026-10-20** (ADR-0006, ADR-0007, ADR-0010): the clock runs about 1.1% fast, so the
-  "1 s" sensor period is 0.988 to 0.989 s; the SPI frame is 112 clocks in mode 0; SCK is
-  1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4 and 6 MHz requested (once 0.625 MHz for
-  1 MHz); the Pi adds one extra clock period between bytes. Back-to-back reads from
-  Python leave NSS high for 154 to 228 us (30 gaps), and 30000 such reads were all good.
-  Still open: the **re-arm time** itself (only the upper bound of 154 us); a kernel driver
-  or a C program may be much faster than Python, so the Phase 4 driver enforces a
-  200 us delay (step 4.5b, not yet seen on the wire); the UART bit time (PA2 is wired to the ST-LINK only: with the solder bridges at
-  their default, SB62 and SB63 open, the `D1` socket and the morpho pin do not carry it,
-  per the Nucleo-64 manual UM1724; I did not change the bridges).
-- **Spikes on NSS** (ADR-0010, decision 8): 7 in 3000 transactions in one run and 15
-  in 1800 in the 30-minute run with the wires still (0.2% to 0.8%), many when the
-  wires are moved. They are ignored by the
-  interrupt handler. The logic analyzer saw spikes of 50 ns on NSS exactly at SCK's
-  falling edge with a probe wiring that disturbed the link, and none in about 40 frames
-  with a clean wiring, so the cause of the counted spikes is still not settled (long
-  jumpers are the suspect). Frames hit by a real loss of contact are
-  corrupted, and the CRC finds them; the next one is good.
+- **What the logic analyzer showed on 2026-10-20, and what is still open** (the re-arm time,
+  the UART bit time): see "Verification status" (ADR-0006, ADR-0007, ADR-0010).
+- **Spikes on NSS** (ADR-0010, decision 8): the counts, what the handler does and the open cause
+  are in "Verification status".
 - **The first read after an idle time is stale.** The buffer is refilled right
   after each transaction and nothing refreshes it, so a Pi that has not read for a
   minute gets a frame about a minute old (the sequence number shows it). The node is
@@ -358,7 +323,7 @@ register-level drivers instead of using a vendor library is ADR-0008.
   README lists them). `docs/budget.md` is not updated with the real purchases.
 - There is no LICENSE file (a decision, not an oversight).
 
-### Architecture decisions so far
+## Architecture decisions so far
 
 - ADR-0001: static-only memory allocation for FreeRTOS objects.
 - ADR-0002: GCC/ARM_CM4F FreeRTOS port with Arm Compiler 6.
@@ -504,22 +469,144 @@ ISRs that call `...FromISR()` functions must be at level 5 or a larger number
 No DMA interrupt is used: the stream stops by itself after its count, and the end of a
 transaction is detected on the NSS pin (ADR-0010, decision 6).
 
+## Verification status
+
+What was measured on the board, what was not, and what is still undecided, in one place. The tests of
+Phases 3 and 4 are under their own steps in the Gateway image section (Wi-Fi and SSH, SPI and the
+test tool, steps 4.2 to 4.6c, "Checks on the board").
+
+### Verified on the board (Phases 1 and 2)
+
+- Phase 1: register values and SysTick `LOAD = 83999` checked in the debugger;
+  disconnecting the BMP280 gives `NACK` and everything comes back by itself; a
+  falling edge on its CSB pin locks it out of I2C until its power is cycled
+  (ADR-0007).
+- The Pi reads a real frame every second with a valid CRC, at SPI clocks from
+  100 kHz to 6 MHz, and back to back from Python (no pause between reads).
+- 3000 reads in about 35 s with the node running freely: every interrupt and
+  wake-up counted, no I2C error on the sensor task (the transmit task preempts it).
+- A short or interrupted transaction does not leave the node shifted by one byte:
+  at every re-arm the CPU writes byte 0 into the SPI data register itself
+  (ADR-0010, decision 7).
+- A 30-minute run (1800 reads, 1 s apart): 1797 good, 0 shifted, 3 bad. The node's
+  counters agreed with the Pi (1800 ends, 1800 wake-ups, 0 reload failures), and 15
+  spikes on NSS were ignored. One of the bad frames is a 2-bit slip, probably noise
+  on SCK (ADR-0010).
+- Ten runs of the test script stopped with Ctrl+C, and a run after them: no shifted
+  or bad frame (ADR-0010).
+- Noise on NSS: spikes on that line are ignored by the interrupt handler
+  (decision 8). With the wires still, 7 spikes were seen in 3000 transactions and
+  none damaged a frame; moving the wires by hand corrupts frames, which the Pi
+  detects with the CRC, and the next frame is good.
+- The sensor failing travels in the frame: with SDA unplugged the Pi gets frames
+  with status `NACK` and zeros, then `NO_READING`, then `OK` when it is back.
+- On the wire, with a logic analyzer (2026-10-20, `docs/captures/`): every BMP280 read
+  is START, `0xEC`, `0xF7`, repeated START, `0xED`, six bytes (ACK on the first five,
+  NACK on the last), STOP, 834 us (ADR-0007); the SPI frame is 112 clocks in mode 0 and
+  decodes with a valid CRC; SCK measured 1.000, 2.000, 3.997 and 5.88 MHz for 1, 2, 4
+  and 6 MHz requested; NSS stays high 154 to 228 us between back-to-back reads, and
+  30000 such reads were good (ADR-0010). The CPU clock runs about 1.1% fast (ADR-0006).
+- More from the same captures (logic analyzer: a Raspberry Pi Pico with sigrok-pico): the
+  clock error above makes the "1 s" sensor period 0.988 to 0.989 s; for 1 MHz requested
+  SCK was once 0.625 MHz (ADR-0010); the Pi adds one extra clock period between bytes; the 30 gaps
+  between back-to-back Python reads were 154 to 228 us, and 30000 such reads were all good.
+
+### Not verified
+
+- **The re-arm time of the node** is not measured, only an upper bound: the node was ready within
+  the 154 us minimum gap of back-to-back reads (the measurements are listed above). Measuring it
+  would need a marker pin in the firmware. A kernel driver or a C program may be
+  much faster than Python, so the Phase 4 driver enforces a 200 us delay (step 4.5b, not yet seen on
+  the wire); whether 200 us is a real margin needs a logic analyzer capture of NSS with the kernel
+  driver.
+- **The UART bit time** is not measured: PA2 is wired to the ST-LINK only. With the solder bridges at
+  their default, SB62 and SB63 open, the `D1` socket and the morpho pin do not carry it, per the
+  Nucleo-64 manual UM1724 (PA2 is not reachable on the headers). I did not change the bridges, so the
+  board was not modified.
+- **The cause of the NSS spikes** that the firmware counts is not settled. They are 0.2% to 0.8% of
+  the transactions with the wires still (the counts are listed above), many when the wires are moved;
+  the interrupt handler ignores them (ADR-0010, decision 8). The logic
+  analyzer saw spikes of 50 ns on NSS exactly at SCK's falling edge with a probe wiring that disturbed
+  the link (spikes only with such a wiring), and none in about 40 frames with a clean wiring; long
+  jumpers are the suspect. Frames hit by a real loss of contact are corrupted, and the CRC finds them;
+  the next one is good.
+- **MOSI on the wire** is not verified (`docs/captures/README.md` says why it was not probed).
+- **The stale first read after an idle time** still exists in the node; the Phase 4 driver hides it
+  (ADR-0019; the mechanism is under "Known gaps").
+- I did not compare the SSH host key fingerprint on the board with the one the client
+  showed, and I did not log in with the name `raspberrypi0-2w-64.local` (the error type
+  suggests it resolved).
+- The cause of the 0-byte OpenSSH programs is a hypothesis; I also cannot explain why
+  `test -x /usr/sbin/sshd` was false on the board for an empty file with the executable bit.
+  After every build I should look for zero-byte files in the root filesystem folder.
+- The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
+  `defaults`: a power cut during a write there could corrupt it. For the final image it should
+  be read-only or not mounted (decided on 2026-10-27 not to do it in this project).
+- The Wi-Fi key and the root password hash are inside every image and in the build folder.
+  Anyone with the SD card can read them. SSH is key-only since 2026-10-27 (see the change log); the
+  private key is on my PC without a passphrase, so whoever copies that file can log in.
+- Phase 4 driver, not verified: the 200 us gap and the 1 MHz clock on the wire (no logic analyzer
+  capture of the driver; the exact clock the divider gives), 500 sequential reads with the 4.5c
+  build, and why the first module build recompiled the whole kernel.
+- Only the driver's `-EIO` path (node off) and `-EINVAL` (`bs=4`) were seen; `-EFAULT` and
+  `-ENODEV` were not triggered. The driver does not say whether the marker or the CRC failed.
+- Wi-Fi power save: the commit `254c5d3` adds a line to `interfaces` that turns power save off after
+  `ifup`, because I suspected it of unanswered ARP and dropped SSH. It is in the image since the
+  build of 2026-10-31, and `iw dev wlan0 get power_save` says `Power save: off` on the board; at boot
+  `dmesg` shows `power save disabled` (2026-11-01). That shows the setting is applied. It does not show
+  that the original problem is gone; that needs time on the network, and I have not watched for it.
+- The `spi-frame-test` runs (two, 10 frames each) were on the old image with `/dev/spidev0.0`; no speed
+  sweep, no minimum-gap test, nothing on the logic analyzer from the gateway image.
+- `perl` is built although it is not in the image; why is not known (ADR-0014).
+- `core-image-base` carried things a headless sensor gateway does not need (the services
+  `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono`, `neard`); `gateway-image` does not. The
+  boot partition still has an audio line in `config.txt` (`dtparam=audio=on`). The graphics
+  overlay and the 256 MiB CMA pool are gone since 2026-10-27 (see the change log). Switching the
+  graphics off with `DISABLE_VC4GRAPHICS = "1"` failed the build in `cairo` (the `meta-raspberrypi`
+  `cairo_%.bbappend` adds an `egl` option that `cairo` 1.18.4 does not have), so I left it as it
+  is (ADR-0017 update of 2026-10-25).
+- Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
+  not tried a rebuild from an empty folder with them. `bblayers.conf` uses `${TOPDIR}/../` paths
+  since 2026-11-01 (checked with `bitbake-layers show-layers` and `bitbake -p`), so it needs `build/`
+  and the layers in the same parent folder. BitBake reads `~/yocto/meta-gateway`, not the copy in
+  git; the two are kept the same by hand. Three files changed in git on 2026-11-02 and 2026-11-03:
+  `gateway-image.bb` (the root password file is now found at `${TOPDIR}/../secrets/root.hash`),
+  `stm32_node.c` (one comment) and the Wi-Fi `.bbappend` (the secrets folder is now
+  `${TOPDIR}/../secrets` instead of an absolute path with my user name). On 2026-11-03 I copied all
+  three to `~/yocto/meta-gateway` and built the image (`...rootfs-20261103174036.wic.bz2`). In the
+  root filesystem folder the root field of `/etc/shadow` is the same as `root.hash`, and
+  `/etc/wpa_supplicant.conf` is the same as my secrets file (not the placeholder). Both checks printed
+  only SAME or DIFFERENT, never the values. I flashed this image the same day: the Pi joined Wi-Fi at
+  boot with only power connected, SSH with the key worked, root logged in with the password on the
+  serial console, and `mosquitto_sub` showed the messages again.
+- **The shutdown order** on the board is not verified: the `rc6.d` links put `K20gateway-publisher`
+  before `K20syslog` and `K30mosquitto` (see "How the driver is found and loaded" in the Phase 4
+  section); a shutdown was not watched.
+- **A frame with a bad CRC produced on purpose** was not seen: my test of shaking the wires, 1000
+  reads with no failure, was too weak to show anything.
+
+### Open questions (not yet decided)
+
+- Whether the publisher needs to be restarted by init if it crashes (ADR-0022: nothing does it now).
+- Whether the HSI accuracy stays good enough, or the clock moves to the ST-LINK's
+  8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). Measured: about 1.1% fast
+  (ADR-0006), which nothing in the project needs better than so far; to be decided
+  again if a precise timestamp or USB is ever needed, and checked against the UART
+  bit time.
+- Whether a bus clear is ever needed in the I2C driver (only if a sensor is
+  seen holding SDA low).
+- The spikes on NSS, the re-arm time and the 200 us gap are not decisions but missing
+  measurements: see "Not verified" above.
+
 ## Where to continue
 
 ### Phases 1 and 2: finished
 
 Phase 2 is closed. What was done: the long run and the aborted runs with
 `tools/spi_frame_test.py` (ADR-0010), the stack measurements (ADR-0005), and the logic
-analyzer captures of I2C and SPI (2026-10-20, `docs/captures/`). Open items that are
-accepted and not blocking:
-
-- the re-arm time (only the 154 us upper bound; measuring it would need a marker pin in
-  the firmware);
-- the UART bit time (PA2 does not reach the headers with the default solder bridges;
-  the board was not modified);
-- whether the firmware's own NSS spikes are real (none were seen in about 40 frames
-  with a clean wiring);
-- the stale first read after an idle time, which the Phase 4 driver handles (ADR-0019).
+analyzer captures of I2C and SPI (2026-10-20, `docs/captures/`). Open items that are accepted and not blocking: the re-arm time, the UART bit time, whether the
+firmware's own NSS spikes are real, and the stale first read after an idle time (the Phase 4
+driver handles it, ADR-0019). Details: "Verification status".
 
 Learning checkpoints: quizzes were done for the clock module, the UART and the I2C
 driver, and an interview-style question set on Phases 1 and 2 was answered and graded.
@@ -527,7 +614,7 @@ driver, and an interview-style question set on Phases 1 and 2 was answered and g
 ### Phases 3 and 4
 
 Phase 3: the image is built, flashed and boots on the board to a root login on the serial
-console (see the next section). Wi-Fi starts at boot (ADR-0016) and the network is in the
+console (see "First boot" in the Bring-up log). Wi-Fi starts at boot (ADR-0016) and the network is in the
 image (key kept outside the repo, ADR-0015), so SSH works after a flash with nothing typed.
 SPI is on and the test tool `spi-frame-test` read valid frames from the STM32 (see "SPI and
 the test tool"). The image is my own minimal recipe (ADR-0017). Root has a password (hash kept
@@ -538,6 +625,17 @@ outside the repo, ADR-0015 update of 2026-10-24) that only the serial console as
 Phase 4: the kernel driver is finished (see "Phase 4: the kernel driver"). The two requirements
 that came from Phase 2 are met: a minimum delay between SPI transfers (step 4.5b) and a policy
 for the stale first read (read twice, step 4.5c, ADR-0019). Step 4.6 (MQTT) is done since 2026-11-01 and step 4.7 (docs) since 2026-11-02.
+
+Learning checkpoints, Phases 3 and 4: the Phase 3 quiz was answered for questions 1 and 2 only. On 2026-11-01 a walkthrough of the
+gateway side (device tree, `probe`, `read()`, the SPI layers, the publisher) ended with five
+interview-style questions (the `read()` path, the two transfers and the gap, how `probe` is called, the
+200 ms polling, the broker and the tunnel), answered and graded. The Yocto and boot side was walked
+through on 2026-11-02 and quizzed on 2026-11-03 with five questions (from `IMAGE_INSTALL` to a file in
+the image, `.bbappend`, `DEPENDS` and `RDEPENDS`, power-on to `probe`, start order), answered and
+graded. Weak spots found: the task chain (`do_compile` builds, `do_install` copies into `${D}`,
+`do_package` sorts `${D}` into one folder per package, `do_rootfs` installs the requested packages);
+why the udev coldplug replays events from early in the boot; and that the start order does not mean the
+broker is ready.
 
 ## Gateway image (Phase 3: built, booted, reachable over Wi-Fi and SSH)
 
@@ -583,186 +681,6 @@ The package list and the `IMAGE_FEATURES` (`ssh-server-openssh`; `allow-root-log
 write the root password hash and install the SSH public key. Until 2026-10-24 the `IMAGE_FEATURES`, including the two that
 allowed an empty root password, were in `local.conf` and applied to every image.
 
-### Build result (`bitbake core-image-base`, 2026-10-18)
-
-- First long run 4 h 12 min (ended on the perl check, ADR-0014); last run 8 min 43 s with
-  5291 of 5695 tasks reused from the cache. Build folder 63 GB. Details in ADR-0011.
-- Output in `build/tmp/deploy/images/raspberrypi0-2w-64/`: the image
-  `core-image-base-raspberrypi0-2w-64.rootfs.wic.bz2` (79 MB compressed) with a `.bmap`
-  file, the kernel (Linux 6.18.33), the device tree `bcm2710-rpi-zero-2.dtb` and
-  `bootfiles/`.
-- 2026-10-22: second build with `ssh-server-openssh` (ADR-0015): 2015 packages, 80.7 MB
-  compressed. The first run of it had seven 0-byte OpenSSH programs in the image; a forced
-  `bitbake -f -c install openssh` and a new `bitbake core-image-base` fixed it (ADR-0015).
-  The image flashed for the SSH test is `...rootfs-20261022155006.wic.bz2`.
-- 2026-10-22: third build, with the layer `meta-gateway` (ADR-0016): 78 MiB compressed,
-  `...rootfs-20261022194428.wic.bz2`; no zero-byte file in the root filesystem folder outside
-  `/etc`, `/var` and `/usr/share`.
-- 2026-10-23: builds with `ENABLE_SPI_BUS` (`...rootfs-20261023093302.wic.bz2`; `config.txt`
-  line `dtparam=spi=on` checked in `deploy/bootfiles/` and on the board), with the Wi-Fi key
-  from a folder outside the repo (`...rootfs-20261023095901.wic.bz2`, 78 MiB), and with the
-  package `spi-frame-test`. The last one was flashed for the SPI test. These images contain
-  the Wi-Fi key: they and the build folder must not be shared.
-- 2026-10-24: `bitbake gateway-image` (ADR-0017), the image recipe of my own. Last build
-  `gateway-image-raspberrypi0-2w-64.rootfs-20261024145944.wic.bz2`: 37 MB root filesystem,
-  76 packages, 35 MiB compressed (`core-image-base`: 142 MB, 2015 packages, 78 MiB). Flashed
-  and tested: boots, `wlan0` up, `/dev/spidev0.0`, 10 of 10 frames. The steps in between are in
-  ADR-0017.
-
-### What is in the image
-
-This describes the first image, `core-image-base`. The current image, `gateway-image`, is
-described in its own section below. Read from the package manifest (2008 packages), the root
-filesystem folder (142 MB) and the boot files in `deploy/` (the first boot below checked part
-of it on the board):
-
-- Boot partition (FAT): the Pi firmware, `config.txt`, `cmdline.txt`, the kernel and the
-  device tree. `ENABLE_UART = "1"` produced `enable_uart=1` in `config.txt` and
-  `console=serial0,115200` in the `cmdline.txt` of `deploy/bootfiles/`. That is **not** what
-  the kernel received: its command line had `console=ttyS0,115200` (see "First boot").
-  `cmdline.txt` also has `root=/dev/mmcblk0p2 rootfstype=ext4 rootwait`.
-- Root partition (ext4): busybox (provides `ls` and the other basic commands; there is no
-  `coreutils`), **sysvinit** as init (no systemd), `wpa-supplicant`, `iw`, the Wi-Fi firmware
-  `linux-firmware-rpidistro-bcm43436`, and the kernel modules (including `spidev`).
-- `/etc/inittab` starts a login prompt on `ttyS0` at 115200 baud. With the empty root
-  password, `root` logs in without a password.
-- The first image (2008 packages) had no SSH server; the current one (2015 packages) has
-  OpenSSH (ADR-0015). Not in the image: perl, systemd, and a package manager (no `rpm`, `dnf`,
-  `opkg` or `apt` in the manifest), so every change to the software is a rebuild and a new flash.
-- On the board, `/etc/fstab` ends with `/dev/mmcblk0p1  /boot  vfat  defaults  0  0`. That
-  line is not in the `rootfs/` folder of the build: it is added when the image is made. So
-  partition 1 **is mounted** on `/boot`, read-write. It holds `kernel8.img` (27,052,544 bytes,
-  the same size as the kernel `Image` of the build), the firmware files (all variants of
-  `start*.elf` and `fixup*.dat`, of which this board uses `start.elf` and `fixup.dat`),
-  `config.txt`, `cmdline.txt`, the `.dtb` and `overlays/`. The files read from the board
-  match the ones in `deploy/bootfiles/`.
-
-### First boot (2026-10-21)
-
-Flashing: the image was decompressed from the `.wic.bz2` to `gateway.wic` (380 MiB, MBR
-table; partition 1 FAT32 of 130 MiB from sector 8192, partition 2 Linux of 244 MiB from
-sector 278528) and written to a 32 GB microSD with Raspberry Pi Imager ("Use custom",
-without its customisation settings). Windows then showed the two partitions with the same
-sizes as `fdisk` on the image (136,314,880 and 256,271,360 bytes).
-
-Console: an FT232 USB-UART adapter, with its jumper on VCCIO-3V3 (3.3 V signals), on header
-pins 6 (GND), 8 (Pi TX) and 10 (Pi RX); Tera Term at 115200, 8 data bits, no parity, 1 stop
-bit.
-
-What the boot log shows (times are the kernel's, in seconds):
-
-- Kernel `6.18.33-v8`, built with `aarch64-poky-linux-gcc 15.3.0`; machine model
-  "Raspberry Pi Zero 2 W Rev 1.0" (from the device tree); 4 CPUs.
-- The kernel's command line ended with `dwc_otg.lpm_enable=0 console=ttyS0,115200
-  root=/dev/mmcblk0p2 rootfstype=ext4 rootwait net.ifnames=0`, after options added by the
-  firmware (`coherent_pool`, `8250.nr_uarts=1`, `smsc95xx.macaddr`, `vc_mem.*` and others).
-  **The console is `ttyS0`** (the mini UART, `3f215040`), and `/etc/inittab` starts the login
-  on `ttyS0`: **they are the same port.** The `cmdline.txt` inside partition 1 (read later
-  on the board) says `console=serial0,115200`, and the kernel received `ttyS0`. So the
-  firmware replaces `serial0` by the real port: I did not watch it do that, but nothing else
-  sits between the file and the kernel.
-- Root filesystem: `Waiting for root device /dev/mmcblk0p2` at 3.869 (`rootwait`), the SD
-  card found at 3.946, `mmcblk0: p1 p2` at 3.958, ext4 mounted **read-only** at 4.029,
-  `Run /sbin/init` at 4.060, remounted read-write at 11.643.
-- `INIT: version 3.14` (sysvinit); login prompt about 13 s after the kernel started; `root`
-  logs in without a password and gets a busybox shell. The banner says Poky 6.0.4.
-- No U-Boot output before `Booting Linux`, and `RPI_USE_U_BOOT` is not set: the Pi firmware
-  loads the kernel directly.
-- Wi-Fi: the `brcmfmac` driver loaded the chip firmware (`BCM43430/2`, version 9.88.4.77) and
-  the Bluetooth chip got its patch. No connection was made at that boot (see "Wi-Fi and SSH").
-- Memory: 154,540K of 458,752K available, because 256 MiB were reserved as a CMA pool (for the
-  GPU/camera; since 2026-10-27 the pool is 64 MiB and 350,660K are available). The clock after boot was `Mar 9 2018` (no battery clock, no network time).
-- Messages that did not stop the boot, causes not investigated: `/usr/bin/psplash: not
-  found` (`S00psplash.sh`), `ip: SIOCGIFFLAGS: No such device` twice during network start,
-  `dbus: Unknown username "pipewire"`, `brcmf_c_process_txcap_blob: no txcap_blob available`.
-
-### Wi-Fi and SSH (2026-10-22, ADR-0015)
-
-**Wi-Fi, typed on the board** over the serial console. The image has `wpa_supplicant` 2.11,
-`iw` and the busybox DHCP client. `wlan0` is in `/etc/network/interfaces` but is **not**
-`auto`, and `/etc/wpa_supplicant.conf` held only a placeholder. I wrote the file with the
-header lines and `country=GR`, added the network with `wpa_passphrase` (the password typed at
-its prompt; the plain-text comment line it writes is deleted), and ran `ifup wlan0`. Results:
-
-- The scan listed the network and about 13 others, all on 2.4 GHz (2412 to 2462 MHz); mine on
-  2462 MHz (channel 11), signal -34 dBm, receive rate 65 Mbit/s.
-- DHCP gave `192.168.1.4/24` from the router `192.168.1.1`, lease 86,400 s; default route via
-  the router; DNS added from the lease.
-- `ping 192.168.1.1`: 3 of 3, about 5.7 ms. `ping 1.1.1.1`: 3 of 3, about 15 ms. `ping
-  example.com` resolved a name and answered.
-- Warnings: the hook starts `wpa_supplicant` with the old `wext` interface
-  (`wpa-driver wext`); the kernel warned that wireless extensions will stop working for newer
-  hardware, and `wpa_supplicant` printed `ioctl[SIOCSIWENCODEEXT]: Invalid argument` twice.
-  The connection worked; I do not know what the two errors affected.
-- The settings stay across reboots but a reflash erases them. `wlan0` did not start at boot in
-  this first image; the layer `meta-gateway` (below) fixed that.
-
-**SSH.** `IMAGE_FEATURES += "ssh-server-openssh"` adds OpenSSH 10.3p1 (`sshd`, `ssh`, `scp`,
-`sftp-server`, `ssh-keygen`; 7 more packages). In this first image `sshd_config` had `PermitRootLogin yes` and
-`PermitEmptyPasswords yes` (from the two `allow-*` features), so I set a root password with
-`passwd` after every flash (both features are gone: root has a baked-in password hash since 2026-10-24 and
-SSH is key-only since 2026-10-27). `S09sshd` starts the server at boot.
-
-**The first OpenSSH image did not work.** `ssh` to the Pi answered `Connection refused`; on
-the board there was no `sshd` process, no host keys and no log line. A trace of
-`/etc/init.d/sshd start` showed that the script exits silently after `test -x
-/usr/sbin/sshd`. In the build, `/usr/sbin/sshd` and six more programs were 0 bytes in the
-`image/` folder of the openssh recipe, while the compiled programs in its source folder were
-complete. The details and my hypothesis (a race in a parallel `make install`, not proven)
-are in ADR-0015. `bitbake -f -c install openssh` and a new `bitbake core-image-base` gave
-complete files (package 654,588 bytes instead of 29,913), and an SSH login from Windows then
-worked.
-
-### Wi-Fi at boot: the layer `meta-gateway` (2026-10-23, ADR-0016)
-
-The recipe `init-ifupdown` (openembedded-core) installs `/etc/network/interfaces` from a file
-next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bbappend` with
-`FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"` and, in `init-ifupdown/`, my copy of
-`interfaces`: the original plus `auto wlan0`, and `wpa-driver nl80211` instead of `wext`.
-
-- `bitbake-layers show-appends` listed the `.bbappend` under `init-ifupdown_1.0.bb`; the root
-  filesystem folder of the new image had both changes.
-- On the board (after a flash, `passwd` and a hand-written `/etc/wpa_supplicant.conf`): after a
-  reboot, with no `ifup wlan0`, SSH from Windows worked. `/proc/<pid>/cmdline` of
-  `wpa_supplicant` ended with `-D nl80211`, and `dmesg` had no line about wireless extensions.
-- Not checked: whether the `SIOCSIWENCODEEXT` errors are gone from the output of `wpa_supplicant`.
-
-### Wi-Fi network in the image (2026-10-23, ADR-0015 update)
-
-The recipe `wpa-supplicant` installs `/etc/wpa_supplicant.conf` (mode 600) from a file named
-`wpa_supplicant.conf-sane`. My layer has `recipes-connectivity/wpa-supplicant/wpa-supplicant_%.bbappend`
-with `FILESEXTRAPATHS:prepend := "/home/mariosdimopoulos/yocto/secrets:"` (since 2026-11-03
-`"${TOPDIR}/../secrets:"`, the same folder without my user name; built, flashed and the Pi
-joined Wi-Fi on 2026-11-03). The folder
-`~/yocto/secrets/` is outside the repo and holds my `wpa_supplicant.conf-sane` (country, SSID and
-the derived `psk`; `.gitignore` has a rule for any `secrets/` folder). With the image flashed, the
-Pi joined Wi-Fi at boot and SSH worked with nothing typed on the board. If the folder is missing
-the build does not fail and the placeholder network is installed.
-
-### SPI and the test tool (2026-10-24)
-
-`ENABLE_SPI_BUS = "1"` makes `config.txt` contain `dtparam=spi=on`; on the board `/dev/spidev0.0`
-and `/dev/spidev0.1` exist. The image has no Python, so I wrote `spi-frame-test` in C
-(`linux-gateway/meta-gateway/recipes-test/spi-frame-test/`): one SPI transfer of 14 bytes at
-1 MHz in mode 0 through `spidev`, then the checks of `tools/spi_frame_test.py` (marker `A5`,
-CRC-16). It is a bring-up tool, not the Phase 4 driver.
-
-Wired as in the README table (Pi pins 24, 23, 21, 19, 25), the Nucleo running the Phase 2
-firmware, `spi-frame-test 10` printed 10 lines, all with a valid CRC:
-
-- Frame 0: `seq=0 status=1` (NO_READING), `T=0.00 P=0.00`. The next frame has `seq=26`.
-  This is consistent with the stale first read of ADR-0010 (an old frame on the first read after
-  a long idle); I did not measure the mechanism in this run.
-- Frames 1 to 9: `seq` 26 to 34 (one more per second), `status=0`, `T=21.57 to 21.58 C`,
-  `P=1015.69 to 1015.71 hPa`.
-
-A second run on 2026-10-24, on the `gateway-image` build (modules `spi-bcm2835` and `spidev`
-loaded by udev), gave 10 of 10 valid frames again, `seq` 183 to 191, `T=21.90 to 21.91 C`,
-`P=1014.99 to 1015.02 hPa`. Frame 0 was byte for byte the same as in the first run
-(`A5 01 00 00 ... 10 96`, `seq=0`, `status=1`): the first read after a long idle returned the
-frame the node loaded at boot, in both runs. This is for the Phase 4 decision about the stale
-first read; nothing is decided.
-
 ### The image recipe `gateway-image` (2026-10-24, ADR-0017)
 
 `meta-gateway/recipes-core/images/gateway-image.bb` inherits `core-image` for the image tasks, but
@@ -790,6 +708,32 @@ on 2026-10-25 (`USE_VT = "0"`); one `getty` runs, on `ttyS0`. Still in it: `kbd`
 MB, hard dependency of `packagegroup-core-boot`, left on purpose), the three `ip: SIOCGIFFLAGS`
 lines at boot, and the Wi-Fi key and the root password hash (both in every image). Not measured:
 boot time, memory use.
+
+### Wi-Fi at boot: the layer `meta-gateway` (2026-10-23, ADR-0016)
+
+The recipe `init-ifupdown` (openembedded-core) installs `/etc/network/interfaces` from a file
+next to the recipe. My layer has `recipes-core/init-ifupdown/init-ifupdown_%.bbappend` with
+`FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"` and, in `init-ifupdown/`, my copy of
+`interfaces`: the original plus `auto wlan0`, and `wpa-driver nl80211` instead of `wext`.
+
+- `bitbake-layers show-appends` listed the `.bbappend` under `init-ifupdown_1.0.bb`; the root
+  filesystem folder of the new image had both changes.
+- On the board (after a flash, `passwd` and a hand-written `/etc/wpa_supplicant.conf`): after a
+  reboot, with no `ifup wlan0`, SSH from Windows worked. `/proc/<pid>/cmdline` of
+  `wpa_supplicant` ended with `-D nl80211`, and `dmesg` had no line about wireless extensions.
+- Not checked: whether the `SIOCSIWENCODEEXT` errors are gone from the output of `wpa_supplicant`.
+
+### Wi-Fi network in the image (2026-10-23, ADR-0015 update)
+
+The recipe `wpa-supplicant` installs `/etc/wpa_supplicant.conf` (mode 600) from a file named
+`wpa_supplicant.conf-sane`. My layer has `recipes-connectivity/wpa-supplicant/wpa-supplicant_%.bbappend`
+with `FILESEXTRAPATHS:prepend := "/home/mariosdimopoulos/yocto/secrets:"` (since 2026-11-03
+`"${TOPDIR}/../secrets:"`, the same folder without my user name; built, flashed and the Pi
+joined Wi-Fi on 2026-11-03). The folder
+`~/yocto/secrets/` is outside the repo and holds my `wpa_supplicant.conf-sane` (country, SSID and
+the derived `psk`; `.gitignore` has a rule for any `secrets/` folder). With the image flashed, the
+Pi joined Wi-Fi at boot and SSH worked with nothing typed on the board. If the folder is missing
+the build does not fail and the placeholder network is installed.
 
 ### Phase 4: the kernel driver
 
@@ -1043,9 +987,8 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   "actively refused it". So the broker is reachable from the laptop only through the SSH login.
   (The comment in `mosquitto.conf` gives the example `ssh -L 1883:localhost:1883`; I used 11883 on the
   laptop.)
-- **Not verified:** the shutdown order on the board (the `rc6.d` links put `K20gateway-publisher` before
-  `K20syslog` and `K30mosquitto`, see below; a shutdown was not watched); a frame with a bad CRC produced on purpose (my test of shaking
-  the wires, 1000 reads with no failure, was too weak to show anything).
+- **Not verified:** the shutdown order and a frame with a bad CRC produced on purpose; see
+  "Verification status".
 
 **How the driver is found and loaded (board, 2026-11-01), and the boot scripts (build folder,
 2026-11-02).**
@@ -1070,85 +1013,172 @@ the next one (ADR-0020, ADR-0021, ADR-0022).
   `K20dbus-1`, `K20gateway-publisher`, `K20syslog` (equal numbers run in name order, as far as I know),
   then `K30mosquitto`. The only `respawn` line in `inittab` is the serial login.
 
-### Not verified / known problems
-
-- I did not compare the SSH host key fingerprint on the board with the one the client
-  showed, and I did not log in with the name `raspberrypi0-2w-64.local` (the error type
-  suggests it resolved).
-- The cause of the 0-byte OpenSSH programs is a hypothesis; I also cannot explain why
-  `test -x /usr/sbin/sshd` was false on the board for an empty file with the executable bit.
-  After every build I should look for zero-byte files in the root filesystem folder.
-- The root filesystem on the board is writable, and `/boot` (FAT) is mounted read-write with
-  `defaults`: a power cut during a write there could corrupt it. For the final image it should
-  be read-only or not mounted (decided on 2026-10-27 not to do it in this project).
-- The Wi-Fi key and the root password hash are inside every image and in the build folder.
-  Anyone with the SD card can read them. SSH is key-only since 2026-10-27 (see the change log); the
-  private key is on my PC without a passphrase, so whoever copies that file can log in.
-- Phase 4 driver, not verified: the 200 us gap and the 1 MHz clock on the wire (no logic analyzer
-  capture of the driver; the exact clock the divider gives), 500 sequential reads with the 4.5c
-  build, and why the first module build recompiled the whole kernel.
-- Only the driver's `-EIO` path (node off) and `-EINVAL` (`bs=4`) were seen; `-EFAULT` and
-  `-ENODEV` were not triggered. The driver does not say whether the marker or the CRC failed.
-- Wi-Fi power save: the commit `254c5d3` adds a line to `interfaces` that turns power save off after
-  `ifup`, because I suspected it of unanswered ARP and dropped SSH. It is in the image since the
-  build of 2026-10-31, and `iw dev wlan0 get power_save` says `Power save: off` on the board; at boot
-  `dmesg` shows `power save disabled` (2026-11-01). That shows the setting is applied. It does not show
-  that the original problem is gone; that needs time on the network, and I have not watched for it.
-- The `spi-frame-test` runs (two, 10 frames each) were on the old image with `/dev/spidev0.0`; no speed
-  sweep, no minimum-gap test, nothing on the logic analyzer from the gateway image.
-- `perl` is built although it is not in the image; why is not known (ADR-0014).
-- `core-image-base` carried things a headless sensor gateway does not need (the services
-  `alsa-state`, `avahi-daemon`, `bluetooth`, `ofono`, `neard`); `gateway-image` does not. The
-  boot partition still has an audio line in `config.txt` (`dtparam=audio=on`). The graphics
-  overlay and the 256 MiB CMA pool are gone since 2026-10-27 (see the change log). Switching the
-  graphics off with `DISABLE_VC4GRAPHICS = "1"` failed the build in `cairo` (the `meta-raspberrypi`
-  `cairo_%.bbappend` adds an `egl` option that `cairo` 1.18.4 does not have), so I left it as it
-  is (ADR-0017 update of 2026-10-25).
-- Copies of `local.conf`, `bblayers.conf` and the layer are in `linux-gateway/`, but I have
-  not tried a rebuild from an empty folder with them. `bblayers.conf` uses `${TOPDIR}/../` paths
-  since 2026-11-01 (checked with `bitbake-layers show-layers` and `bitbake -p`), so it needs `build/`
-  and the layers in the same parent folder. BitBake reads `~/yocto/meta-gateway`, not the copy in
-  git; the two are kept the same by hand. Three files changed in git on 2026-11-02 and 2026-11-03:
-  `gateway-image.bb` (the root password file is now found at `${TOPDIR}/../secrets/root.hash`),
-  `stm32_node.c` (one comment) and the Wi-Fi `.bbappend` (the secrets folder is now
-  `${TOPDIR}/../secrets` instead of an absolute path with my user name). On 2026-11-03 I copied all
-  three to `~/yocto/meta-gateway` and built the image (`...rootfs-20261103174036.wic.bz2`). In the
-  root filesystem folder the root field of `/etc/shadow` is the same as `root.hash`, and
-  `/etc/wpa_supplicant.conf` is the same as my secrets file (not the placeholder). Both checks printed
-  only SAME or DIFFERENT, never the values. I flashed this image the same day: the Pi joined Wi-Fi at
-  boot with only power connected, SSH with the key worked, root logged in with the password on the
-  serial console, and `mosquitto_sub` showed the messages again.
-
 All planned steps are done. Small open item: the shutdown order on the board (the kill test of the
 publisher was done on 2026-11-03, see the change log).
-Quizzes: the Phase 3 quiz was answered for questions 1 and 2 only. On 2026-11-01 a walkthrough of the
-gateway side (device tree, `probe`, `read()`, the SPI layers, the publisher) ended with five
-interview-style questions (the `read()` path, the two transfers and the gap, how `probe` is called, the
-200 ms polling, the broker and the tunnel), answered and graded. The Yocto and boot side was walked
-through on 2026-11-02 and quizzed on 2026-11-03 with five questions (from `IMAGE_INSTALL` to a file in
-the image, `.bbappend`, `DEPENDS` and `RDEPENDS`, power-on to `probe`, start order), answered and
-graded. Weak spots found: the task chain (`do_compile` builds, `do_install` copies into `${D}`,
-`do_package` sorts `${D}` into one folder per package, `do_rootfs` installs the requested packages);
-why the udev coldplug replays events from early in the boot; and that the start order does not mean the
-broker is ready. Phase 3 leftovers: `kbd` and the audio line left as they are,
+Phase 3 leftovers: `kbd` and the audio line left as they are,
 read-only root not done (see the change log).
 
-## Open questions / not yet decided
+## Bring-up log (history)
 
-- What produces the spikes on NSS that the firmware counts (the analyzer showed that a
-  disturbing probe wiring creates spikes at SCK falling edges and a clean one none;
-  ADR-0010).
-- The real re-arm time (only the 154 us minimum gap between back-to-back reads is
-  measured), and with it whether the driver's 200 us is a real margin (needs a logic analyzer
-  capture of NSS with the kernel driver).
-- Whether the publisher needs to be restarted by init if it crashes (ADR-0022: nothing does it now).
-- Whether the HSI accuracy stays good enough, or the clock moves to the ST-LINK's
-  8 MHz HSE (needs `HSE_VALUE=8000000`, see ADR-0006). Measured: about 1.1% fast
-  (ADR-0006), which nothing in the project needs better than so far; to be decided
-  again if a precise timestamp or USB is ever needed, and checked against the UART
-  bit time.
-- Whether a bus clear is ever needed in the I2C driver (only if a sensor is
-  seen holding SDA low).
+Dated records of how the first images were built and brought up (2026-10-18 to 2026-10-24): the
+build of the first image `core-image-base`, its first boot, Wi-Fi typed on the board, and the first
+SPI test. Some of it describes states that no longer exist. The current state is in the sections
+above ("Build configuration", "The image recipe `gateway-image`", the two Wi-Fi sections and
+"Phase 4: the kernel driver").
+
+### Build result (`bitbake core-image-base`, 2026-10-18)
+
+- First long run 4 h 12 min (ended on the perl check, ADR-0014); last run 8 min 43 s with
+  5291 of 5695 tasks reused from the cache. Build folder 63 GB. Details in ADR-0011.
+- Output in `build/tmp/deploy/images/raspberrypi0-2w-64/`: the image
+  `core-image-base-raspberrypi0-2w-64.rootfs.wic.bz2` (79 MB compressed) with a `.bmap`
+  file, the kernel (Linux 6.18.33), the device tree `bcm2710-rpi-zero-2.dtb` and
+  `bootfiles/`.
+- 2026-10-22: second build with `ssh-server-openssh` (ADR-0015): 2015 packages, 80.7 MB
+  compressed. The first run of it had seven 0-byte OpenSSH programs in the image; a forced
+  `bitbake -f -c install openssh` and a new `bitbake core-image-base` fixed it (ADR-0015).
+  The image flashed for the SSH test is `...rootfs-20261022155006.wic.bz2`.
+- 2026-10-22: third build, with the layer `meta-gateway` (ADR-0016): 78 MiB compressed,
+  `...rootfs-20261022194428.wic.bz2`; no zero-byte file in the root filesystem folder outside
+  `/etc`, `/var` and `/usr/share`.
+- 2026-10-23: builds with `ENABLE_SPI_BUS` (`...rootfs-20261023093302.wic.bz2`; `config.txt`
+  line `dtparam=spi=on` checked in `deploy/bootfiles/` and on the board), with the Wi-Fi key
+  from a folder outside the repo (`...rootfs-20261023095901.wic.bz2`, 78 MiB), and with the
+  package `spi-frame-test`. The last one was flashed for the SPI test. These images contain
+  the Wi-Fi key: they and the build folder must not be shared.
+- 2026-10-24: `bitbake gateway-image` (ADR-0017), the image recipe of my own. Last build
+  `gateway-image-raspberrypi0-2w-64.rootfs-20261024145944.wic.bz2`: 37 MB root filesystem,
+  76 packages, 35 MiB compressed (`core-image-base`: 142 MB, 2015 packages, 78 MiB). Flashed
+  and tested: boots, `wlan0` up, `/dev/spidev0.0`, 10 of 10 frames. The steps in between are in
+  ADR-0017.
+
+### What is in the image
+
+This describes the first image, `core-image-base`. The current image, `gateway-image`, is
+described above, in "The image recipe `gateway-image`". Read from the package manifest (2008 packages), the root
+filesystem folder (142 MB) and the boot files in `deploy/` (the first boot below checked part
+of it on the board):
+
+- Boot partition (FAT): the Pi firmware, `config.txt`, `cmdline.txt`, the kernel and the
+  device tree. `ENABLE_UART = "1"` produced `enable_uart=1` in `config.txt` and
+  `console=serial0,115200` in the `cmdline.txt` of `deploy/bootfiles/`. That is **not** what
+  the kernel received: its command line had `console=ttyS0,115200` (see "First boot").
+  `cmdline.txt` also has `root=/dev/mmcblk0p2 rootfstype=ext4 rootwait`.
+- Root partition (ext4): busybox (provides `ls` and the other basic commands; there is no
+  `coreutils`), **sysvinit** as init (no systemd), `wpa-supplicant`, `iw`, the Wi-Fi firmware
+  `linux-firmware-rpidistro-bcm43436`, and the kernel modules (including `spidev`).
+- `/etc/inittab` starts a login prompt on `ttyS0` at 115200 baud. With the empty root
+  password, `root` logs in without a password.
+- The first image (2008 packages) had no SSH server; the current one (2015 packages) has
+  OpenSSH (ADR-0015). Not in the image: perl, systemd, and a package manager (no `rpm`, `dnf`,
+  `opkg` or `apt` in the manifest), so every change to the software is a rebuild and a new flash.
+- On the board, `/etc/fstab` ends with `/dev/mmcblk0p1  /boot  vfat  defaults  0  0`. That
+  line is not in the `rootfs/` folder of the build: it is added when the image is made. So
+  partition 1 **is mounted** on `/boot`, read-write. It holds `kernel8.img` (27,052,544 bytes,
+  the same size as the kernel `Image` of the build), the firmware files (all variants of
+  `start*.elf` and `fixup*.dat`, of which this board uses `start.elf` and `fixup.dat`),
+  `config.txt`, `cmdline.txt`, the `.dtb` and `overlays/`. The files read from the board
+  match the ones in `deploy/bootfiles/`.
+
+### First boot (2026-10-21)
+
+Flashing: the image was decompressed from the `.wic.bz2` to `gateway.wic` (380 MiB, MBR
+table; partition 1 FAT32 of 130 MiB from sector 8192, partition 2 Linux of 244 MiB from
+sector 278528) and written to a 32 GB microSD with Raspberry Pi Imager ("Use custom",
+without its customisation settings). Windows then showed the two partitions with the same
+sizes as `fdisk` on the image (136,314,880 and 256,271,360 bytes).
+
+Console: an FT232 USB-UART adapter, with its jumper on VCCIO-3V3 (3.3 V signals), on header
+pins 6 (GND), 8 (Pi TX) and 10 (Pi RX); Tera Term at 115200, 8 data bits, no parity, 1 stop
+bit.
+
+What the boot log shows (times are the kernel's, in seconds):
+
+- Kernel `6.18.33-v8`, built with `aarch64-poky-linux-gcc 15.3.0`; machine model
+  "Raspberry Pi Zero 2 W Rev 1.0" (from the device tree); 4 CPUs.
+- The kernel's command line ended with `dwc_otg.lpm_enable=0 console=ttyS0,115200
+  root=/dev/mmcblk0p2 rootfstype=ext4 rootwait net.ifnames=0`, after options added by the
+  firmware (`coherent_pool`, `8250.nr_uarts=1`, `smsc95xx.macaddr`, `vc_mem.*` and others).
+  **The console is `ttyS0`** (the mini UART, `3f215040`), and `/etc/inittab` starts the login
+  on `ttyS0`: **they are the same port.** The `cmdline.txt` inside partition 1 (read later
+  on the board) says `console=serial0,115200`, and the kernel received `ttyS0`. So the
+  firmware replaces `serial0` by the real port: I did not watch it do that, but nothing else
+  sits between the file and the kernel.
+- Root filesystem: `Waiting for root device /dev/mmcblk0p2` at 3.869 (`rootwait`), the SD
+  card found at 3.946, `mmcblk0: p1 p2` at 3.958, ext4 mounted **read-only** at 4.029,
+  `Run /sbin/init` at 4.060, remounted read-write at 11.643.
+- `INIT: version 3.14` (sysvinit); login prompt about 13 s after the kernel started; `root`
+  logs in without a password and gets a busybox shell. The banner says Poky 6.0.4.
+- No U-Boot output before `Booting Linux`, and `RPI_USE_U_BOOT` is not set: the Pi firmware
+  loads the kernel directly.
+- Wi-Fi: the `brcmfmac` driver loaded the chip firmware (`BCM43430/2`, version 9.88.4.77) and
+  the Bluetooth chip got its patch. No connection was made at that boot (see "Wi-Fi and SSH").
+- Memory: 154,540K of 458,752K available, because 256 MiB were reserved as a CMA pool (for the
+  GPU/camera; since 2026-10-27 the pool is 64 MiB and 350,660K are available). The clock after boot was `Mar 9 2018` (no battery clock, no network time).
+- Messages that did not stop the boot, causes not investigated: `/usr/bin/psplash: not
+  found` (`S00psplash.sh`), `ip: SIOCGIFFLAGS: No such device` twice during network start,
+  `dbus: Unknown username "pipewire"`, `brcmf_c_process_txcap_blob: no txcap_blob available`.
+
+### Wi-Fi and SSH (2026-10-22, ADR-0015)
+
+**Wi-Fi, typed on the board** over the serial console. The image has `wpa_supplicant` 2.11,
+`iw` and the busybox DHCP client. `wlan0` is in `/etc/network/interfaces` but is **not**
+`auto`, and `/etc/wpa_supplicant.conf` held only a placeholder. I wrote the file with the
+header lines and `country=GR`, added the network with `wpa_passphrase` (the password typed at
+its prompt; the plain-text comment line it writes is deleted), and ran `ifup wlan0`. Results:
+
+- The scan listed the network and about 13 others, all on 2.4 GHz (2412 to 2462 MHz); mine on
+  2462 MHz (channel 11), signal -34 dBm, receive rate 65 Mbit/s.
+- DHCP gave `192.168.1.4/24` from the router `192.168.1.1`, lease 86,400 s; default route via
+  the router; DNS added from the lease.
+- `ping 192.168.1.1`: 3 of 3, about 5.7 ms. `ping 1.1.1.1`: 3 of 3, about 15 ms. `ping
+  example.com` resolved a name and answered.
+- Warnings: the hook starts `wpa_supplicant` with the old `wext` interface
+  (`wpa-driver wext`); the kernel warned that wireless extensions will stop working for newer
+  hardware, and `wpa_supplicant` printed `ioctl[SIOCSIWENCODEEXT]: Invalid argument` twice.
+  The connection worked; I do not know what the two errors affected.
+- The settings stay across reboots but a reflash erases them. `wlan0` did not start at boot in
+  this first image; the layer `meta-gateway` (above) fixed that.
+
+**SSH.** `IMAGE_FEATURES += "ssh-server-openssh"` adds OpenSSH 10.3p1 (`sshd`, `ssh`, `scp`,
+`sftp-server`, `ssh-keygen`; 7 more packages). In this first image `sshd_config` had `PermitRootLogin yes` and
+`PermitEmptyPasswords yes` (from the two `allow-*` features), so I set a root password with
+`passwd` after every flash (both features are gone: root has a baked-in password hash since 2026-10-24 and
+SSH is key-only since 2026-10-27). `S09sshd` starts the server at boot.
+
+**The first OpenSSH image did not work.** `ssh` to the Pi answered `Connection refused`; on
+the board there was no `sshd` process, no host keys and no log line. A trace of
+`/etc/init.d/sshd start` showed that the script exits silently after `test -x
+/usr/sbin/sshd`. In the build, `/usr/sbin/sshd` and six more programs were 0 bytes in the
+`image/` folder of the openssh recipe, while the compiled programs in its source folder were
+complete. The details and my hypothesis (a race in a parallel `make install`, not proven)
+are in ADR-0015. `bitbake -f -c install openssh` and a new `bitbake core-image-base` gave
+complete files (package 654,588 bytes instead of 29,913), and an SSH login from Windows then
+worked.
+
+### SPI and the test tool (2026-10-24)
+
+`ENABLE_SPI_BUS = "1"` makes `config.txt` contain `dtparam=spi=on`; on the board `/dev/spidev0.0`
+and `/dev/spidev0.1` exist. The image has no Python, so I wrote `spi-frame-test` in C
+(`linux-gateway/meta-gateway/recipes-test/spi-frame-test/`): one SPI transfer of 14 bytes at
+1 MHz in mode 0 through `spidev`, then the checks of `tools/spi_frame_test.py` (marker `A5`,
+CRC-16). It is a bring-up tool, not the Phase 4 driver.
+
+Wired as in the README table (Pi pins 24, 23, 21, 19, 25), the Nucleo running the Phase 2
+firmware, `spi-frame-test 10` printed 10 lines, all with a valid CRC:
+
+- Frame 0: `seq=0 status=1` (NO_READING), `T=0.00 P=0.00`. The next frame has `seq=26`.
+  This is consistent with the stale first read of ADR-0010 (an old frame on the first read after
+  a long idle); I did not measure the mechanism in this run.
+- Frames 1 to 9: `seq` 26 to 34 (one more per second), `status=0`, `T=21.57 to 21.58 C`,
+  `P=1015.69 to 1015.71 hPa`.
+
+A second run on 2026-10-24, on the `gateway-image` build (modules `spi-bcm2835` and `spidev`
+loaded by udev), gave 10 of 10 valid frames again, `seq` 183 to 191, `T=21.90 to 21.91 C`,
+`P=1014.99 to 1015.02 hPa`. Frame 0 was byte for byte the same as in the first run
+(`A5 01 00 00 ... 10 96`, `seq=0`, `status=1`): the first read after a long idle returned the
+frame the node loaded at boot, in both runs. This is for the Phase 4 decision about the stale
+first read; nothing is decided.
 
 ## Change log
 
@@ -1377,6 +1407,13 @@ read-only root not done (see the change log).
   keeps the second (ADR-0019): after 30 s of idle the sequence had moved by 30, and the first read
   after a reset of the Nucleo was `seq=3`. Eight concurrent readers: no failure. The Phase 4 driver is
   now: device-tree overlay, SPI driver, `/dev/stm32_sensor_node`, 200 us gap, fresh frame. Next is MQTT.
+- 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
+  "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
+  delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),
+  `IMAGE_FEATURES` with `allow-root-login` and the password-after-every-flash text (history now), the
+  256 MiB CMA, "seventeen ADRs", and the 4.5 interface "assumed". Added: the gateway-side diagram, the
+  Phase 4 status (4.1 to 4.5c done, MQTT paused), the unverified Phase 4 items and the never-tested
+  Wi-Fi power-save commit.
 - 2026-10-31: three Phase 4 items closed on the board. The chip select comes from `cs-gpios` in the Pi's
   device tree (GPIO 8 for chip select 0, active low); a 14-byte transfer uses the controller's
   interrupt (10 interrupts for 10 transfers); `rmmod` refuses while the device file is open
@@ -1416,10 +1453,3 @@ read-only root not done (see the change log).
   afterwards although the old pid file was still there. Also looked at on the board: `unbind` and `bind` of
   `spi0.0` on the driver (`remove`, then `probe`; the device stays, the device file goes and comes back),
   the publisher as PID 369 with parent 1, 2 threads and its open files. The Wi-Fi driver is `brcmfmac`.
-- 2026-10-29: this document brought back in line with the repo. Stale statements fixed: the Pi as a
-  "temporary test jig" (Phase 2 only), the stale first read "to be decided" (decided, ADR-0019), the
-  delay "the driver has to enforce" (done, 4.5b), the missing device-tree entry (the overlay exists),
-  `IMAGE_FEATURES` with `allow-root-login` and the password-after-every-flash text (history now), the
-  256 MiB CMA, "seventeen ADRs", and the 4.5 interface "assumed". Added: the gateway-side diagram, the
-  Phase 4 status (4.1 to 4.5c done, MQTT paused), the unverified Phase 4 items and the never-tested
-  Wi-Fi power-save commit.

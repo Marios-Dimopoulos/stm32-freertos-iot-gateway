@@ -83,7 +83,7 @@ Standard Peripheral Library.
   with DMA (ADR-0010).
 - What has not been verified is listed per driver, honestly: the error paths of the clock
   module (ADR-0006), the I2C error paths other than the ones provoked on the board
-  (ADR-0007), and the UART bit time on the wire (see `architecture.md`, known gaps). The
+  (ADR-0007), and the UART bit time on the wire (see `architecture.md`, "Verification status"). The
   clock frequency and the I2C receive sequence were measured on the wire with a logic
   analyzer (ADR-0006, ADR-0007).
 - Rules this created for the SPI driver (Phase 2), which follows them: the same style,
