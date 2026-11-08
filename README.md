@@ -347,8 +347,7 @@ I keep this list honest. Each item is also in [`docs/architecture.md`](docs/arch
 - **Nothing restarts the publisher if it crashes.** Tested with `kill -9` on the board: it stays dead.
   The shutdown order (publisher before broker) was read from the `rc` links, not watched on the board.
 - **The root filesystem is writable**, and `/boot` is mounted read-write. A power cut during a write
-  could damage it. A product would need a read-only root; I decided not to do it here, and the reasons
-  are in the change log of `docs/architecture.md`.
+  could damage it. A product would need a read-only root; I decided not to do it here.
 - **Secrets are inside every image.** Anyone with the SD card can read the Wi-Fi key and the password
   hash.
 - **No clock on the Pi** (no battery, no network time). Log dates are not real, and TLS is not
