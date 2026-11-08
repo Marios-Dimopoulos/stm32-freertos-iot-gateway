@@ -1,7 +1,8 @@
 SUMMARY = "Kernel driver for the STM32 sensor node on the SPI bus (Phase 4)"
-DESCRIPTION = "Only the skeleton of the module, to prove the build path. It prints a \
-line when it is loaded and when it is unloaded. The SPI driver, the character device and the \
-frame checks are added in the next steps."
+DESCRIPTION = "SPI driver for the STM32 node. It binds to the device-tree node with the compatible \
+string mdimopoulos,stm32-sensor-node and creates /dev/stm32_sensor_node. Each read() does an SPI \
+transfer, checks the marker and the CRC of the frame and returns its 14 raw bytes, or -EIO if the \
+frame is bad (ADR-0018)."
 
 # A kernel module is part of the kernel when it runs, so it must be GPL. The license text is the
 # one that ships with Yocto (same checksum as in make-mod-scripts_1.0.bb).

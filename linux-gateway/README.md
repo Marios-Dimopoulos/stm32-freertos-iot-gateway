@@ -117,7 +117,7 @@ that build the image (checked in `~/yocto/` on 2026-11-02):
 The seventh layer is `meta-gateway`. Mosquitto is in `meta-networking`, which needs `meta-oe` and
 `meta-python`. `meta-python` adds no Python to the image.
 
-## To rebuild the image (not tested from an empty folder)
+## To rebuild the image
 
 These steps follow from how the folders are laid out. I have not rebuilt from nothing with them, so
 the first time may need a correction.
